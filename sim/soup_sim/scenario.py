@@ -68,11 +68,13 @@ def run_one(cfg) -> dict:
     for blob, src, dst in make_cohort(cfg, inject_time=cfg.warmup, rng=cfg.rng(2)):
         metrics.register(blob, src, dst)
         eng.inject(blob, src)
+    tx0 = eng.transmissions                       # circulation: count accepted transfers in-window only
 
     samples, n_samp = [], 10
     for s in range(1, n_samp + 1):
         eng.run_until(cfg.warmup + cfg.measure_window * s / n_samp)
         samples.append(mean_degree(mob.positions, cfg.radius, cfg.width, cfg.height, cfg.boundary))
+    tx1 = eng.transmissions                       # snapshot BEFORE drain/finalize
     eng.run_until(cfg.warmup + cfg.measure_window + cfg.drain)
     eng.finalize()  # settle any still-open episodes exactly once at the true end
 
@@ -87,6 +89,16 @@ def run_one(cfg) -> dict:
         "transmissions": eng.transmissions,
         "empirical_mean_degree": float(np.mean(samples)),
         "stationary_ok": stationarity_ok(first, second, tol=0.15),
+        # PR-2 airtime measurements
+        "circulated_per_min": metrics.circulated_per_min(tx1 - tx0, cfg.measure_window),
+        "utilization": metrics.utilization(eng.charged_airtime, eng.available_contact_time),
+        "utilization_vs_offered": metrics.utilization_vs_offered(eng.charged_airtime, eng.offered_airtime),
+        "t50": metrics.t50(),
+        "offered_blobs": eng.offered_blobs,
+        "served_blobs": eng.served_blobs,
+        "setup_starved_blobs": eng.setup_starved_blobs,
+        "quantization_blobs": eng.quantization_blobs,
+        "contention_blobs": eng.contention_blobs,
         "manifest": cfg.manifest(),
     }
 

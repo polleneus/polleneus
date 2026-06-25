@@ -106,6 +106,7 @@ class Engine:
             if key not in self.open:
                 self.open[key] = {"entry": enter, "last_end": exit_, "credit": 0.0,
                                   "setup_debt": self.budget.t_setup_at(n_contenders),
+                                  "setup_floor": self.budget.t_setup_at(n_contenders),  # bill the RESERVED floor
                                   "n": n_contenders, "served": set(), "offered": set(),
                                   "setup_billed": False}
             st = self.open[key]
@@ -132,8 +133,9 @@ class Engine:
                 if moved:
                     st["credit"] -= moved
                     st["served"].update(served_ids)
-                    if not st["setup_billed"]:             # one handshake floor per episode
-                        self.charged_airtime += self.budget.t_setup_at(st["n"])
+                    st["offered"].update(served_ids)       # in-step multi-hop served blobs are offered too
+                    if not st["setup_billed"]:             # one handshake floor per episode (the RESERVED floor)
+                        self.charged_airtime += st["setup_floor"]
                         st["setup_billed"] = True
                     self.charged_airtime += moved * self.budget.blob_size / eff  # same eff as accrual -> <= usable
                     progressed = True

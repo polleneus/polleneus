@@ -195,8 +195,11 @@ def airtime_sweep(base_cfg, densities, reps):
     knee = find_knee(densities, circ, np.random.default_rng(rng.integers(0, 2 ** 31)))
     a0_over = find_knee(densities, a0_circ, np.random.default_rng(rng.integers(0, 2 ** 31)))["status"] == "knee"
     ct_over = find_knee(densities, ct_circ, np.random.default_rng(rng.integers(0, 2 ** 31)))["status"] == "knee"
-    binding_at_knee = rows[int(np.argmax([r["circulated_per_min_mean"] for r in rows]))]["binding"]
-    gate = binding_gate(knee, binding_at_knee, a0_over, ct_over)
+    if knee["status"] == "knee":                          # binding at the row nearest the REFINED knee density
+        ki = int(np.argmin([abs(r["density"] - knee["knee"]) for r in rows]))
+    else:
+        ki = int(np.argmax([r["circulated_per_min_mean"] for r in rows]))
+    gate = binding_gate(knee, rows[ki]["binding"], a0_over, ct_over)
     return {"rows": rows, "alpha0_rows": a0_rows, "capttl_rows": ct_rows, "knee": knee, "gate": gate,
             "predicted_knee_contenders": base_cfg.n_channels / base_cfg.beta if base_cfg.beta else None}
 

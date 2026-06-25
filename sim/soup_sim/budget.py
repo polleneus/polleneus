@@ -44,18 +44,7 @@ class AirtimeBudget:
         the engine bills service incrementally per step for utilization (see engine)."""
         if served_blobs <= 0:
             return 0.0
-        return self.t_setup_at(n_contenders) + served_blobs * self.blob_size / self.effective_goodput(n_contenders)
-
-    def blobs_transferable(self, duration: float, n_local: int, rng) -> int:
-        usable = max(0.0, duration - self.t_setup)
-        if usable <= 0.0:
-            return 0
-        eff = self.throughput_ideal / (1.0 + self.alpha * max(0, n_local))
-        gross = int((usable * eff) / self.blob_size)  # whole blobs only
-        if gross <= 0:
-            return 0
-        if self.p_fail <= 0.0:
-            return gross
-        if self.p_fail >= 1.0:
-            return 0
-        return int(rng.binomial(gross, 1.0 - self.p_fail))
+        eff = self.effective_goodput(n_contenders)
+        if eff <= 0.0:                                # fully starved (p_fail=1 or eff underflow): infinite airtime
+            return float("inf")
+        return self.t_setup_at(n_contenders) + served_blobs * self.blob_size / eff

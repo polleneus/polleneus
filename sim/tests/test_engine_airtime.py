@@ -74,3 +74,24 @@ def test_utilization_le_one_under_varying_contention():
     # contention varies within the contact; util must stay <= 1 (per-step billing at accrual eff)
     eng = _two_node(throughput=8e3, dt=0.5, t_setup=0.05, slope=0.0, run=20.0, blobs=50, model="collision")
     assert eng.charged_airtime <= eng.available_contact_time + 1e-9
+
+
+def test_utilization_le_one_with_rising_contention_and_slope():
+    # node0(blob)-node1 in contact the whole run; contenders stream INTO carrier-sense range mid-run
+    # so st["n"] rises after open. With t_setup_slope>0 the setup floor must be billed at the
+    # RESERVED open-n, not max-n -> charged <= available (the HIGH the code review caught).
+    c = cfg(n=6, dt=0.5, throughput_ideal=5.0, t_setup=2.0, t_setup_slope=8.0, ttl=1e12,
+            cs_radius_mult=8.0, airtime_model="linear")
+    pos = np.array([[0., 0.], [5., 0.],                       # the served pair (in connectivity range)
+                    [200., 0.], [260., 0.], [320., 0.], [380., 0.]])  # contenders far, moving in
+    vel = np.array([[0., 0.], [0., 0.], [-5., 0.], [-6., 0.], [-7., 0.], [-8., 0.]])
+    mob = Mobility("linear", pos, vel, c.width, c.height, 0.0, 0.0)
+    bufs = [NodeBuffer(BIG, 1e15, c.rng(3, i)) for i in range(6)]
+    budget = AirtimeBudget(5.0, 1.0, 2.0, 0.0, 1.0, model="linear", t_setup_slope=8.0)
+    eng = Engine(c, mob, bufs, budget, c.rng(1), on_deliver=lambda *_: None)
+    for k in range(20):
+        eng.inject(Blob(k, 0.0, 1e12, 1.0), 0)
+    eng.run_until(45.0)
+    eng.finalize()
+    assert eng.available_contact_time > 0
+    assert eng.charged_airtime <= eng.available_contact_time + 1e-9   # util <= 1 despite rising n + slope

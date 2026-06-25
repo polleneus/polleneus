@@ -47,25 +47,30 @@ exact quantity the percolation gate validates.
 ## What it measures (slice 2: airtime & mobile delivery)
 Whether BLE **airtime** — not storage — is the scale wall: does delivery saturate and turn
 over as a gathering gets denser? The engine runs over **mobile (RWP)** nodes with a
-collision-capable airtime model, and the sweep reports **circulated-blobs/min**, **airtime
+collision-capable airtime model, and the sweep reports **circulated-blobs/min** (accepted
+*novel* transfers only — duplicate/already-seen re-offers are not counted), **airtime
 utilization**, **delivery ratio**, and a **censoring-aware T50** vs density.
 
 - **Primary model = ALOHA collision:** per-link goodput `throughput·exp(−β·n/n_channels)` over
   `n_channels=3` shared advertising channels. Per-link goodput is monotone; the SYSTEM
   aggregate `n·goodput` has an interior maximum at `n* = n_channels/β` contenders — so
-  circulation **turns over**. The old `1/(1+α·n)` is kept as the **optimistic-bound sensitivity**
-  case (system aggregate plateaus → no knee). The two are run side-by-side as a
-  **model-uncertainty band**.
+  circulation **turns over under the collision model**. **β is an UNCALIBRATED free parameter**,
+  so `n*` is set by the chosen β, not measured: this apparatus demonstrates that it can *detect*
+  a knee when one exists, it does **not** assert real BLE saturates at a specific density. The old
+  `1/(1+α·n)` is kept as the **optimistic-bound sensitivity** case (system aggregate plateaus →
+  no knee). The two are run side-by-side as a **model-uncertainty band**.
 - **Falsifiable prediction (stated up front):** collision ⇒ a knee; linear ⇒ a plateau.
   `test_collision_knee_linear_plateau_distinguishable` (slow) pins it.
 - **Contention ≠ connectivity:** `n_contenders` is the co-channel population over a
   carrier-sense radius (`cs_radius_mult·radius`), not the unit-disk degree.
 - **Saturation-knee estimator** (`knee.py`): argmax of circulated/min with a local
   quadratic-in-log fit + bootstrap CI; returns **"no knee in range"** (never NaN) when the
-  curve is monotone or merely plateaus (a 15% post-peak drop margin).
+  curve is monotone, merely plateaus (the post-peak minimum must fall ≥15% below the peak), or
+  the local fit is not concave (no genuine interior max).
 - **Binding publish-gate (the honesty guard):** the saturation figure publishes **only if**
   there is a knee AND ≥50% of *unmet* demand at the knee is **contention-bound** AND **neither**
-  the **α=0** (airtime-free) control **nor** the **cap=∞/ttl=∞** control turns over. Otherwise
+  the **α=0** (airtime-free: β=0, α=0, t_setup_slope=0 → constant goodput, flat setup) control
+  **nor** the **cap=∞/ttl=∞** control turns over. Otherwise
   the curve is labelled connectivity/buffer/TTL-limited. This makes it impossible to mislabel a
   storage/connectivity effect as "airtime."
 - **Censoring-aware latency:** TTL-expired messages are censored; we report **T50** (time to 50%
@@ -105,7 +110,7 @@ airtime sweep + control arms, per-rep CIs) · `report` (CSV + plot).
 | absolute TTL | §6 | faithful |
 | eviction = oldest-by-creation | §9.5 | faithful |
 | reconciliation | §8 | per-contact **byte budget**, set-reconciliation overhead modeled as **zero** → optimistic (no IBLT/rateless overhead) |
-| airtime (collision) | §6/§11 | ALOHA `exp(−β·n)`, **β uncalibrated**, no capture effect / no retransmission → direction ambiguous (capture⇒earlier knee; ignored scan-misses⇒optimistic) |
+| airtime (collision) | §6/§11 | ALOHA `exp(−β·n)`, **β uncalibrated**, no retransmission, ignored scan-duty-cycle misses → **optimistic** (inflate delivered fraction). (Capture effect — not modeled, OUT §4 — would pull the knee *earlier*; a separate effect, not an offset.) |
 | contention population | §11 | carrier-sense **max-of-pair, single-snapshot** degree (not the full co-channel union) → **optimistic** (under-counts contenders) |
 | decode failure (`p_fail`) | §8 | applied as a deterministic `(1−p_fail)` mean factor, not independent per-blob → removes tail/variance risk → **optimistic** |
 | anonymity (source-estimator) | §10 | **not modeled** (deferred) |

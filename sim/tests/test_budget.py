@@ -2,26 +2,15 @@ import numpy as np
 from soup_sim.budget import AirtimeBudget
 
 
-def test_short_contact_below_setup_transfers_zero():
-    bud = AirtimeBudget(1000, alpha=0.0, t_setup=1.0, p_fail=0.0, blob_size=100)
-    assert bud.blobs_transferable(0.5, 0, np.random.default_rng(0)) == 0
-
-
-def test_contention_reduces_throughput():
+def test_linear_contention_reduces_per_link_goodput():
     bud = AirtimeBudget(1000, alpha=1.0, t_setup=0.0, p_fail=0.0, blob_size=100)
-    low = bud.blobs_transferable(1.0, 0, np.random.default_rng(0))   # eff 1000 -> 10
-    high = bud.blobs_transferable(1.0, 9, np.random.default_rng(0))  # eff 100  -> 1
-    assert high < low
+    assert bud.effective_goodput(9) < bud.effective_goodput(0)   # more contenders -> less per link
 
 
-def test_quantized_to_whole_blobs():
-    bud = AirtimeBudget(90, alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=100)
-    assert bud.blobs_transferable(1.0, 0, np.random.default_rng(0)) == 0  # 0.9 blob -> 0
-
-
-def test_pfail_one_thins_to_zero():
-    bud = AirtimeBudget(1000, alpha=0.0, t_setup=0.0, p_fail=1.0, blob_size=100)
-    assert bud.blobs_transferable(1.0, 0, np.random.default_rng(0)) == 0
+def test_pfail_scales_goodput_down():
+    full = AirtimeBudget(1000, 0.0, 0.0, p_fail=0.0, blob_size=100).effective_goodput(0)
+    half = AirtimeBudget(1000, 0.0, 0.0, p_fail=0.5, blob_size=100).effective_goodput(0)
+    assert abs(half - 0.5 * full) < 1e-9
 
 
 # --- PR-2: collision (ALOHA) airtime model -----------------------------------

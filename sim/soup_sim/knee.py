@@ -27,7 +27,7 @@ def binding_decomposition(offered, served, setup_starved_blobs, quantization_blo
     unmet = offered - served
     if unmet <= 0:
         return {"contention_bound": 0.0, "setup_starved": 0.0, "quantization": 0.0,
-                "demand_satisfied": (served / offered) if offered else 1.0}
+                "demand_satisfied": (served / offered) if offered else None}  # None on empty traffic
     s = setup_starved_blobs + quantization_blobs + contention_blobs
     norm = s if s > 0 else 1                     # defensive: tallies should sum to unmet
     return {"contention_bound": contention_blobs / norm, "setup_starved": setup_starved_blobs / norm,
@@ -40,7 +40,8 @@ def _knee_point(dens, mean):
     if k == 0 or k == len(mean) - 1:
         return None                              # peak at an edge -> monotone in range
     peak = mean[k]
-    if peak <= 0 or mean[-1] > peak * (1.0 - KNEE_DROP_MARGIN):
+    post_peak_min = float(np.min(mean[k + 1:]))   # deepest point AFTER the peak, not just the last
+    if peak <= 0 or post_peak_min > peak * (1.0 - KNEE_DROP_MARGIN):
         return None                              # no real drop after the peak -> plateau, not a knee
     lo, hi = max(0, k - 2), min(len(mean) - 1, k + 2)   # +/-2 window (>=5 pts where possible)
     x = np.log(np.asarray(dens[lo:hi + 1], float))

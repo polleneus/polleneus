@@ -1,8 +1,10 @@
-# Airtime Model + Measurement (Feature 2 · PR-2) Implementation Plan — v2
+# Airtime Model + Measurement (Feature 2 · PR-2) Implementation Plan — v3
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **v2 (folds plan-review round 1):** per-episode airtime billing (not per-step); knee-bracketing density grid + pre-registered prediction; binding decomposition over UNMET demand with explicit setup/quantization/buffer-TTL terms; α=0 control made truly airtime-free + a separate cap=∞/ttl=∞ control arm; budget fields threaded into `run_one`; T50 renamed (not "KM"); offered-airtime accumulated in the engine; Task 9 split; prose Step-3s converted to code.
+> **v2 (folds plan-review round 1):** per-episode airtime billing; knee-bracketing grid; binding decomposition over UNMET demand; two control arms; budget fields threaded into `run_one`; T50 not "KM"; offered-airtime in engine.
+>
+> **v3 (folds plan-review round 2):** charged airtime billed **incrementally per step at the same `eff(n_step)` used for accrual** (so `utilization ≤ 1` holds on mobility, not just static fixtures), with `t_setup_at(n)` charged once; binding decomposition is in **BLOB units** with quantization vs contention separated by a **capacity test** (`goodput·usable/blob < 1` ⇒ quantization), closing the gate blind-spot; `setup_debt = t_setup_at(n)` (so `t_setup_slope` actually throttles delivery) with `n_contenders` computed **before** the open-dict (fixes a scope bug); `"t50"` wired into `run_one`; knee detector requires a **relative-drop margin** (kills the ~42%-flaky linear "no_knee"); **small test arenas + heavy end-to-end tests marked `slow`** (the [3..20]-density grid mapped to n≈900 → ~48-min suite); predicted knee expressed in **contenders** with the density-space knee bracketed empirically; Tasks 3 and 10 split.
 
 **Goal:** On the trusted PR-1 engine, build a collision-capable airtime model and the measurement machinery to answer the red-team's risk #1 — *does BLE airtime saturate at crowd density and collapse delivery?* — with a binding publish-gate so an engine/buffer/TTL effect can never be mislabeled "airtime."
 
@@ -16,7 +18,8 @@
 - **Determinism:** all randomness via `cfg.rng(*path)` or `np.random.default_rng(seed)` derived from `master_seed`; no global RNG. The replication unit is the SEED.
 - **Addressing-blind engine:** no `sender`/`recipient` tokens in engine-layer files (enforced by `test_lint_invariants.py`). Use `src`/`dst`/`local`/`contender`.
 - **Primary airtime model = ALOHA collision** per-link goodput `throughput·exp(-β·n/n_channels)` (monotone in n; the SYSTEM aggregate `n·goodput` has an interior max at `n*=n_channels/β` → turns over). Old `1/(1+α·n)` is the **optimistic-bound sensitivity** case (system aggregate plateaus → no knee).
-- **`t_setup` is charged ONCE per physical episode** (mirrors the engine's `setup_debt` amortization); density-dependent via `t_setup_at(n)=t_setup + slope·n`.
+- **Airtime is billed INCREMENTALLY per step** at the same `eff(n_step)` used for credit accrual (service time `served_this_step·blob_size/eff(n_step)` ≤ the step's usable time), plus **one** `t_setup_at(n_open)` per episode. This guarantees `charged_airtime ≤ available_contact_time` ⇒ `utilization ≤ 1` even when contention varies within a contact. `setup_debt = t_setup_at(n_open)` so `t_setup_slope` throttles delivery (denser ⇒ more setup-starved short contacts).
+- **Binding decomposition is in BLOB units** over UNMET = offered−served, classified per episode: setup-starved (`t_setup_at(n) ≥ duration`), quantization (capacity `eff(n)·max(0,duration−t_setup_at(n))/blob_size < 1` — couldn't complete even one blob), else contention. (Quantization ≠ contention: a low-goodput contact that COULD move blobs but didn't clear the backlog is contention, the gate's signal.)
 - **TWO control arms, on the SAME axes, for every airtime curve:**
   - **α=0 airtime-free control** = `alpha=0, beta=0, t_setup_slope=0` (removes ALL airtime contention). If it still turns over → connectivity-limited.
   - **cap=∞/ttl=∞ control** = `buffer_cap=BIG, ttl=BIG`. If the turn-down vanishes → buffer/TTL-limited.
@@ -276,7 +279,7 @@ git commit -m "feat(sim): contention over carrier-sense radius, decoupled from c
 - Test: `sim/tests/test_engine_airtime.py`
 
 **Interfaces:**
-- Produces engine attributes: `charged_airtime, available_contact_time, offered_airtime: float`; `offered_blobs, served_blobs: int`; `total_contacts, setup_starved_contacts, quantization_contacts: int`. Billing is **per episode** (at `_close`): `t_setup_at(n)` once; service for the episode's served blobs; offered/served are the distinct blob ids the peer lacked / received over the episode. `setup_starved` = `t_setup_at(n) >= duration`; `quantization` = had goodput but never accumulated a whole blob while the peer still lacked some.
+- Produces engine attributes: `charged_airtime, available_contact_time, offered_airtime: float`; `offered_blobs, served_blobs: int`; and BLOB-unit binding tallies `setup_starved_blobs, quantization_blobs, contention_blobs: int` (these sum to UNMET = offered−served). Service airtime is billed **incrementally per step** at the step's `eff(n_step)`; `t_setup_at(n_open)` is added once per episode the first step a blob is served. At `_close`, the episode's UNMET blobs are classified (setup-starved / quantization / contention via the capacity test) into the blob-unit tallies. `n_contenders` is computed BEFORE the open-dict so `setup_debt = t_setup_at(n_open)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -309,10 +312,15 @@ def test_t_setup_charged_once_per_episode():
     # 3 blobs served at huge goodput -> service ~0; charged ~= one t_setup
     assert abs(eng.charged_airtime - 0.5) < 0.05
 
-def test_setup_starved_contact_flagged():
-    # t_setup (1000) exceeds the whole contact -> setup-starved, nothing served
+def test_setup_starved_blobs_counted():
+    # t_setup (1000) exceeds the whole contact -> setup-starved, nothing served, unmet -> setup_starved_blobs
     eng = _two_node(throughput=1e9, dt=1.0, t_setup=1000.0, run=10.0, blobs=3)
-    assert eng.served_blobs == 0 and eng.setup_starved_contacts == 1
+    assert eng.served_blobs == 0 and eng.setup_starved_blobs == 3 and eng.contention_blobs == 0
+
+def test_utilization_le_one_under_varying_contention():
+    # contention varies within the contact (carrier-sense degree changes); util must stay <= 1
+    eng = _two_node(throughput=8e3, dt=0.5, t_setup=0.05, slope=0.0, run=20.0, blobs=50, model="collision")
+    assert eng.charged_airtime <= eng.available_contact_time + 1e-9
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -320,21 +328,43 @@ def test_setup_starved_contact_flagged():
 Run: `cd "C:/Users/rob/Documents/meldingx/sim" && .venv/Scripts/python.exe -m pytest tests/test_engine_airtime.py -q`
 Expected: FAIL (`AttributeError: charged_airtime`).
 
-- [ ] **Step 3: Implement per-episode accounting**
+- [ ] **Step 3: Implement per-step billing + per-episode blob-unit classification**
 
-In `__init__` add: `self.charged_airtime = self.available_contact_time = self.offered_airtime = 0.0; self.offered_blobs = self.served_blobs = self.total_contacts = self.setup_starved_contacts = self.quantization_contacts = 0`.
+In `__init__` add: `self.charged_airtime = self.available_contact_time = self.offered_airtime = 0.0; self.offered_blobs = self.served_blobs = self.setup_starved_blobs = self.quantization_blobs = self.contention_blobs = 0`.
 
-In `self.open[key]` (when opening a contact) add fields: `"served": set(), "offered": set(), "n": n_contenders`. Each step, update `st["n"] = max(st["n"], n_contenders)` and `self.available_contact_time += (exit_ - enter)`. Before the fixpoint, for each direction record the distinct lacked ids into `st["offered"]` (count once per pair per step, NOT inside the fixpoint). Change `_exchange` to also record delivered ids; have it return `(moved, served_ids)` and update the caller:
+In `_process_step`, compute `n_contenders` BEFORE the open-dict creation (fixes the scope bug), and use it for the setup floor and the open-dict fields:
+
+```python
+            n_contenders = int(max(cs_deg[i], cs_deg[j]))
+            if key not in self.open:
+                self.open[key] = {"entry": enter, "last_end": exit_, "credit": 0.0,
+                                  "setup_debt": self.budget.t_setup_at(n_contenders),  # slope throttles
+                                  "n": n_contenders, "served": set(), "offered": set(),
+                                  "setup_billed": False}
+            st = self.open[key]
+            st["last_end"] = exit_; st["n"] = max(st["n"], n_contenders)
+            self.available_contact_time += (exit_ - enter)
+            eff = self.budget.effective_goodput(n_contenders)
+            # ... existing setup_debt pay + credit accrual using eff ...
+            # record offered (distinct lacked ids), ONCE per pair per step, before the fixpoint:
+            for (src, dst) in ((i, j), (j, i)):
+                st["offered"].update(bl.id for bl in self._offerable(src, self.buffers[dst].ids(), exit_))
+```
+
+`_exchange` returns `(moved, served_ids)`; the fixpoint caller bills service at the step's `eff` and charges setup once:
 
 ```python
             moved, served_ids = self._exchange(i, j, allowed, enter, exit_)
             if moved:
                 st["credit"] -= moved
                 st["served"].update(served_ids)
+                if not st["setup_billed"]:
+                    self.charged_airtime += self.budget.t_setup_at(st["n"]); st["setup_billed"] = True
+                self.charged_airtime += moved * self.budget.blob_size / eff   # same eff as accrual -> <= usable time
                 progressed = True
 ```
 
-In `_close(key)` bill the episode:
+In `_close(key)` classify the episode's UNMET blobs (blob units; capacity test separates quantization from contention):
 
 ```python
     def _close(self, key):
@@ -343,17 +373,21 @@ In `_close(key)` bill the episode:
         self.episodes.append((key[0], key[1], st["entry"], st["last_end"]))
         self.durations.append(dur)
         n = st["n"]; served = len(st["served"]); offered = len(st["offered"])
-        self.total_contacts += 1
         self.served_blobs += served; self.offered_blobs += offered
-        self.charged_airtime += self.budget.charged_airtime(served, n)
         self.offered_airtime += self.budget.charged_airtime(offered, n) if offered else 0.0
-        if self.budget.t_setup_at(n) >= dur and offered > 0:
-            self.setup_starved_contacts += 1
-        elif served < offered and self.budget.effective_goodput(n) > 0:
-            self.quantization_contacts += 1     # airtime existed but backlog not fully cleared
+        unmet = offered - served
+        if unmet > 0:
+            t0 = self.budget.t_setup_at(n)
+            capacity = self.budget.effective_goodput(n) * max(0.0, dur - t0) / self.budget.blob_size
+            if t0 >= dur:
+                self.setup_starved_blobs += unmet            # couldn't even handshake
+            elif capacity < 1.0:
+                self.quantization_blobs += unmet             # too short/low-rate for one whole blob
+            else:
+                self.contention_blobs += unmet               # could move blobs, backlog exceeded capacity
 ```
 
-(Add a helper to compute lacked ids per direction for `st["offered"]`, reusing `_offerable`/`buffers[dst].ids()`.)
+- [ ] **Step 3b (split): expose `total_contacts = len(self.episodes)` via a property and confirm `_exchange` change** — `total_contacts` is just `len(self.episodes)`; no separate counter. Verify the single `_exchange` caller is the fixpoint above (no other callers; `settle_static_fixpoint` inlines its own loop).
 
 - [ ] **Step 4: Run to verify it passes + full engine suites green**
 
@@ -416,7 +450,7 @@ Expected: FAIL (`AttributeError: utilization`).
         return transmissions_in_window / minutes if minutes > 0 else 0.0
 ```
 
-In `scenario.run_one`: capture `tx0 = eng.transmissions` immediately after the inject loop; capture `tx1 = eng.transmissions` right after the `s`-sample loop completes the measure window (BEFORE the `drain` `run_until` and `finalize()`); add to the return dict: `"circulated_per_min": metrics.circulated_per_min(tx1 - tx0, cfg.measure_window)`, `"utilization": metrics.utilization(eng.charged_airtime, eng.available_contact_time)`, `"utilization_vs_offered": metrics.utilization_vs_offered(eng.charged_airtime, eng.offered_airtime)`, and the raw engine counters (`offered_blobs, served_blobs, total_contacts, setup_starved_contacts, quantization_contacts`). (Circulation counts ACCEPTED transfers only; the cohort carries no dummy/duplicate traffic — note this in the README.)
+In `scenario.run_one`: capture `tx0 = eng.transmissions` immediately after the inject loop; capture `tx1 = eng.transmissions` right after the `s`-sample loop completes the measure window (BEFORE the `drain` `run_until` and `finalize()`); add to the return dict: `"circulated_per_min": metrics.circulated_per_min(tx1 - tx0, cfg.measure_window)`, `"utilization": metrics.utilization(eng.charged_airtime, eng.available_contact_time)`, `"utilization_vs_offered": metrics.utilization_vs_offered(eng.charged_airtime, eng.offered_airtime)`, **`"t50": metrics.t50()`** (Task 5; `delivery_ratio` is already returned), and the raw engine blob-unit tallies (`offered_blobs, served_blobs, setup_starved_blobs, quantization_blobs, contention_blobs`). Note: `utilization ≤ 1` holds by construction now (per-step billing at the accrual `eff`). (Circulation counts ACCEPTED transfers only; the cohort carries no dummy/duplicate traffic — note this in the README.)
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -512,23 +546,25 @@ git commit -m "feat(sim): censoring-aware T50 (TTL-censored CDF quantile) report
 - Test: `sim/tests/test_knee.py` (CREATE)
 
 **Interfaces:**
-- Produces: `binding_decomposition(offered, served, setup_starved_contacts, quantization_contacts, total_contacts) -> dict` with `{"contention_bound", "setup_starved", "quantization", "demand_satisfied"}`. `demand_satisfied = served/offered` (reported, NOT part of the binding fraction). The other three partition the UNMET share so they sum to 1 over unmet; `contention_bound` is the fraction **of UNMET demand** attributable to contention (so a real airtime knee with high met-demand is NOT diluted).
+- Produces: `binding_decomposition(offered, served, setup_starved_blobs, quantization_blobs, contention_blobs) -> dict` with `{"contention_bound", "setup_starved", "quantization", "demand_satisfied"}`. All inputs are BLOB counts; the three blob tallies sum to UNMET=offered−served. Shares are over UNMET (blob units, dimensionally consistent); `demand_satisfied = served/offered` reported separately. `contention_bound` = `contention_blobs/unmet` (a real airtime knee with high met-demand is NOT diluted, and ordinary low-goodput contention is NOT mislabeled quantization).
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
 # sim/tests/test_knee.py  (CREATE)
 from soup_sim.knee import binding_decomposition
-def test_binding_decomposition_over_unmet():
-    # 60% demand met, all unmet is contention (no starvation/quantization) -> contention_bound == 1.0 of unmet
-    d = binding_decomposition(offered=100, served=60, setup_starved_contacts=0, quantization_contacts=0, total_contacts=50)
-    assert abs(d["contention_bound"] - 1.0) < 1e-9        # NOT diluted by the 60% met
-    assert abs(d["demand_satisfied"] - 0.6) < 1e-9
-    # half the contacts setup-starved -> starvation dominates the unmet
-    d = binding_decomposition(offered=100, served=10, setup_starved_contacts=45, quantization_contacts=0, total_contacts=50)
+def test_binding_decomposition_over_unmet_blob_units():
+    # 60% met, all 40 unmet blobs are contention -> contention_bound == 1.0 of unmet (not 0.4 diluted)
+    d = binding_decomposition(offered=100, served=60, setup_starved_blobs=0, quantization_blobs=0, contention_blobs=40)
+    assert abs(d["contention_bound"] - 1.0) < 1e-9 and abs(d["demand_satisfied"] - 0.6) < 1e-9
+    # unmet split 30 starved / 10 contention -> starvation dominates
+    d = binding_decomposition(offered=100, served=10, setup_starved_blobs=80, quantization_blobs=0, contention_blobs=10)
     assert d["setup_starved"] > d["contention_bound"]
-    # nothing unmet -> contention_bound 0 (nothing failed)
-    d = binding_decomposition(offered=50, served=50, setup_starved_contacts=0, quantization_contacts=0, total_contacts=20)
+    # low-goodput contention (could move blobs, backlog exceeded) must NOT read as quantization
+    d = binding_decomposition(offered=100, served=40, setup_starved_blobs=0, quantization_blobs=0, contention_blobs=60)
+    assert d["contention_bound"] == 0.6 / 0.6 if False else abs(d["contention_bound"] - 1.0) < 1e-9
+    # nothing unmet -> contention_bound 0
+    d = binding_decomposition(offered=50, served=50, setup_starved_blobs=0, quantization_blobs=0, contention_blobs=0)
     assert d["contention_bound"] == 0.0
 ```
 
@@ -541,18 +577,17 @@ Expected: FAIL (no module `soup_sim.knee`).
 
 ```python
 # sim/soup_sim/knee.py  (CREATE)
-def binding_decomposition(offered, served, setup_starved_contacts, quantization_contacts, total_contacts):
+def binding_decomposition(offered, served, setup_starved_blobs, quantization_blobs, contention_blobs):
     offered = max(0, offered); served = min(served, offered)
     unmet = offered - served
     if unmet <= 0:
         return {"contention_bound": 0.0, "setup_starved": 0.0, "quantization": 0.0,
                 "demand_satisfied": (served / offered) if offered else 1.0}
-    total = max(1, total_contacts)
-    starved = min(1.0, setup_starved_contacts / total)        # share of unmet from too-short contacts
-    quant = min(1.0 - starved, quantization_contacts / total) # share from whole-blob rounding
-    contention = max(0.0, 1.0 - starved - quant)              # the rest of UNMET is contention
-    return {"contention_bound": contention, "setup_starved": starved, "quantization": quant,
-            "demand_satisfied": served / offered}
+    # blob tallies should sum to unmet; normalize defensively in case of off-by-rounding
+    s = setup_starved_blobs + quantization_blobs + contention_blobs
+    norm = s if s > 0 else 1
+    return {"contention_bound": contention_blobs / norm, "setup_starved": setup_starved_blobs / norm,
+            "quantization": quantization_blobs / norm, "demand_satisfied": served / offered}
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -614,12 +649,17 @@ Expected: FAIL (`ImportError: find_knee`).
 ```python
 # sim/soup_sim/knee.py  (append)
 import numpy as np
+KNEE_DROP_MARGIN = 0.15   # require the curve to fall >=15% past the peak (else it's a plateau, not a knee)
 def _knee_point(dens, mean):
+    mean = np.asarray(mean, float)
     k = int(np.argmax(mean))
     if k == 0 or k == len(mean) - 1:
         return None                                  # peak at an edge -> monotone in range
+    peak = mean[k]
+    if peak <= 0 or mean[-1] > peak * (1.0 - KNEE_DROP_MARGIN):
+        return None                                  # no real drop after the peak -> plateau, not a knee
     lo, hi = max(0, k - 2), min(len(mean) - 1, k + 2)   # +/-2 window (>=5 pts where possible)
-    x = np.log(np.asarray(dens[lo:hi + 1], float)); y = np.asarray(mean[lo:hi + 1], float)
+    x = np.log(np.asarray(dens[lo:hi + 1], float)); y = mean[lo:hi + 1]
     a, b, _c = np.polyfit(x, y, 2)
     if a >= 0:
         return None                                  # not concave -> no interior max
@@ -732,18 +772,19 @@ git commit -m "feat(sim): binding publish gate (pre-registered threshold + alpha
 import numpy as np
 from soup_sim.config import Config
 from soup_sim.scenario import airtime_sweep
+# SMALL arena: at density d, n = d*W*H/(pi r^2). W=H=55, r=10 -> n ~= d*9.6, so density 16 -> n~154 (fast).
 def base():
-    return Config(n=0, width=120.0, height=120.0, radius=10.0, boundary="torus", mobility="rwp",
-                  speed_min=2.0, speed_max=2.0, dt=0.5, ttl=60.0, buffer_cap=50, throughput_ideal=8e3,
-                  alpha=1.0, t_setup=0.05, p_fail=0.0, blob_size=200.0, warmup=20.0, measure_window=60.0,
-                  drain=0.0, n_messages=40, seen_margin=30.0, master_seed=7,
+    return Config(n=0, width=55.0, height=55.0, radius=10.0, boundary="torus", mobility="rwp",
+                  speed_min=2.0, speed_max=2.0, dt=0.5, ttl=40.0, buffer_cap=50, throughput_ideal=8e3,
+                  alpha=1.0, t_setup=0.05, p_fail=0.0, blob_size=200.0, warmup=10.0, measure_window=30.0,
+                  drain=0.0, n_messages=25, seen_margin=20.0, master_seed=7,
                   airtime_model="collision", beta=0.15, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0)
 def test_airtime_sweep_controls_and_determinism():
-    dens = [3.0, 6.0, 9.0, 12.0, 16.0]            # >=5 pts, brackets predicted knee n_channels/beta
+    dens = [3.0, 6.0, 9.0, 12.0, 16.0]            # >=5 pts; the empirical density-knee must land interior (idx>=2)
     out1 = airtime_sweep(base(), densities=dens, reps=2)
     out2 = airtime_sweep(base(), densities=dens, reps=2)
     assert [r["circulated_per_min_mean"] for r in out1["rows"]] == [r["circulated_per_min_mean"] for r in out2["rows"]]
-    assert out1["knee"] == out2["knee"] and out1["gate"] == out2["gate"]
+    assert out1["knee"] == out2["knee"] and out1["gate"] == out2["gate"]   # fully deterministic
     assert len(out1["alpha0_rows"]) == len(dens) and len(out1["capttl_rows"]) == len(dens)
     assert "publish" in out1["gate"]
     for r in out1["rows"]:
@@ -763,21 +804,21 @@ def _airtime_arm(base_cfg, densities, reps):
     for di, d in enumerate(densities):
         n = density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius)
         circ, util, deliv, t50s = [], [], [], []
-        agg = {"offered": 0, "served": 0, "starved": 0, "quant": 0, "contacts": 0}
+        agg = {"offered": 0, "served": 0, "starved": 0, "quant": 0, "contention": 0}
         for rep in range(reps):
             cfg = replace(base_cfg, n=max(2, n), master_seed=_seed_for(base_cfg.master_seed, di, rep))
             r = run_one(cfg)
             circ.append(r["circulated_per_min"]); util.append(r["utilization"]); deliv.append(r["delivery_ratio"])
             t50s.append(r["t50"] if r["t50"] is not None else np.nan)
             agg["offered"] += r["offered_blobs"]; agg["served"] += r["served_blobs"]
-            agg["starved"] += r["setup_starved_contacts"]; agg["quant"] += r["quantization_contacts"]
-            agg["contacts"] += r["total_contacts"]
+            agg["starved"] += r["setup_starved_blobs"]; agg["quant"] += r["quantization_blobs"]
+            agg["contention"] += r["contention_blobs"]
         m, lo, hi = mean_ci(circ)
         rows.append({"density": d, "n": n, "circulated_per_min_mean": m, "ci_lo": lo, "ci_hi": hi,
                      "utilization_mean": float(np.mean(util)), "delivery_mean": float(np.mean(deliv)),
                      "t50": float(np.nanmean(t50s)) if np.any(~np.isnan(t50s)) else None,
                      "binding": binding_decomposition(agg["offered"], agg["served"], agg["starved"],
-                                                      agg["quant"], agg["contacts"])})
+                                                      agg["quant"], agg["contention"])})
         circ_matrix.append(circ)
     return rows, np.array(circ_matrix)
 
@@ -793,8 +834,10 @@ def airtime_sweep(base_cfg, densities, reps):
     binding_at_knee = rows[int(np.argmax([r["circulated_per_min_mean"] for r in rows]))]["binding"]
     gate = binding_gate(knee, binding_at_knee, a0_over, ct_over)
     return {"rows": rows, "alpha0_rows": a0_rows, "capttl_rows": ct_rows, "knee": knee, "gate": gate,
-            "predicted_knee_density": base_cfg.n_channels / base_cfg.beta if base_cfg.beta else None}
+            "predicted_knee_contenders": base_cfg.n_channels / base_cfg.beta if base_cfg.beta else None}
 ```
+
+Note: `predicted_knee_contenders = n_channels/beta` is a CONTENDER count (the per-link aggregate peak), NOT a density. The density-space knee depends on the contender↔density mapping (carrier-sense degree at density d) and the link-count weighting; it is found empirically by `find_knee` on the measured circulation. The pre-registered grid must bracket that empirical density-knee with an INTERIOR argmax (index ≥1, ideally ≥2) — Task 10's distinguishability test enforces it.
 
 Add imports at the top of `scenario.py`: `from .knee import find_knee, binding_decomposition, binding_gate`.
 
@@ -836,16 +879,24 @@ def test_airtime_csv_has_fields():
 
 ```python
 # sim/tests/test_scenario_airtime.py  (append)  -- end-to-end distinguishability (spec falsifiable prediction)
-def test_collision_knee_linear_plateau_distinguishable():
-    dens = [3.0, 6.0, 9.0, 12.0, 16.0, 20.0]
-    coll = airtime_sweep(base(), dens, reps=3)
-    lin = airtime_sweep(replace_model(base(), "linear"), dens, reps=3)
-    assert coll["knee"]["status"] == "knee"
-    assert lin["knee"]["status"] == "no_knee_in_range"
-# helper at top of file:
+import pytest
 from dataclasses import replace
 def replace_model(cfg, model):
     return replace(cfg, airtime_model=model, alpha=1.0, beta=0.15)
+
+@pytest.mark.slow   # heavier sweep; small arena keeps it ~minute-scale, excluded from default -m "not slow"
+def test_collision_knee_linear_plateau_distinguishable():
+    dens = [3.0, 6.0, 9.0, 12.0, 16.0]            # small-arena base() -> n <= ~154; brackets the density knee
+    coll = airtime_sweep(base(), dens, reps=6)
+    lin = airtime_sweep(replace_model(base(), "linear"), dens, reps=6)
+    assert coll["knee"]["status"] == "knee"               # collision turns over -> knee
+    assert lin["knee"]["status"] == "no_knee_in_range"    # linear plateaus -> no knee (drop-margin gate)
+```
+
+Register the marker so default runs skip it: add to `sim/pyproject.toml` under `[tool.pytest.ini_options]`:
+```toml
+markers = ["slow: heavier end-to-end sweeps (run with -m slow)"]
+addopts = "-m 'not slow'"
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -878,10 +929,10 @@ In `run.py`: add `--preset airtime-knee`. Build an airtime base cfg; run `airtim
 
 In `README.md`: add a **Provenance table** (goodput headline 100 kbps / optimistic 1.4 Mbps; `t_setup` & `t_setup_slope` from cited BLE discovery-latency-vs-advertiser-count; `beta` labelled an UNCALIBRATED free parameter with predicted knee `n_channels/beta`; report the RWP contact-duration distribution and flag its tail as optimistic vs human-contact data) and **update/extend the bias table** with one row+direction per NEW optimistic mechanic: carrier-sense max-of-pair single-snapshot contention (optimistic); deterministic `(1-p_fail)` vs independent per-blob (removes tail risk); collision form (no capture/retransmission) — and **update** (not duplicate) the existing reconciliation-overhead and RWP-vs-clustered rows.
 
-- [ ] **Step 4: Run to verify it passes + FULL suite green**
+- [ ] **Step 4: Run to verify it passes + FULL suite green (incl. the slow distinguishability test once)**
 
-Run: `cd "C:/Users/rob/Documents/meldingx/sim" && .venv/Scripts/python.exe -m pytest -q && .venv/Scripts/python.exe run.py --preset airtime-knee --out out/airtime.csv`
-Expected: PASS; CLI prints both-model knees + gate verdict.
+Run: `cd "C:/Users/rob/Documents/meldingx/sim" && .venv/Scripts/python.exe -m pytest -q && .venv/Scripts/python.exe -m pytest -m slow -q && .venv/Scripts/python.exe run.py --preset airtime-knee --out out/airtime.csv`
+Expected: default suite PASS (slow excluded by `addopts`); the explicit `-m slow` run PASSES the distinguishability test; CLI prints both-model knees + gate verdict.
 
 - [ ] **Step 5: Commit**
 
@@ -896,7 +947,9 @@ git commit -m "feat(sim): airtime CSV/plot + airtime-knee preset (collision-vs-l
 
 **1. Spec coverage (v2):** §3.1 collision primary + linear demoted + decoupled contenders + α=0 control + model band → Tasks 1,2,9,10; the distinguishability prediction is now an END-TO-END test (Task 10) not just a budget unit test. §3.2 utilization (vs available AND offered) + windowed circulation + dummy-traffic note → Tasks 3,4. §3.3 knee + decomposition (setup/quantization/demand) + binding gate + planted-peak + no-knee sentinel + pre-registered threshold → Tasks 6,7,8. §3.4 censoring T50 + delivered-only LOWER-bound + cap/ttl control + provenance + bias rows → Tasks 5,9,10.
 
-**2. Closed plan-review-round-1 findings:** per-episode billing (Task 3); knee-bracketing grid + pre-registered `predicted_knee_density` (Tasks 9,10); decomposition over UNMET (Task 6); α=0 control truly airtime-free + separate cap/ttl arm (Tasks 8,9); budget threaded into run_one (Task 1); per-link test fixed (Task 1); T50 not called KM (Task 5); offered airtime in engine (Task 3); Task 9 scoped to the sweep (engine counters live in Task 3); widened knee window + seeded bootstrap + coarse-grid test (Tasks 7,9); offered counted once per pair (Task 3); README bias rows reconciled (Task 10); Task 2 threshold raised to ≥3.
+**2. Closed plan-review-round-1 findings:** per-episode-correct billing (Task 3); knee-bracketing grid (Tasks 9,10); decomposition over UNMET (Task 6); α=0 control truly airtime-free + separate cap/ttl arm (Tasks 8,9); budget threaded into run_one (Task 1); per-link test fixed (Task 1); T50 not called KM (Task 5); offered airtime in engine (Task 3); widened knee window + seeded bootstrap + coarse-grid test (Tasks 7,9); offered counted once per pair (Task 3); README bias rows reconciled (Task 10); Task 2 threshold raised to ≥3.
+
+**2b. Closed plan-review-round-2 findings (v3):** incremental per-step billing at accrual `eff` ⇒ `utilization ≤ 1` on mobility (Task 3 + test); blob-unit binding tallies with quantization-vs-contention capacity test (Tasks 3,6) — closes the gate blind-spot; `setup_debt = t_setup_at(n_open)` with `n_contenders` computed before the open-dict (Task 3) — fixes the inert slope + scope NameError; `"t50"` wired into `run_one` (Task 4); `KNEE_DROP_MARGIN` relative-drop gate (Task 7) — kills the flaky linear "no_knee"; small test arenas + `@pytest.mark.slow` + `addopts="-m 'not slow'"` (Tasks 9,10) — suite stays ~1-min; `predicted_knee_contenders` renamed + density-knee bracketed empirically (Task 9). Right-sizing: Task 3 carries an explicit 3b split-step; Task 10's heavy distinguishability test is isolated behind the `slow` marker.
 
 **3. Type consistency:** `find_knee`→`{status,knee,ci}`; `binding_decomposition`→`{contention_bound,setup_starved,quantization,demand_satisfied}`; `binding_gate(knee, binding, alpha0_over, capttl_over)`; `airtime_sweep`→`{rows,alpha0_rows,capttl_rows,knee,gate,predicted_knee_density}`. Consistent across Tasks 6–10.
 

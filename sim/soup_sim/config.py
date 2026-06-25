@@ -63,6 +63,16 @@ class Config:
             raise ValueError("seen_margin must be >= 0")
         if self.buffer_cap <= 0:
             raise ValueError("buffer_cap must be > 0")
+        if self.blob_size <= 0:
+            raise ValueError("blob_size must be > 0 (engine divides airtime by it)")
+        if self.throughput_ideal <= 0:
+            raise ValueError("throughput_ideal must be > 0")
+        if not 0.0 <= self.p_fail <= 1.0:
+            raise ValueError("p_fail must be in [0, 1]")
+        if self.alpha < 0:
+            raise ValueError("alpha must be >= 0")
+        if self.t_setup < 0:
+            raise ValueError("t_setup must be >= 0")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

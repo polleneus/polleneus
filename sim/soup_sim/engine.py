@@ -1,17 +1,24 @@
-"""Time-stepped flooding engine with PER-STEP propagation.
+"""Time-stepped flooding engine with PER-STEP, FIXPOINT propagation.
 
-A blob propagates at the moment information becomes available: every step, each in-range
-pair exchanges blobs the peer lacks (drawing from a per-episode airtime pool that
-accumulates over the contact — t_setup paid once, goodput integrated with the step's local
-contention). This makes delivery match physical time-respecting reachability even when
-contacts overlap or nest (the lazy settle-at-exit model got this wrong). Contacts are timed
-analytically by contact_interval (cell-list only prunes candidates), so the contact graph is
-dt-independent. Each closed contact is recorded as (i, j, entry, exit) in self.episodes,
-the input to the independent interval-reachability oracle.
+A blob propagates the moment information becomes available. Each step:
+  1. for every in-range pair, accrue airtime into a per-episode pool (t_setup paid once via
+     setup_debt; goodput integrated with the step's local contention);
+  2. expire dead blobs on every in-range node (decoupled from airtime, so a starved contact
+     still sweeps);
+  3. run the pair-exchange to a FIXPOINT across all funded pairs, so a multi-hop chain whose
+     contacts all overlap within a single step completes regardless of node-index order
+     (a single canonical pass under-delivered "backward" chains);
+  4. forfeit unused whole-blob airtime (no banking idle airtime into a later burst).
 
-Addressing-blind: knows only blob {id, created_at, ttl, size}; metrics decides delivery via
-on_deliver(node, blob, now). Causality: a blob is never delivered over a contact that ended
-before it existed. one_hop (test mutant) disables forwarding (negative control).
+Causality is enforced by per-(node, blob) ACQUISITION TIME: a node may only forward a blob
+over a contact whose exit is >= the time it acquired the blob, and the delivery time is
+max(contact entry, the source node's acquisition time). This makes both the reachable SET and the
+delivery TIMES match the independent interval-reachability oracle (percolation.temporal_reachable).
+
+Contacts are timed analytically by contact_interval (cell-list only prunes candidates), so the
+contact graph is dt-independent; each closed contact is recorded as (i, j, entry, exit) in
+self.episodes. Addressing-blind: knows only blob {id, created_at, ttl, size}; metrics decides
+delivery via on_deliver(node, blob, now). one_hop (test mutant) disables forwarding.
 """
 from __future__ import annotations
 import numpy as np
@@ -20,6 +27,7 @@ from .geometry import contact_interval, in_range
 from .policies import select_offers
 
 _EPS = 1e-9
+_INF = float("inf")
 
 
 class Engine:
@@ -38,9 +46,11 @@ class Engine:
         self.durations: list[float] = []
         self.episodes: list[tuple[int, int, float, float]] = []  # (i, j, entry, exit)
         self.origin: dict[int, int] = {}
+        self.acquired: dict[tuple[int, int], float] = {}  # (node, blob_id) -> time it held the blob
 
     def inject(self, blob, node_idx) -> None:
         self.origin.setdefault(blob.id, node_idx)
+        self.acquired[(node_idx, blob.id)] = blob.created_at  # origin holds it from creation
         self.buffers[node_idx].offer(blob, now=self.t)
 
     def run_until(self, t_end: float) -> None:
@@ -66,13 +76,9 @@ class Engine:
         if self._pair_order == "reversed":
             cand = list(reversed(cand))
         deg = self._degrees(p0, cand, r, w, h, b)
-        triples = []
-        for (i, j) in cand:
+        seen, active, expire_nodes = set(), [], set()
+        for (i, j) in sorted(cand):  # canonical order -> deterministic
             iv = contact_interval(p0[i], v_leg[i], p0[j], v_leg[j], r, t, t + dt_step, w, h, b)
-            triples.append((i, j, iv))
-        triples.sort(key=lambda x: (x[0], x[1]))  # canonical order -> deterministic overlaps
-        seen = set()
-        for (i, j, iv) in triples:
             key = (i, j)
             seen.add(key)
             if iv is None:
@@ -80,21 +86,34 @@ class Engine:
                     self._close(key)
                 continue
             enter, exit_ = iv
-            seg = exit_ - enter
+            expire_nodes.add(i)
+            expire_nodes.add(j)
             if key not in self.open:
                 self.open[key] = {"entry": enter, "last_end": exit_,
                                   "setup_debt": self.budget.t_setup, "credit": 0.0}
             st = self.open[key]
             st["last_end"] = exit_
-            pay = min(seg, st["setup_debt"])           # amortize the handshake floor once
+            pay = min(exit_ - enter, st["setup_debt"])     # amortize the handshake floor once
             st["setup_debt"] -= pay
             eff = self.budget.effective_goodput(int(max(deg[i], deg[j])))
-            st["credit"] += (seg - pay) * eff / self.budget.blob_size
-            allowed = int(st["credit"])
-            if allowed > 0:
-                self.buffers[i].expire(enter)
-                self.buffers[j].expire(enter)
-                st["credit"] -= self._exchange(i, j, allowed, enter, exit_)
+            st["credit"] += (exit_ - enter - pay) * eff / self.budget.blob_size
+            active.append((i, j, enter, exit_, st))
+        for nd in expire_nodes:                            # sweep dead blobs regardless of airtime
+            self.buffers[nd].expire(t)
+        progressed = True                                  # FIXPOINT: complete in-step multi-hop chains
+        while progressed:
+            progressed = False
+            for (i, j, enter, exit_, st) in active:
+                allowed = int(st["credit"])
+                if allowed <= 0:
+                    continue
+                moved = self._exchange(i, j, allowed, enter, exit_)
+                if moved:
+                    st["credit"] -= moved
+                    progressed = True
+        for (_i, _j, _e, _x, st) in active:                # forfeit idle whole-blob airtime (no bursts)
+            if st["credit"] >= 1.0:
+                st["credit"] -= int(st["credit"])
         for key in list(self.open):
             if key not in seen:
                 self._close(key)
@@ -118,29 +137,32 @@ class Engine:
                 deg[j] += 1
         return deg
 
-    def _offerable(self, src, peer_ids, end):
-        blobs = self.buffers[src].blobs()
-        if self.one_hop:                      # negative control: forward only originated blobs
-            blobs = [bl for bl in blobs if self.origin.get(bl.id) == src]
-        # causality: a blob can only move over a contact that was open after it existed
-        return [bl for bl in blobs if bl.id not in peer_ids and bl.created_at <= end + _EPS]
+    def _offerable(self, src, peer_ids, exit_):
+        out = []
+        for bl in self.buffers[src].blobs():
+            if bl.id in peer_ids:
+                continue
+            if self.one_hop and self.origin.get(bl.id) != src:   # negative control: no forwarding
+                continue
+            if self.acquired.get((src, bl.id), _INF) > exit_ + _EPS:  # causality: had it before contact end
+                continue
+            out.append(bl)
+        return out
 
-    def _exchange(self, i, j, k, now, end) -> int:
-        remaining, moved, progressed = k, 0, True
-        while remaining > 0 and progressed:
-            progressed = False
-            for (src, dst) in ((i, j), (j, i)):
-                db = self.buffers[dst]
-                for blob in select_offers(self._offerable(src, db.ids(), end), set(), remaining, self.rng):
-                    if remaining <= 0:
-                        break
-                    deliver_t = max(now, blob.created_at)   # real time within the contact
-                    if db.offer(blob, deliver_t) == "Accepted":
-                        self.transmissions += 1
-                        self.on_deliver(dst, blob, deliver_t)
-                        remaining -= 1
-                        moved += 1
-                        progressed = True
+    def _exchange(self, i, j, k, enter, exit_) -> int:
+        remaining, moved = k, 0
+        for (src, dst) in ((i, j), (j, i)):
+            if remaining <= 0:
+                break
+            db = self.buffers[dst]
+            for blob in select_offers(self._offerable(src, db.ids(), exit_), set(), remaining, self.rng):
+                deliver_t = max(enter, self.acquired[(src, blob.id)])  # causal: >= src acquire time
+                if db.offer(blob, deliver_t) == "Accepted":
+                    self.acquired[(dst, blob.id)] = deliver_t
+                    self.transmissions += 1
+                    self.on_deliver(dst, blob, deliver_t)
+                    remaining -= 1
+                    moved += 1
         return moved
 
     def mean_contact_duration(self) -> float:

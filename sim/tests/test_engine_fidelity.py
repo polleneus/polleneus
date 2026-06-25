@@ -102,15 +102,63 @@ def test_time_order_is_respected_not_flooded():
     assert any({1, 2} == {i, j} for (i, j, _e, _x) in eng.episodes)  # but node1-node2 DID contact (component connects 2)
 
 
-# --- broad consistency on RWP (saturated regime) ----------------------------
-def test_engine_matches_temporal_reachability_rwp():
+def test_single_step_multihop_backward_chain_delivers():
+    # node0 and node2 each transit static node1's range during ONE step; node0-node2 never meet.
+    # Source = node2 (HIGH index): the chain node2->node1->node0 must complete within the single
+    # step. A single canonical-(i,j)-order pass processes (0,1) before node1 is infected and
+    # loses node0; the per-step FIXPOINT must deliver it. dt == run so it is exactly one step.
+    c = _cfg(n=3, mobility="static", speed_min=0.0, speed_max=0.0, radius=10.0, dt=20.0,
+             width=2000.0, height=2000.0, boundary="walls")
+    eng, bufs = _linear_engine([[-6., 8.], [0., 0.], [-6., -8.]],
+                               [[0.6, 0.], [0., 0.], [0.6, 0.]], c)
+    eng.inject(Blob(0, 0.0, 1e12, 1.0), 2)
+    eng.run_until(20.0); eng.finalize()
+    assert len(eng.episodes) == 2                                    # only (0,1) and (1,2) ever in range
+    assert bufs[1].has(0) and bufs[0].has(0)                         # backward chain completes in one step
+    assert temporal_reachable(eng.episodes, 2, 3) == {0, 1, 2}
+
+
+def test_causality_future_blob_not_delivered():
+    # node1 grazes node0 only early ([0,~3.3]) then leaves forever. Blob B is created at t=1000,
+    # long after that contact ended -> the causality guard must NOT let it ride the earlier
+    # contact. Blob A (created 0) must deliver. This load-bears the acquired<=exit guard.
+    c = _cfg(n=2, mobility="static", speed_min=0.0, speed_max=0.0, radius=10.0, dt=1.0,
+             width=2000.0, height=2000.0, boundary="walls")
+    eng, bufs = _linear_engine([[0., 0.], [0., 0.]], [[0., 0.], [0., 3.]], c)
+    eng.inject(Blob(1, 0.0, 1e12, 1.0), 0)        # A: exists from t=0
+    eng.inject(Blob(2, 1000.0, 1e12, 1.0), 0)     # B: created after the only contact ends
+    eng.run_until(100.0); eng.finalize()
+    assert bufs[1].has(1) and not bufs[1].has(2)
+
+
+# --- broad consistency on RWP -----------------------------------------------
+def test_engine_matches_temporal_reachability_rwp_saturated():
+    # Dense regime (oracle == N): retains power against UNDER-delivery only.
     for s in range(5):
         c = _cfg(master_seed=s)
         eng, bufs = _spread_engine(c)
         eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
         eng.run_until(80.0); eng.finalize()
         delivered = {k for k in range(c.n) if bufs[k].has(0)}
-        assert delivered == temporal_reachable(eng.episodes, 0, c.n)
+        oracle = temporal_reachable(eng.episodes, 0, c.n)
+        assert delivered == oracle == set(range(c.n))
+
+
+def test_engine_matches_temporal_reachability_rwp_partial():
+    # Sparse regime (oracle STRICTLY < N): a flood-without-time engine would over-deliver here,
+    # so this adds discriminating power against OVER-delivery that the saturated test lacks.
+    saw_partial = False
+    for s in range(5):
+        c = _cfg(radius=7.0, master_seed=s)
+        eng, bufs = _spread_engine(c)
+        eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
+        eng.run_until(15.0); eng.finalize()
+        delivered = {k for k in range(c.n) if bufs[k].has(0)}
+        oracle = temporal_reachable(eng.episodes, 0, c.n)
+        assert delivered == oracle
+        if 2 < len(oracle) < c.n:
+            saw_partial = True
+    assert saw_partial  # confirm the regime is genuinely partial (else the test has no power)
 
 
 def test_one_hop_mutant_fails_the_gate():

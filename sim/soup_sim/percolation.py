@@ -98,6 +98,12 @@ def temporal_reachable(episodes, source, n) -> set[int]:
     enable earlier propagation through other overlapping contacts). This is computed purely
     from contact geometry — it does NOT replay the engine's delivery order — so it is a real
     independent check (it detects under-delivery across nested/overlapping contacts).
+
+    PRECONDITION: the blob exists from before the first contact (created_at <= t0). The oracle
+    ignores created_at; for a blob created mid-run, the engine's causality guard is the source
+    of truth, not this function. NOTE: both engine and oracle consume contact_interval, so a
+    bug in contact_interval itself would be invisible to an engine-vs-oracle comparison — the
+    deterministic discriminator tests hand-verify the contact intervals to cover that.
     """
     INF = float("inf")
     inf_time = {source: -INF}

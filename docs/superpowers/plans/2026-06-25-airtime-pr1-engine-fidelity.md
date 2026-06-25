@@ -146,8 +146,14 @@ def test_temporal_reachable_respects_time_order():
 ```python
 # append to percolation.py
 def temporal_reachable(episodes, source, n):
+    """Nodes reachable from `source` via a journey of non-decreasing contact EXIT times.
+    PRECONDITION (must match the engine): each contact spans >= 1 full dt step, so the
+    engine's settle order == exit-time order. (Task-5's CFL config — contacts span ~20 steps
+    — satisfies this; a sub-step-cascade regime would need a different oracle.) Equal-exit
+    ties resolve by episode-RECORDING order, which equals the engine's settle order (stable
+    sort over episodes appended in _settle order), so engine and oracle agree on ties."""
     infected = {source}
-    for (i, j, _t) in sorted(episodes, key=lambda e: e[2]):
+    for (i, j, _t) in sorted(episodes, key=lambda e: e[2]):  # stable sort preserves record order on ties
         if i in infected or j in infected:
             infected.add(i); infected.add(j)
     return infected
@@ -178,13 +184,15 @@ def test_engine_matches_temporal_reachability():
         assert delivered == oracle, (len(delivered), len(oracle))   # exchange tracks contacts exactly
 
 def test_one_hop_mutant_fails_the_gate():
-    # NEGATIVE CONTROL: an engine that only forwards the SOURCE's own blob (no multi-hop) must
-    # deliver a STRICT SUBSET of temporal reachability -> proves the gate catches under-delivery.
-    delivered, oracle = _run_spread(0, one_hop=True)
-    assert delivered < oracle  # strict subset
+    # NEGATIVE CONTROL over >=5 seeds: an engine that only forwards the SOURCE's own blob
+    # (no multi-hop) must deliver a STRICT SUBSET of temporal reachability with a clear margin
+    # -> proves the gate catches under-delivery and cannot pass degenerately.
+    for s in range(5):
+        delivered, oracle = _run_spread(s, one_hop=True)
+        assert delivered < oracle and len(delivered) < len(oracle)
 ```
 - [ ] **Step 6: Implement** `engine.episodes` (done in Task 1) and the `one_hop` flag: when `one_hop=True`, a node may only offer blobs it ORIGINATED (track origin per blob id at inject), disabling forwarding. Run; the real engine must equal the oracle, the mutant must be a strict subset.
-- [ ] **Step 7: Run, expect pass** (both tests, ≥5 seeds). If the real engine ≠ oracle, that is a fidelity FAILURE to fix in Tasks 2–4 (NOT a reason to loosen the oracle).
+- [ ] **Step 7: Run, expect pass** (both tests, ≥5 seeds). If the real engine ≠ oracle **in the long-contact (CFL) regime this gate runs in**, that is a fidelity FAILURE to fix in Tasks 2–4 — NOT a reason to loosen the oracle. (The equality is only claimed for contacts spanning ≥1 dt step; a deliberately sub-dt config is out of this gate's scope.)
 - [ ] **Step 8: Commit** — `git commit -am "feat(sim): temporal-reachability oracle gate (engine==reachability) + one-hop negative control"`
 
 ---

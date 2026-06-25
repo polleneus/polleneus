@@ -1,10 +1,11 @@
-# meldingx — Vision & Architecture Spec
+# polleneus — Vision & Architecture Spec
 
 **Status:** Living design document (vision / endgoal). We keep tinkering; red-team reviews feed back in.
 **Version:** v0.3 — 2026-06-25
-**Authors:** Robin (concept & direction), Claude (design synthesis), + two multi-agent adversarial red-team passes.
+**Codename:** originally *meldingx* (Norwegian *melding* = "message").
+**Authors:** the polleneus project, with design synthesis and two multi-agent adversarial red-team passes.
 
-> **One-liner.** meldingx is an offline-first, anonymous, self-destructing **"message in a bottle."**
+> **One-liner.** polleneus is an offline-first, anonymous, self-destructing **"message in a bottle."**
 > You encrypt a short message to a friend's opaque ID. Your phone drops it into a *uniform soup* of
 > fixed-size encrypted blobs that every nearby phone carries and re-shares blindly over Bluetooth. Only
 > your friend can recognize and open it. Messages self-destruct on a timer. Internet is an optional,

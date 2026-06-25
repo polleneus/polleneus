@@ -14,13 +14,16 @@ def tiny():
                   airtime_model="collision", beta=0.15, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0)
 
 
-# SMALL arena for the realistic (slow) sweeps: density 16 -> n ~= 154
+# SMALL arena for the realistic (slow) sweeps: density 16 -> n ~= 154.
+# Params tuned so the COLLISION arm produces a clear contention-bound interior knee (~d=9) while
+# the LINEAR arm stays monotone (plateau) on the [3..16] grid (verified: collision knee@~6.8,
+# linear no_knee). beta is uncalibrated (README provenance); this fixture exercises the apparatus.
 def base():
     return Config(n=0, width=55.0, height=55.0, radius=10.0, boundary="torus", mobility="rwp",
-                  speed_min=2.0, speed_max=2.0, dt=0.5, ttl=40.0, buffer_cap=50, throughput_ideal=8e3,
+                  speed_min=2.0, speed_max=2.0, dt=0.5, ttl=40.0, buffer_cap=200, throughput_ideal=8e3,
                   alpha=1.0, t_setup=0.05, p_fail=0.0, blob_size=200.0, warmup=10.0, measure_window=30.0,
-                  drain=0.0, n_messages=25, seen_margin=20.0, master_seed=7,
-                  airtime_model="collision", beta=0.15, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0)
+                  drain=0.0, n_messages=40, seen_margin=20.0, master_seed=7,
+                  airtime_model="collision", beta=0.3, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0)
 
 
 def replace_model(cfg, model):

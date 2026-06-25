@@ -30,13 +30,15 @@ def base_cfg(seed: int) -> Config:
 
 
 def airtime_cfg(seed: int) -> Config:
-    # Conservative goodput ~100 kbps (12.5 kB/s); blobs ~256 B; provenance in README.
+    # Conservative goodput ~100 kbps (12.5 kB/s); blobs ~256 B; provenance in README. beta is an
+    # UNCALIBRATED free parameter (0.3 here) chosen in the regime where the collision turn-over is
+    # observable; the headline reports the knee as a function of it alongside the linear band.
     return Config(
         n=0, width=120.0, height=120.0, radius=10.0, boundary="torus", mobility="rwp",
-        speed_min=2.0, speed_max=2.0, dt=0.5, ttl=120.0, buffer_cap=50, throughput_ideal=12_500.0,
+        speed_min=2.0, speed_max=2.0, dt=0.5, ttl=120.0, buffer_cap=200, throughput_ideal=12_500.0,
         alpha=1.0, t_setup=0.05, p_fail=0.0, blob_size=256.0, warmup=30.0, measure_window=120.0,
         drain=0.0, n_messages=80, seen_margin=60.0, master_seed=seed,
-        airtime_model="collision", beta=0.15, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0,
+        airtime_model="collision", beta=0.3, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0,
     )
 
 

@@ -89,5 +89,20 @@ def same_component_pair_fraction(positions, r, w, h, boundary) -> float:
     return same / total if total else 0.0
 
 
+def temporal_reachable(episodes, source, n) -> set[int]:
+    """Nodes reachable from `source` via a journey of non-decreasing contact EXIT times —
+    the dynamic analog of same_component_pairs (static union-find). The engine settles and
+    records episodes in (exit, i, j) order and applies them sequentially, so a faithful
+    engine's delivered set equals this oracle's result unconditionally. Equal-exit ties
+    resolve by (i, j), matching the engine's settle order.
+    """
+    infected = {source}
+    for (i, j, _t) in sorted(episodes, key=lambda e: e[2]):  # stable: preserves record order on ties
+        if i in infected or j in infected:
+            infected.add(i)
+            infected.add(j)
+    return infected
+
+
 def placement(n: int, w: float, h: float, rng) -> np.ndarray:
     return rng.uniform([0.0, 0.0], [w, h], (n, 2))

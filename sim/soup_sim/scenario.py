@@ -11,6 +11,8 @@ from .budget import AirtimeBudget
 from .engine import Engine
 from .metrics import Metrics
 from .workload import make_cohort
+from .cell_list import neighbor_pairs
+from .percolation import same_component_pair_fraction, placement
 
 
 def density_to_n(d: float, w: float, h: float, r: float) -> int:
@@ -88,6 +90,31 @@ def sweep(base_cfg, densities, reps: int) -> list[dict]:
             "overhead_mean": float(np.nanmean(overhead)) if np.any(np.isfinite(overhead)) else float("inf"),
             "stationary_ok": bool(np.all(st_ok)),
             "per_rep_ratios": ratios,
+        })
+    return rows
+
+
+def static_delivery_sweep(base_cfg, degrees, reps: int) -> list[dict]:
+    """Headline STATIC curve: component-reachability delivery vs mean degree over a
+    Poisson torus ensemble. Exact and engine-free; the validated quantity behind the
+    percolation gate. Its 0.5 crossing sits well ABOVE d_c (delivery ~ S^2), ~d 6-7.
+    """
+    w, h, r = base_cfg.width, base_cfg.height, base_cfg.radius
+    lam_to_n = w * h / (np.pi * r * r)
+    rows = []
+    for di, d in enumerate(degrees):
+        ratios, emp = [], []
+        for rep in range(reps):
+            rng = np.random.default_rng(np.random.SeedSequence([base_cfg.master_seed, di, rep]))
+            n = int(rng.poisson(d * lam_to_n))
+            pos = placement(n, w, h, rng)
+            ratios.append(same_component_pair_fraction(pos, r, w, h, base_cfg.boundary))
+            emp.append(2.0 * len(neighbor_pairs(pos, r, w, h, base_cfg.boundary)) / max(1, n))
+        m, lo, hi = mean_ci(ratios)
+        rows.append({
+            "density": d, "n": int(round(d * lam_to_n)), "delivery_mean": m,
+            "ci_lo": lo, "ci_hi": hi, "empirical_mean_degree": float(np.mean(emp)),
+            "overhead_mean": float("nan"), "stationary_ok": True, "per_rep_ratios": ratios,
         })
     return rows
 

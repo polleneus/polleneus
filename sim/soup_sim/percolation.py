@@ -77,5 +77,17 @@ def same_component_pairs(positions, r, w, h, boundary) -> set[tuple[int, int]]:
     return pairs
 
 
+def same_component_pair_fraction(positions, r, w, h, boundary) -> float:
+    """Fraction of unordered node pairs in the same component = the static, unbounded,
+    multi-hop delivery probability for a uniform-random src/dst (component reachability)."""
+    n = len(positions)
+    if n < 2:
+        return 0.0
+    sizes = _component_sizes(positions, r, w, h, boundary)
+    same = sum(s * (s - 1) // 2 for s in sizes)
+    total = n * (n - 1) // 2
+    return same / total if total else 0.0
+
+
 def placement(n: int, w: float, h: float, rng) -> np.ndarray:
     return rng.uniform([0.0, 0.0], [w, h], (n, 2))

@@ -1,131 +1,192 @@
 # Feature Spec — Soup Simulator (v1, first slice)
 
-**Status:** Draft for fan-out review → CTO sign-off (loop step 1).
+**Status:** Revised after fan-out review (round 1) → **awaiting CTO sign-off** (loop step 1).
 **Date:** 2026-06-25
 **Parent design:** [polleneus v0.4](2026-06-25-polleneus-design.md)
-**Roadmap:** P0 (re-scope & **measure**) — turns asserted numbers into measured ones.
+**Review trail:** [soup-sim spec review](../reviews/2026-06-25-soup-sim-spec-review.md)
+**Roadmap:** P0 (re-scope & **measure**).
 
-> **Purpose.** *Measure, don't assume.* The parent spec asserts the headline physics — delivery only works
-> above a density threshold (§12.1 percolation cliff), airtime not storage is the wall (§11), flooding caps
-> scale (§11). This simulator makes the **first** of those measurable: **delivery probability and latency vs
-> node density** for the pure-flooding "uniform soup" model. It is the cheapest way to learn whether the core
-> idea even delivers at gathering scale before any phone code is written.
+> **Purpose.** *Measure, don't assume.* Make the parent's headline physics measurable, starting with the
+> make-or-break one: **does pure-flooding offline unicast deliver, and at what node density does it cross
+> from useless to useful** (the §12.1 percolation cliff) — established *before* any phone code.
+
+> **Review takeaway that shapes this revision:** as first drafted, the sim could have produced a *confident,
+> reproducible, and wrong* curve. The fixes below exist so the measured cliff is a real percolation
+> phenomenon, not an artifact of mobility bias, an unpinned time-step, a single RNG seed, or an
+> over-optimistic airtime model. **Every number this sim reports is an UPPER BOUND on real-world delivery.**
 
 ---
 
 ## 1. Scope — first slice only
 
-**In:** a reproducible, seeded simulation of nodes moving in an area, meeting over a short-range radio,
-blindly carrying + re-sharing fixed-size blobs that expire on a TTL, with a bounded buffer and a seen-record.
-**The one headline output:** a **delivery-ratio-vs-density curve** (and latency distribution) that locates the
-percolation cliff.
+**In:** a seeded, reproducible sim of nodes meeting over a short-range radio, blindly carrying + re-sharing
+fixed-size blobs that expire on an absolute TTL, with a bounded buffer + seen-record + a defined message
+workload. **Two co-headline outputs vs density:** (a) **delivery ratio** (with confidence intervals) and (b)
+**circulation/airtime cost** — because for a pure-flooding system the cost curve is co-equal with delivery
+(100% delivery in an airtime-saturated regime is operationally dead).
 
-**Out (deferred to later slices, explicitly):** cryptography, tokens/PoSW, the anonymity source-estimator,
-the internal mechanics of rateless reconciliation (modeled here only as a per-contact byte budget — see §3),
-real BLE PHY/advertising-channel modeling, mobile platform, internet bridges, ferrying.
-
-This slice answers exactly one question: **at what node density does offline unicast delivery become useful,
-and how does it degrade?**
-
----
-
-## 2. Model
-
-- **Space & mobility:** N nodes in a W×H area. Mobility = **Random Waypoint** (default; pluggable) with a
-  configurable speed; also support a **static** mode (fixed positions) for percolation-only runs.
-- **Contact:** two nodes are "in contact" when within radio range `r`. A contact lasts while they stay in
-  range; an **exchange** happens at contact start (and may be re-attempted while in range).
-- **Blob:** `{id, created_at, ttl, sender, recipient, size}`. Fixed `size` (the 255-char envelope ≈ 1 KB).
-  `id` is opaque (a counter/hash; no crypto needed for this slice).
-- **Exchange (flooding):** on contact, each node offers blobs the other lacks; transfer is bounded by a
-  **per-contact budget** (bytes or count) representing finite airtime (see §3). No routing, no targeting —
-  pure flooding.
-- **Buffer:** bounded per node (size cap). When full, **eviction** by the parent §9.5 policy
-  (youngest-by-real-age + randomized; *not* closest-to-TTL). Policy is pluggable so we can compare.
-- **Seen-record:** per node, remembers recently-seen/dropped/expired IDs so a blob isn't re-accepted after
-  eviction/expiry (sliding-window; §6). Prevents resurrection inflating delivery.
-- **TTL:** each blob expires at `created_at + ttl` everywhere (absolute; the §6 rule). Expired blobs are
-  dropped and recorded.
-- **Delivery:** a message is "delivered" the first time its **recipient** holds it. (Trial-decrypt is modeled
-  as "recipient recognizes its own id" — no crypto.)
+**Out (deferred, explicit):** cryptography, tokens/PoSW, the anonymity source-estimator, rateless-recon
+internals (modeled as a grounded byte budget §6), real BLE PHY/advertising-channel modeling, mobile platform,
+internet bridges, ferrying. **Invariant guard (enforced in code even though unmeasured here):** sender/recipient
+are **scoring-only ground-truth labels** in the metrics/oracle layer — `model`, `engine`, and `policies` may
+read **only `{id, created_at, ttl, size}`** (protects inv 2 pure-flooding & inv 4 sealed-sender; a lint test
+asserts no forwarding/eviction/exchange code references sender/recipient).
 
 ---
 
-## 3. Why model reconciliation as a byte budget (key modeling decision)
+## 2. Measurement methodology (the heart of the revision)
 
-The parent design's airtime fix is rateless reconciliation (§8). For *this* slice we don't implement IBLT —
-we model each contact as transferring at most `B` bytes (or `k` blobs), where `B` is derived from a contact's
-duration × an assumed effective throughput. This **captures the binding constraint (finite airtime per
-contact)** without the reconciliation internals, which is what the delivery-vs-density question actually
-depends on. A later slice can replace the byte-budget with a real reconciliation model and measure the
-delta. *(Reviewers: confirm this abstraction is faithful enough for the headline metric.)*
+### 2.1 Two regimes, not one curve
+The percolation cliff is a **connectivity** threshold; delivery *also* depends on airtime, buffer, TTL, and
+mobility. So we separate them:
 
----
+- **(A) Percolation-validation baseline — the gating first test.** STATIC uniform/Poisson placement on a
+  **torus** (periodic boundary, matches infinite-plane theory), `B=∞, TTL=∞, buffer=∞`. Assert the
+  giant-component / delivery knee lands near the **known continuum-percolation critical mean degree ≈ 4.51**
+  within a stated tolerance. This validates contact-detection + the density axis against ground truth and
+  **gates everything downstream** (no trusting any curve until this passes).
+- **(B) Dynamic delivery sweep.** The realistic measurement, with finite `B/TTL/buffer` and mobility. Reported
+  *alongside* (A) so the reader can see whether a delivery drop is connectivity (never arrives) or
+  airtime/TTL (arrives too slow / budget-starved).
 
-## 4. Metrics (the deliverables)
+**STATIC uniform placement is the PRIMARY cliff probe** (it is the regime where the density parameter literally
+equals theory's reduced density). **Random Waypoint is a labeled *optimistic overlay*, not the headline default.**
 
-- **Delivery ratio** = delivered messages / total messages, swept across **density** (nodes per radio-disk
-  area, i.e. `N·π·r² / (W·H)` — the percolation control parameter).
-- **Delivery latency** distribution (creation → first recipient hold), for delivered messages.
-- **Buffer occupancy** over time (sanity / scale check).
-- **Circulated-blobs-per-minute** (a first airtime proxy).
-- Output: deterministic CSV per run + a delivery-vs-density plot. Every run pinned by an explicit RNG seed.
+### 2.2 Density axis (the one quantity we measure — keep it clean)
+- Control parameter: mean degree `d = N·π·r² / (W·H)` for static uniform; **also compute and plot delivery
+  against the EMPIRICAL mean neighbor degree** measured over the steady-state window (RWP center-concentrates
+  nodes, so nominal ≠ realized).
+- **Boundary mode is an explicit, logged config field:** `torus` for validation/cliff sweeps; `walls` for the
+  venue scenario (report the expected upward threshold shift separately).
+- Finer density spacing through the transition band.
 
----
+### 2.3 Mobility validity (RWP overlay)
+Enforce `v_min > 0` (kills RWP speed-decay); initialize positions+speeds from the **stationary** RWP
+distribution (perfect init) **or** discard a detected warm-up window from all metrics. A **stationarity sanity
+check** (first-half vs second-half contact-rate / mean-degree within tolerance) must pass before a curve is accepted.
 
-## 5. Architecture (small, testable units)
+### 2.4 Timeline & workload (define the denominator)
+Three phases: **warm-up** (mobility + cover churn to steady state, or skip via stationary init) → **measurement
+window** (inject the workload) → **drain** of ≥ one max-TTL after the last injection (no right-censoring).
+- **Workload:** `M` messages; default a **single fixed cohort injected at warm-up end** (cleanest first curve;
+  sweepable rate optional); src/dst = **uniform-random distinct pairs**.
+- **Delivery ratio = (messages first-held by their recipient within absolute TTL) / (fair-chance cohort)**,
+  where the fair-chance cohort = messages whose `creation_ts` leaves ≥ one max-TTL of in-window sim time
+  (excludes right-censored end-of-run messages). A known-answer test pins this denominator.
+- Confirm the load is **light enough not to itself saturate `B`** (else we'd measure congestion, not percolation).
 
-- `model/` — entities (Node, Blob), geometry, mobility models.
-- `engine/` — time-stepped loop, contact detection, exchange.
-- `policies/` — flood, eviction, retention, seen-record (each swappable).
-- `metrics/` — delivery, latency, occupancy collectors.
-- `scenario/` — config (dataclass), seeded runner, density sweep.
-- `report/` — CSV writer, optional plot (matplotlib optional dep).
-- `tests/` — see §7.
-
-Each unit answers: what does it do, how is it used, what does it depend on — and is testable in isolation.
-
----
-
-## 6. Stack
-
-**Python 3.11+**, standard library + `numpy` (vectorized geometry). Plotting via optional `matplotlib`
-(import-guarded so core + tests need no GUI deps). Hand-rolled time-stepped engine (no SimPy dependency) for
-transparency and testability. Fully **deterministic** given a seed. *(CTO confirm: Python is the right call;
-we port hot paths to Rust only if 50k-node runs prove too slow.)*
-
----
-
-## 7. Testing (TDD)
-
-Write tests first. Unit:
-- contact detection (in/out of range, boundary);
-- exchange respects the per-contact budget and the "only blobs the other lacks" rule;
-- TTL expiry drops at the right time everywhere;
-- seen-record prevents re-acceptance (no resurrection);
-- eviction policy behaves (buffer never exceeds cap; correct victim selection);
-- determinism (same seed → identical run).
-
-Integration (known-answer scenarios):
-- two nodes in range → message delivered; permanently out of range → never delivered;
-- one dense cluster → high delivery; sparse field → low delivery (the curve has the expected shape);
-- a flood of junk fills buffers → honest delivery degrades (sanity for a later anti-abuse slice).
+### 2.5 Replications + confidence (a single seed cannot locate a cliff)
+Variance is maximal at the threshold. Run **R independent replications per density point** (start R = 20–30,
+denser near the cliff), sub-seeds via `numpy SeedSequence.spawn` from one master seed. Report **mean delivery
+with a 95% Wilson CI** (better than normal near 0/1) and **latency as a distribution** (median + IQR/percentiles,
+presented *jointly* with delivery and flagged conditional-on-delivery: survivorship bias can make mean latency
+*improve* as the system worsens). Also report a **censoring-robust** "fraction delivered within deadline Δ".
 
 ---
 
-## 8. Definition of Done (this slice)
+## 3. Model
 
-1. `delivery-vs-density` sweep runs from a single command and writes a CSV + (optional) plot.
-2. All §7 tests green; runs are deterministic by seed.
-3. A short `README` in the sim folder: how to run, params, how to read the output.
-4. The curve clearly shows the cliff (or its absence) for a documented parameter set.
-5. Loop gates: fan-out review clean → CTO sign-off (spec) → plan → build → PR → `@codex review` → CTO merge.
+- **Space & mobility:** N nodes in W×H. Modes: **static-uniform (primary)**, **RWP overlay** (§2.3). Boundary:
+  torus | walls (§2.2).
+- **Contact:** in contact when `dist² ≤ r²`. Contact is an explicit **state machine** (out→in = start,
+  in→in = ongoing, in→out = end). Compute entry/exit **analytically per straight-line leg** (closest-approach
+  to segment) so contacts/durations are **dt-independent**; charge budget **per contact episode** (entry→exit),
+  never per step. O(N) neighbor search via a **uniform grid / cell-list** bucketed by `r` (with a
+  brute-force-equivalence test on small N).
+- **Blob:** `{id, created_at, ttl, size}` (engine/policies see only these). Fixed `size` (~1 KB). Optional
+  pluggable **hop-energy** field (born B, decrement-on-reshare, drop at 0) — default non-binding for v1.
+- **Exchange (flooding):** on a contact episode, each node offers blobs the other lacks; transfer bounded by
+  the §6 budget. **Offer-selection-under-scarcity** = explicit swappable seeded policy (default uniform-random
+  among missing) and a *measured variable*. Budget per-direction or shared (justified vs BLE half-duplex).
+  Deterministic pair-iteration order (sorted by id). Buffer accept contract returns
+  `Accepted | RejectedSeen | RejectedExpired` with accept-then-evict-to-fit.
+- **Buffer:** bounded; **eviction = oldest-by-creation cohort with randomized tie-break (retain younger), NOT
+  closest-to-TTL** (parent §9.5); plus per-neighbor buffer-share cap. Pluggable (compare random/FIFO).
+- **Seen-record:** sliding window `W ≥ maxTTL + margin` (parent §6), **FIFO-by-time** aging; anti-resurrection
+  guaranteed (no expired/evicted id re-accepted within W; `delivery count == unique recipient-first-hold count`).
+- **TTL:** absolute `created_at + ttl` everywhere (parent §6).
 
 ---
 
-## 9. Decisions to confirm at sign-off
+## 4. Time-step contract
+- CFL-style constraint asserted at startup: `v_max · dt ≤ r/4 … r/5`.
+- `dt`-convergence check in the validation plan: halving `dt` changes delivery ratio and mean contact duration
+  by < tolerance. (Analytic contact timing makes this robust.) Log `dt` + a missed-contact estimate in the CSV.
 
-- **Stack = Python** (recommend).
-- **First-slice boundary** = delivery-vs-density only; defer crypto, tokens, anonymity-estimator, real BLE PHY, reconciliation internals (modeled as a byte budget §3).
-- **Mobility default = Random Waypoint** (+ static mode).
-- These are the only product-level choices; everything else is implementation detail for the plan.
+---
+
+## 5. RNG contract
+Single injected `numpy.random.Generator` (`default_rng(seed)`) threaded explicitly through model/engine/policies.
+**No module-global `np.random.*` / `random.seed`** anywhere (a grep/lint test enforces this). Per-replication and
+per-component substreams via `SeedSequence.spawn` (order-independent → safe for parallel replications).
+Determinism test: two same-seed runs produce **byte-identical output CSV**, and two cells run in swapped order are identical.
+
+---
+
+## 6. Airtime / byte-budget model (grounded, density-aware)
+A constant budget is structurally optimistic (cheapest airtime exactly where the parent says it gets expensive).
+Required:
+1. Effective throughput `= throughput_ideal / (1 + α · n_local_contenders)`, `n_local_contenders` = peers within
+   `r` at contact time; sweep/sensitivity-test `α`.
+2. Per-contact **setup/handshake cost `t_setup`** subtracted before any payload — contacts shorter than
+   `t_setup` transfer **zero** (kills the "free delivery on a 1-second brush" bias at the sparse end).
+3. Reconciliation **decode-failure probability `p_fail`** → zero useful transfer.
+4. **Quantize** transfer to whole ~1 KB blobs (0.9 blob delivers 0).
+5. **Ground** throughput / `t_setup` / contact-duration in **cited BLE figures** (a parameter-provenance table).
+6. Sweep `B` at ≥ 3 levels (binding / marginal / non-binding) + a **binding-constraint diagnostic**: the
+   fraction of contacts where the budget actually bound. If ~0 across the sweep, we're measuring contact-graph
+   percolation, not airtime-limited delivery, and the abstraction is decorative (say so).
+
+README states constant-B is an **upper bound** on delivery.
+
+---
+
+## 7. Architecture (small, testable, invariant-safe units)
+`model/` (entities, geometry, mobility, cell-list) · `engine/` (stepping, analytic contact state-machine,
+exchange) · `policies/` (flood, offer-selection, eviction, retention, seen-record — swappable) · `metrics/`
+(delivery, latency, circulation/overhead, occupancy; **holds the sender/recipient oracle**) · `scenario/`
+(config dataclass, seeded runner, density sweep, replications) · `report/` (CSV + full param manifest, optional
+matplotlib, logistic-fit cliff estimator) · `tests/`.
+
+---
+
+## 8. Stack
+**Python 3.11+**, stdlib + `numpy` (vectorized geometry, `default_rng`, `SeedSequence`). `matplotlib` optional /
+import-guarded. Hand-rolled engine. Cell-list spatial index for O(N). Keep the Rust hot-path option **only** if
+profiling the 50k-node × R-replication sweep demands it.
+
+---
+
+## 9. Testing (TDD, tests first)
+**Gating:** the §2.1(A) percolation-validation harness recovers mean-degree ≈ 4.51 within tolerance.
+**Unit:** analytic contact entry/exit incl. fast tangential fly-through; per-episode budget cap; dt-convergence;
+`dist² ≤ r²` boundary; exchange respects budget + only-missing + scarcity-selection; TTL expiry timing;
+seen-record anti-resurrection past capacity; eviction exact-victim (oldest cohort, never closest-to-TTL) + property
+test; RNG determinism (byte-identical CSV, swap-order identical, no module-global RNG); invariant lint (no
+sender/recipient in model/engine/policies); cell-list ≡ brute force on small N.
+**Integration (known-answer):** 2 in-range→delivered, permanently-out→never; static dense→high, sparse→low with
+the **expected sigmoid shape and non-overlapping CIs across the transition**; junk-flood→honest delivery degrades
+(no resurrection).
+
+---
+
+## 10. Definition of Done (this slice)
+1. Percolation-validation harness passes (recovers ≈ 4.51 within tolerance) — the gate.
+2. One-command density sweep → CSV (with **full parameter manifest** per row) + plots for **both** delivery
+   (mean + 95% CI) and circulation/airtime cost vs density; STATIC primary, RWP overlay labeled optimistic.
+3. **Quantitative cliff:** logistic fit reports the delivery=0.5 midpoint with a CI from replications
+   (DoD #4 is now falsifiable, not eyeballed).
+4. All §9 tests green; runs deterministic and independently reproducible from the manifest.
+5. Sim README: how to run, parameters, **fidelity-to-parent traceability table** (each modeled mechanic → parent
+   §, each abstraction → direction of its bias), and a **modeling-assumptions/caveats** section.
+6. Loop gates: this revised spec signed off → plan → build → PR → `@codex review` → CTO merge.
+
+---
+
+## 11. Decisions to confirm at sign-off
+- **Stack = Python** (numpy + cell-list; Rust only if profiling demands).
+- **First-slice boundary** = delivery + circulation vs density; defer crypto/tokens/anonymity-estimator/real-PHY;
+  reconciliation modeled as the grounded byte budget (§6). *(Endorsed by all 5 review lenses.)*
+- **Mobility: STATIC uniform is the PRIMARY cliff probe; RWP is a labeled optimistic overlay** *(changed from the
+  draft's RWP-default, per review)*. A clustered/hotspot "gathering" mobility model (truer to inv 7) is noted as a
+  fast-follow, not in this slice.

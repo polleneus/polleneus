@@ -59,7 +59,9 @@ def run_one(cfg) -> dict:
     metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
     buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i))
                for i in range(cfg.n)]
-    budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size)
+    budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
+                           model=cfg.airtime_model, beta=cfg.beta,
+                           t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
     eng = Engine(cfg, mob, buffers, budget, cfg.rng(1), on_deliver=metrics.on_deliver)
 
     eng.run_until(cfg.warmup)

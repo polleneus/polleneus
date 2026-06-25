@@ -1,95 +1,125 @@
 # Feature Spec — Airtime & Mobile-Delivery (Simulator Slice 2)
 
-**Status:** Draft for fan-out review → CTO sign-off (loop step 1).
+**Status:** Revised after fan-out review (round 1) → targeted re-review → **CTO sign-off** (loop step 1).
 **Date:** 2026-06-25
 **Parent design:** [polleneus v0.4](2026-06-25-polleneus-design.md) · **Builds on:** [soup-sim slice 1](2026-06-25-soup-sim-spec.md)
 **Roadmap:** P0/P1 — measures the red-team's **risk #1: "airtime, not storage, is the real scale wall."**
 
-> **Purpose.** Slice 1 measured *connectivity* (does the contact graph percolate? d_c≈4.51). It deliberately
-> deferred the more existential question: **even when the graph is connected, can BLE physically *stir the
-> soup* fast enough — or does airtime saturate and delivery collapse at crowd density?** This slice turns on
-> the dynamic engine + a BLE-grounded airtime model and measures **delivery and airtime cost vs density under
-> mobility**, finding the saturation knee — before any phone code commits us to a stack.
+> **Purpose.** Slice 1 measured *connectivity* (d_c≈4.51, engine-free static path). This slice asks the more
+> existential question: **even when connected, does BLE airtime saturate at crowd density and collapse
+> delivery?** It is split into two sequenced PRs so an engine bug can never be mistaken for an airtime effect.
 
-> **Every number is an UPPER BOUND on real delivery** (same idealizations as slice 1, plus the airtime model
-> is still a model, not measured BLE).
-
----
-
-## 1. Questions this slice answers
-1. **Airtime ceiling:** circulated-blobs-per-minute and per-contact **airtime utilization** vs density. Does
-   delivery **rise then fall** (contention-limited) or plateau? Where is the saturation knee?
-2. **Mobile delivery:** delivery ratio + **latency** vs density under **Random Waypoint** carry-and-forward
-   (does DTN delivery actually happen at gathering scale, and how slow is it?).
-3. **Is airtime even binding?** The binding-constraint diagnostic: fraction of contacts where the budget bound.
-   If ≈0 across the sweep, we are still measuring connectivity, not airtime (and must say so).
-
-Co-headline output: **delivery vs density** AND **airtime-cost/utilization vs density**, both with CIs.
+> **Review-driven reshape (round 1, verdict needs-rework):** the original `1/(1+αn)` model *cannot* produce a
+> rise-then-fall and `n_local` *was* the density axis — so any down-turn would have been an artifact. v2 fixes
+> all six must-fixes below. **Every number remains an UPPER BOUND on real delivery.**
 
 ---
 
-## 2. The honest blocker to resolve first — engine fidelity
-Slice 1's *validated headline* used the **engine-free static** path (component reachability + percolation
-gate). The **dynamic engine is comparatively unproven**: it settles each contact **once per episode at the
-entry time**, which is fine for percolation but may **under-represent mobile multi-hop over time** (a node
-that gains blobs mid-window forwarding them onward) and repeated exchange within long contacts.
+## 1. Two sequenced PRs (the scope split — must-fix #2)
+The original spec bundled engine-refinement + a new airtime model + new measurements. A refinement that changes
+exchange semantics would silently move slice-1's *validated* percolation numbers, and a reviewer couldn't tell
+an engine bug from a real airtime effect. So:
 
-**In scope before trusting any mobile curve:** a **fidelity gate** for the dynamic engine —
-- reproduce a **known DTN result** (e.g., epidemic/SI delivery growth over time in a dense mixing population
-  matches the analytic logistic SI curve within tolerance), and
-- a multi-hop-over-time check (a 3+ hop chain delivers across *separate* contacts as mobility reconfigures).
+- **PR-1 — Engine fidelity (no airtime model, no new physics).** Make the dynamic engine trustworthy for mobile
+  multi-hop, gated hard. Ships first, merges, then:
+- **PR-2 — Airtime model + measurement.** Built only on the trusted engine.
 
-If the engine fails these, **refine it** (deliver blobs at the time they become available during a contact;
-allow repeated exchange as buffers grow) — refinement is part of this slice. We do not publish a mobile curve
-the engine can't faithfully produce.
+This spec covers both; **sign-off authorizes PR-1's plan first.**
 
 ---
 
-## 3. Airtime model (grounded, the core new work)
-Extend the existing per-contact budget into a defensible BLE-contention model:
-- **Effective goodput collapses with local contention:** model the shared 3 advertising channels (no hopping)
-  — e.g. `goodput = goodput_ideal / (1 + α·n_contenders)` (current form) **and** a CSMA-style alternative to
-  sensitivity-test; `n_contenders` = peers within range during the contact.
-- **Per-contact setup floor `t_setup`** (handshake/discovery) subtracted before payload.
-- **Whole-blob quantization** + reconciliation **decode-failure `p_fail`**.
-- **Ground** `goodput_ideal`, `t_setup`, typical contact duration in **cited BLE figures** (a
-  parameter-provenance table in the README; not invented numbers).
-- **Sweep the airtime budget at ≥3 levels** (binding / marginal / non-binding) + report the binding fraction.
+## 2. PR-1 — Engine fidelity
+
+### 2.1 Refined exchange semantics (must-fix #3)
+- **Within an open episode, iterate offer-rounds to a fixpoint**, each round consuming from the **shared
+  per-episode airtime pool** (granted once; `t_setup` charged once per physical episode), and able to pick up
+  blobs that arrived in a prior round → real multi-hop *within* a long contact, not one hop.
+- **Fix the latency timestamp:** stamp `on_deliver` at the **actual availability/delivery time**, and enforce
+  `delivered_at ≥ created_at` (the current `now=entry` stamping can produce negative latency). Latency curve is
+  **not published until this is fixed.**
+- **Overlapping-contact determinism:** for simultaneous A–B and B–C, assert delivered-set + timestamps are
+  invariant to `neighbor_pairs` ordering; if not, canonicalize by earliest-enter-first and document it.
+
+### 2.2 Fidelity gate (must-fix #2 — pinned, falsifiable)
+PR-1 merges only if ALL pass:
+- **Contact-timing fidelity (decoupled from exchange):** empirical RWP pairwise **meeting rate** and **mean
+  contact duration** match the RWP analytic expressions within tolerance — proving the contact graph is right
+  before testing exchange.
+- **SI/epidemic growth:** in a clearly **supercritical, well-mixed** population (NOT near d_c, where mean-field
+  SI is invalid), infected-count over time matches the closed form `I(t)=N/(1+(N-1)e^{-βt})` within a justified
+  tolerance + CI over ≥N seeds, where **β is derived from the measured meeting rate** (not fitted).
+- **Multi-hop-over-time:** a ≥3-hop chain delivers across *separate* contacts as mobility reconfigures.
+- **Non-regression (hard gate):** `test_integration_percolation.py` (oracle-KAT + susceptibility peak) stays
+  green bit-for-bit (or with an explicitly justified delta), AND the refined engine reproduces
+  `settle_static_fixpoint` delivery in the `cap=∞ / ttl=∞ / α=0 / t_setup=0 / static` limit.
 
 ---
 
-## 4. Method (reuse slice-1 infrastructure)
-- **Mobility:** RWP (slice-1's burn-in stationary init + stationarity acceptance gate); RWP is the headline
-  mobility for *this* slice (it's a moving-crowd question).
-- **Timeline:** warmup → inject cohort → measure window → drain ≥ maxTTL (slice-1's run_one, now exercising
-  the dynamic engine on the mobile path).
-- **Stats:** per-replication CIs (slice-1 `mean_ci`, Student-t) + bootstrap saturation-knee estimate.
-- **Determinism:** slice-1 injected-RNG contract (disjoint substreams) unchanged.
+## 3. PR-2 — Airtime model + measurement
+
+### 3.1 Collision-capable airtime model (must-fix #1 — the critical one)
+- **Primary model must be able to turn over.** Connectionless BLE advertising is **ALOHA-like, not CSMA**:
+  use `p_success(n) = exp(-β·n)` on the 3 shared advertising channels (and/or density-dependent
+  `t_setup(n)=t_setup0 + c·n` driving usable airtime negative) so an **interior maximum is possible**. The old
+  `1/(1+αn)` (monotone plateau) becomes the *optimistic-bound* sensitivity case, not the primary.
+- **Decouple contenders from connectivity degree:** `n_contenders` is the **co-channel/interference**
+  population, **not** the unit-disk graph degree (carrier-sense range ≠ connectivity range). Justify the mapping
+  and its bias direction in the provenance table.
+- **Model form is a first-class sensitivity axis:** report knee/peak under each form as a **model-uncertainty
+  band**; state the falsifiable prediction up front (linear ⇒ plateau, collision ⇒ knee near X) and add a test
+  that the two forms are actually distinguishable (interior max vs plateau).
+- **α=0 control overlay** on the SAME axes for every airtime curve: if α=0 already turns over, the turn-down is
+  connectivity/buffer/TTL, not airtime.
+
+### 3.2 Precise metrics (must-fix #5)
+- **Airtime utilization** = `Σ charged_airtime / Σ available_contact_time`, where
+  `charged_airtime = t_setup + served_blobs·blob_size/eff` (budget RETURNS airtime, not just a count; `t_setup`
+  is in the numerator — at high density many short contacts make it the real sink). Report **against OFFERED
+  airtime** (what would move every blob the peer lacks) so a flat curve is interpretable.
+- **Circulated-blobs/min** = accepted transfers **during the measure window only** (snapshot the counter at
+  warmup-end and measure-end) / measure_window-in-minutes; document whether dummy/duplicate traffic counts.
+
+### 3.3 Saturation-knee estimator + binding GATE (must-fix #4)
+- **Knee = argmax of circulated-blobs/min** with a local quadratic-in-log-density fit (anti grid-pinning),
+  bootstrapped over the per-rep matrix; returns **"no knee in range"** (not NaN) when monotone. Do NOT reuse the
+  monotone 0.5-crossing machinery. Add a synthetic planted-peak test.
+- **Hard publish gate:** the "airtime saturation" figure is published **only if** the contention-limited binding
+  fraction (decomposed from setup-starved / quantization-limited / demand-limited) exceeds a **pre-registered
+  threshold** at/beyond the knee AND the α=0 control does **not** also turn over. Otherwise label the curve
+  connectivity/buffer/TTL-limited.
+
+### 3.4 Latency + confounder controls (must-fix #6)
+- **Censoring-aware latency:** TTL-expired = censored at TTL; report **time-to-X%-delivery (T50)** or a
+  Kaplan-Meier-style estimate, **jointly with delivery ratio**; delivered-only mean latency is labelled a LOWER
+  bound (survivorship makes it look flat/better exactly where the system worsens).
+- **Control buffer_cap and TTL:** run ≥1 airtime sweep at `cap=∞ AND ttl=∞`; if the turn-down survives ⇒
+  airtime, if it vanishes ⇒ buffer/TTL. Pre-register cap/TTL with bias direction.
+- **Provenance table (filled, cited):** conservative `goodput_ideal ≈100 kbps` (no-DLE) as headline with the
+  optimistic ~1.4 Mbps as upper sensitivity; **density-dependent `t_setup`** from cited discovery-latency-vs-
+  advertiser-count; β/α from a cited collision curve; report the RWP contact-duration **distribution** (flag if
+  its tail is optimistic vs human-contact data). Extend the README bias table with a row+direction per new
+  mechanic (single-snapshot/max-degree contention, lump-at-entry vs incremental, independent per-blob p_fail,
+  **omitted set-reconciliation overhead**, RWP-vs-clustered — all optimistic).
 
 ---
 
-## 5. Scope
-**In:** the fidelity gate + any engine refinement it requires; the grounded airtime model; the mobile
-delivery + airtime-cost sweep; the binding-constraint + saturation-knee diagnostics; README update.
-**Out (still deferred):** crypto/tokens, anonymity source-estimator, real PHY beyond the contention model,
-internet bridges, mobile platform.
+## 4. Scope
+**In:** PR-1 (engine fidelity + gate); PR-2 (collision airtime model, precise metrics, knee+binding gate,
+censoring-aware latency, cap/TTL controls, provenance). Reuses slice-1 infra (RWP+stationarity gate, run_one
+timeline, mean_ci, RNG contract, sweep, bootstrap).
+**Out (named deferrals):** crypto/tokens, anonymity source-estimator, real PHY beyond the contention model,
+internet bridges, mobile platform, **set-reconciliation protocol overhead** (we model zero — optimistic, noted),
+**clustered/"gathering" mobility** (RWP is open-field, least representative of a crowd → explicit fast-follow).
 
----
+## 5. Definition of Done
+PR-1: fidelity gate (timing + SI + multi-hop) passes; percolation non-regression holds; refined-exchange tests
+(intra-contact multi-hop = single-pool budget; `delivered_at≥created`; overlap shuffle-invariance) green.
+PR-2: collision model with α=0 control + model-uncertainty band; utilization/circulation defined + tested; knee
+estimator + binding publish-gate; censoring-aware latency; cap/TTL control sweep; filled provenance + README
+bias rows; all deterministic; one-command run.
 
-## 6. Definition of Done
-1. **Engine fidelity gate passes** (SI/epidemic growth match + multi-hop-over-time) — gates the curves.
-2. One-command run produces **delivery-vs-density** and **airtime-utilization-vs-density** (mean + CI) under
-   RWP, plus circulated-blobs/min and the binding-constraint fraction; saturation knee reported with a CI.
-3. ≥3-level airtime-budget sweep + provenance table; results labelled **upper bound**.
-4. All tests green + deterministic; new tests for the fidelity gate, the contention model, and the diagnostics.
-5. README: how to run, the measured airtime finding, fidelity-to-parent + caveats updated.
-6. Loop gates: this spec signed off → plan → build → PR → `@codex review` (best-effort, 10-min) → CTO merge.
-
----
-
-## 7. Decisions to confirm at sign-off
-- **Engine refinement scope:** refine the dynamic engine to pass the fidelity gate (recommended), vs. measure
-  as-is with heavy caveats. *(Recommend: refine — a mobile curve from an unfaithful engine is worse than none.)*
-- **Airtime model form:** ship the `1/(1+α·n)` model as primary with a CSMA-style sensitivity check (recommend),
-  vs. a fuller CSMA/collision model now.
-- **Mobility = RWP** for this slice (a clustered "gathering" mobility model stays a later fast-follow).
+## 6. Decisions to confirm at sign-off
+- **PR split** (engine fidelity first, then measurement) — *recommend yes.*
+- **Primary airtime model = ALOHA collision** (`exp(-βn)`), `1/(1+αn)` demoted to optimistic sensitivity — *recommend yes.*
+- **Headline goodput = conservative ~100 kbps** with optimistic upper sensitivity — *recommend yes.*
+- **Mobility = RWP** this slice (clustered mobility is a named fast-follow).

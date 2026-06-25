@@ -27,6 +27,9 @@ class Mobility:
     def step(self, dt: float) -> None:
         if self.mode == "static":
             return
+        if self.mode == "linear":  # deterministic constant-velocity motion (tests / simple model)
+            self.positions = self.positions + self.velocities * dt
+            return
         pos, tgt, sp = self.positions, self.targets, self.speeds
         rem = tgt - pos
         dist = np.linalg.norm(rem, axis=1)

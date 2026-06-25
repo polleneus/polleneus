@@ -1,0 +1,360 @@
+{
+  "summary": "In-repo fan-out code review of the soup simulator build before PR + @codex",
+  "agentCount": 5,
+  "logs": [
+    "Code review done: 4 lenses, 2 high/critical"
+  ],
+  "result": {
+    "reviews": [
+      {
+        "lens": "CORRECTNESS",
+        "verdict": "needs-fixes",
+        "strengths": [
+          "Geometry contact_interval is analytically correct and dt-independent: roots are clamped to [t0,t1], the enter>exit guard rejects contacts that start after the leg, full-leg containment returns (t0,t1), and the grazing disc==0 case correctly returns None (open-set convention). Verified against synthetic head-on, tangential, after-leg, and contained-leg cases.",
+          "cell_list neighbor_pairs matches brute force exactly even on degenerate small/torus grids (ncx in {1,2}): the (i,j) seen-set dedups wrapped-offset double-counts and cross-seam pairs are found. Verified on 300-node random placements across w/r ratios down to 1.1.",
+          "Buffer eviction honors the no-inversion invariant: victims always come from the oldest-by-creation cohort with an RNG tie-break, never closest-to-TTL; multi-eviction keeps the newest cohort; evicted/expired ids are recorded in seen so they cannot be resurrected within the window. Verified with bulk-insert and cap-shrink tests.",
+          "Half-duplex shared budget is a single pool split across both directions (not per-direction), and budget contention/quantization/p_fail are all safe-direction (under-count) so they never break the upper-bound invariant. Verified k=1 shared-pool test moves exactly one blob.",
+          "Addressing-blind separation is real and lint-enforced: engine/policies/buffer/budget read only blob id/created_at/ttl/size; src/dst live solely in the metrics oracle keyed by blob.id; delivery is counted once at the true dst with no resurrection inflation.",
+          "RNG is fully injected (no module-global RNG) and substreams are order-independent via SeedSequence; the percolation oracle KAT (engine fixpoint == union-find same-component pairs) and the d_c~=4.51 susceptibility-peak gate both pass."
+        ],
+        "findings": [
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/engine.py",
+            "title": "t_setup charged repeatedly: run_until finalizes and clears self.open every call, fragmenting one continuous contact into multiple episodes",
+            "severity": "high",
+            "issue": "run_until() ends with self._finalize(), which settles every open episode and does self.open.clear(). Because self.open is always empty at the start of the next run_until, a contact that is physically continuous across a run_until boundary is split into N separate episodes, and the t_setup handshake floor (and the budget quantization floor) is charged once PER FRAGMENT instead of once per real episode -- directly contradicting the module docstring ('the t_setup floor is charged ONCE per episode'). run_one() calls run_until 11+ times (warmup, 10 measure-window slices, drain), so essentially every contact that straddles a sampling-slice boundary is over-charged. Verified: a single run_until(10) yields durations=[10.0] (usable=9.5 with t_setup=0.5), but run_until(5)+run_until(10) yields durations=[5.0,5.0] (usable=9.0). The result depends on the arbitrary n_samp=10 slicing, defeating the claimed dt-/sampling-independence of episodes. (Direction is conservative -- it under-counts delivery -- so the upper-bound invariant survives, but the documented episode semantics and reproducibility-across-slicing do not.)",
+            "fix": "Do not call _finalize() inside run_until(). Let self.open persist across calls so the first step of the next run_until re-confirms the still-in-range pair via the existing 'key in self.open and in_at_end' branch (which just extends last_end). Expose a separate explicit close()/finalize() to be called exactly once at the true end of the simulation, and update run_one() to call eng.run_until(warmup+measure_window+drain) followed by eng.finalize(). Add a regression test asserting that run_until(5)+run_until(10) produces the same single episode duration (10.0) as run_until(10)."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+            "title": "RNG substream collision: node index 1000's buffer shares the cohort's seed stream (cfg.rng(1000+i) == cfg.rng(2000))",
+            "severity": "medium",
+            "issue": "run_one() seeds buffers with cfg.rng(1000 + i) for i in range(cfg.n) and seeds the message cohort with cfg.rng(2000). When i == 1000 the buffer path 1000+1000 == 2000 collides exactly with the cohort path, so node 1000's eviction tie-break RNG draws from the identical stream as the src/dst cohort selection. Verified make_rng(seed,2000) == make_rng(seed,2000) and that the dynamic sweep routinely reaches n far above 1000 (density_to_n(12,400,400,10)=6112; density_to_n(8,380,380,10)=3677). This violates the stated 'per-(density, replication, component) substreams are order-independent / independent' RNG contract -- it introduces correlation between cohort assignment and one node's eviction randomness. No crash, but it is a live, reachable determinism/independence defect on the dynamic engine path (the engine-free static_delivery_sweep used by run.py is unaffected).",
+            "fix": "Make the buffer substream namespace disjoint from the other paths, e.g. cfg.rng(3, i) (a distinct leading tag) instead of cfg.rng(1000 + i), and likewise give the cohort/engine their own leading tags (e.g. cfg.rng(1), cfg.rng(2)). SeedSequence with a per-purpose leading component guarantees no path can alias another regardless of n."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/buffer.py",
+            "title": "NodeBuffer.expire() is dead code: never called, so expired blobs are never actively removed from the store",
+            "severity": "medium",
+            "issue": "grep shows .expire( has zero callers in soup_sim. Absolute TTL is enforced only lazily at offer-time (offer rejects when now >= expires_at, and a peer rejects an expired blob), so expired blobs cannot propagate to NEW holders -- the upper-bound and absolute-TTL invariants survive. But expired blobs linger in self.store indefinitely. Consequences: (1) NodeBuffer.blobs()/select_offers include expired blobs, so under scarcity select_offers can spend offer slots picking expired blobs that the peer then rejects, reducing effective delivery below the intended bound (safe direction, but a real efficiency/semantics bug); (2) expired-but-resident blobs count against buffer_cap, so a node can evict live blobs to make room while holding dead ones, perturbing the eviction cohort; (3) the store no longer reflects the documented 'absolute TTL' active-eviction semantics. The seen-record is also only pruned on offer/expire, so without expire() calls a node that stops receiving offers never ages out its store.",
+            "fix": "Call buffers[k].expire(self.t) at the start of each engine step (or before each _exchange) for the involved nodes, OR filter expired blobs in select_offers' candidate list (missing = [b for b in have if b.id not in peer_ids and now < b.expires_at]). Calling expire() also keeps the seen-record correctly populated for no-resurrection. Add a test that a held blob is removed from store once now >= expires_at."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/engine.py",
+            "title": "settle_static_fixpoint claims component reachability but is only correct under unbounded buffers; with finite cap it gives order-dependent, non-component results",
+            "severity": "low",
+            "issue": "The docstring states the fixpoint 'iterates exchange to a fixpoint = connected-component reachability (true multi-hop).' This holds only when buffers never evict. With a finite buffer_cap, eviction sends a blob to the seen-record, after which offer() returns RejectedSeen, so the fixpoint terminates (no infinite loop -- verified) but the final contents are NOT component reachability and depend on pair-iteration order. Verified with cap=1 over 3 mutually-in-range nodes carrying 3 blobs: node states ended [1],[2],[2] -- not the all-reachable set. The percolation gate happens to use BIG caps so the oracle KAT passes, masking this implicit precondition.",
+            "fix": "Document the unbounded-buffer precondition on settle_static_fixpoint explicitly, and either assert cap is effectively infinite when it is used (e.g. raise if any buffer has finite cap < n) or guard the gate so the claim 'fixpoint == component reachability' is only made under that precondition."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/budget.py",
+            "title": "Whole-blob quantization via int(usable*eff/blob_size) can under-count by one at exact integer boundaries due to float truncation",
+            "severity": "low",
+            "issue": "gross = int((usable * eff) / blob_size) truncates toward zero. When usable*eff/blob_size is mathematically an exact integer but the float evaluates just below it (e.g. 2.9999999999999996), int() yields k-1, charging one fewer blob than the analytic budget. This is always safe-direction for the upper bound (never over-counts) but is a non-deterministic-looking off-by-one across parameterizations and contradicts the intent of 'whole blobs from the analytic duration.' (Observed the symmetric case where (3.0*0.1)/0.1==3.0000000000000004 rounds up to 3, confirming the float is sensitive at these boundaries.)",
+            "fix": "Add a tiny tolerance before truncation, e.g. gross = int((usable * eff) / blob_size + 1e-9), or use math.floor with an epsilon, so values within float-epsilon of an integer round to that integer. Keep it small enough not to grant a spurious extra blob far from a boundary."
+          }
+        ]
+      },
+      {
+        "lens": "INVARIANTS",
+        "verdict": "minor",
+        "strengths": [
+          "Addressing-blindness genuinely holds in code: src/dst appear only in workload.py (generation), scenario.py (the wiring/registration layer), and metrics.py (the oracle). engine/policies/buffer/budget/mobility/geometry/cell_list/percolation never read sender/recipient. Verified by grep across the package, not just the lint regex. The Blob dataclass physically carries no addressing field, so the engine cannot peek even by accident.",
+          "No module-global RNG anywhere. A broad grep for np.random.{seed,rand,choice,uniform,permutation,integers,poisson,binomial} and bare default_rng() over soup_sim/*.py returns zero hits. All randomness flows through injected Generators (Config.rng / make_rng) or pure SeedSequence. Substreams are order-independent by construction (SeedSequence([seed, *path])).",
+          "Determinism is real AND cross-process stable. run_one() is byte-identical across repeated calls, and identical under PYTHONHASHSEED=1 vs 999. This is not luck: every dict/set is keyed by int (blob ids, node indices, int cell coords), and CPython hashes small ints to themselves, so insertion order and iteration are hash-seed-independent; the set members (peer_ids, seen) are used only for membership, never to order RNG draws or output.",
+          "Eviction is inversion-proof and matches the spec: _evict_to_fit removes from the OLDEST-by-creation cohort (min created_at) with a seeded random tie-break, never closest-to-TTL. The seen-record (FIFO with window >= ttl+margin) blocks resurrection of dropped/expired ids. Verified by the dedicated buffer tests and by reading the code.",
+          "No delivery over-counting path found. on_deliver fires only on a genuine Accepted transfer to a peer (never at injection, never to self since src!=dst via replace=False), delivered_at is set-once (sticky, idempotent), and settle_static_fixpoint guards every accept with `not bj.has(id)`. The oracle KAT (delivered pairs == union-find same-component pairs) holds exactly, and TTL is absolute (created_at+ttl) and enforced in offer() so an expired blob can never be newly accepted/counted.",
+          "The headline static-cliff number is an honest upper bound by construction: same_component_pair_fraction is the static, unbounded-airtime, infinite-TTL component-reachability probability — the maximum delivery any flooding scheme could achieve on that graph. The contact graph, durations, and budget are all conservative (analytic durations, t_setup floor, contention 1/(1+alpha*n), whole-blob quantization, p_fail binomial thinning), each only ever reducing delivery."
+        ],
+        "findings": [
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/engine.py",
+            "title": "engine never calls NodeBuffer.expire(): expired blobs linger and crowd out deliverable ones in offer selection",
+            "severity": "medium",
+            "issue": "NodeBuffer.expire(now) is dead code in the production path — grep for `.expire(` across the repo (excluding .venv) returns no hits. The engine only relies on offer() rejecting `now >= expires_at`, but it never sheds already-stored blobs whose TTL has passed. Consequence: under finite TTL (the dynamic engine in run_one/sweep), each node's store fills with expired blobs that are never removed while under buffer_cap. select_offers reads bi.blobs() = the entire store including expired blobs; those expired blobs are 'missing' at the peer, so they get picked into the up-to-k offer set, then rejected at the receiver as expired. remaining only decrements on Accepted, but the chosen-and-rejected slots are not back-filled with fresh deliverable blobs, so deliverable blobs get crowded out of a contact's selection. I reproduced this: a store with one fresh deliverable blob (id 99) plus 10 long-expired blobs, k=3, peer empty -> selection = [9,6,0], fresh blob NOT selected. This systematically biases dynamic delivery DOWNWARD. It does not violate the upper-bound invariant (under-counting still bounds real delivery from above) and the static-cliff preset uses ttl=1e9 so it is unaffected, but it is a real fidelity bug that makes the dynamic curve pessimistic and lets buffers carry dead weight. Eviction only partially masks it (oldest-by-creation evicts expired first) and only once the store exceeds cap.",
+            "fix": "Call self.buffers[idx].expire(self.t) before exchanging at each contact (e.g. at the top of _settle for both i and j, or once per step for all nodes touched by a candidate pair), and similarly before injection/sampling. At minimum, have _exchange/select_offers skip blobs with `now >= blob.expires_at` so expired blobs never consume selection slots. Add a regression test: a node holding expired+fresh blobs must still offer the fresh one within the budget."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/cell_list.py",
+            "title": "neighbor_pairs clamps only the HIGH side of cell indices; out-of-box (negative) coordinates can produce negative cell indices",
+            "severity": "low",
+            "issue": "Lines 20-21 compute `cx = np.minimum((pos[:,0]/w*ncx).astype(int), ncx-1)` — np.minimum clamps the high end (positions exactly at x==w land on ncx instead of ncx-1) but NOT the low end. A coordinate < 0 yields a negative cell index (e.g. x=-15, w=400, ncx=40 -> int(-1.5) = -1). For torus the dx-loop does `nx %= ncx`, so -1 happens to normalize correctly and the seen-set dedups, so my probes still found the right pairs; but this is silent reliance on Python's negative-index/modulo behavior rather than a real cell assignment, and for the 'walls' branch a negative gx with the `0 <= nx < ncx` guard could drop legitimate self-cell candidates. Production paths keep positions inside [0,w)x[0,h) (static uniform placement; RWP moves between in-box targets and never wraps), so this is currently unreachable in the shipped model — but there is no invariant enforcing in-box positions, and torus positions are never wrapped anywhere, so a future mobility/boundary change could trip it.",
+            "fix": "Clamp both sides: `cx = np.clip((pos[:,0]/w*ncx).astype(int), 0, ncx-1)` (and same for cy). For the torus boundary, additionally fold positions with `pos % [w,h]` before bucketing so cell assignment is well-defined regardless of drift. Add a test placing a node just outside [0,w) on a torus and asserting the wrap-neighbor is still found."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/engine.py",
+            "title": "n_local contention proxy uses leg-START degree (deg from p0), which can under-estimate contention and thus slightly over-deliver within a step",
+            "severity": "low",
+            "issue": "In the dynamic loop, _degrees is computed once from p0 (leg-start positions) and reused for every _settle in that step (line 54, passed into _settle at lines 62/71/77/80). budget.blobs_transferable uses n_local = max(deg[i],deg[j]) to throttle throughput via 1/(1+alpha*n_local). If local density INCREASES across the leg (nodes converging), the true contention during the contact is higher than the leg-start snapshot, so the budget — and therefore delivery — is slightly OVER-estimated for that episode. Because the stated invariant is that every reported number is an upper bound on real delivery, an optimistic-leaning contention proxy is the one direction that could erode the bound; under CFL (max displacement < r/4 per step) the error is small and bounded, but it is asymmetric (it can only loosen the bound upward, never the reverse). This is a modeling approximation, not a logic bug, but worth pinning explicitly given the 'honest upper bound' contract.",
+            "fix": "Either document that the contention proxy is a leg-start snapshot and argue the CFL bound keeps it conservative, or compute n_local from the denser endpoint of the leg (max of deg at p0 and deg at p1) so contention — and thus the throttle — is never under-estimated, keeping delivery a strict upper bound. A targeted test with converging nodes and alpha>0 comparing p0-only vs max(p0,p1) degree would document the chosen behavior."
+          }
+        ]
+      },
+      {
+        "lens": "STATS-PERCOLATION",
+        "verdict": "minor",
+        "strengths": [
+          "The oracle KAT (test_integration_percolation.py:32-49) is a genuinely strong, independent cross-check: it asserts the engine's iterative flood fixpoint produces EXACTLY the same set of (src,dst) pairs as union-find connected components on the identical neighbor_pairs graph. Two distinct algorithms (settle_static_fixpoint vs _UF) reaching set-equality is the right way to validate the contact graph + multi-hop reachability.",
+          "The edge/degree convention is internally consistent and matches the cited literature: geometry.in_range uses center-to-center dist<=r, config/percolation define d=lambda*pi*r^2, and the gate targets d_c~=4.51 (the standard 2D continuum/random-geometric-graph critical mean degree, Quintanilla/Dall-Christensen). density_to_n and the Poisson lam_to_n=w*h/(pi*r^2) are mutually consistent (verified by test_density_to_n_roundtrip and by hand).",
+          "The methodology correctly separates two thresholds that are routinely conflated: giant-component EMERGENCE (susceptibility peak, ~d_c 4.51) vs the delivery=0.5 crossing (~d 6-7, since pairwise delivery ~ S^2). The docstrings in percolation.py:1-8, scenario.py:97-101 and the gate comment call this out explicitly, which protects a reader from misreading the curve.",
+          "same_component_pair_fraction (percolation.py:80-89) is the statistically correct estimator of static unbounded multi-hop delivery for uniform-random distinct src/dst: sum s(s-1)/2 over components divided by n(n-1)/2 equals P(src,dst in same component), the exact ensemble delivery probability.",
+          "Determinism/RNG hygiene around the ensembles is sound: every random draw is a SeedSequence([seed, di, rep]) substream (scenario.py:108, gate:62), so per-(density,replication) draws are order-independent and reproducible, and the static_delivery_sweep ensemble is engine-free and exact.",
+          "The replication unit is correctly chosen as the SEED, not the message (scenario.py docstring + sweep aggregates per_rep delivery_ratio), which avoids the classic pseudo-replication error of treating correlated within-run messages as independent samples."
+        ],
+        "findings": [
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+            "title": "mean_ci uses a fixed normal z=1.96 but is documented as a t/normal CI; for reps=5 the CI band is ~42% too narrow",
+            "severity": "medium",
+            "issue": "mean_ci (scenario.py:22-32) computes the CI half-width as z*se with z=1.96 for ALL sample sizes, while its own docstring says 't/normal CI across the per-replication observations'. The sweeps use small reps (the gate ensemble uses reps=5; sweep/static_delivery_sweep are called with small reps too), and report.plot() shades exactly this [ci_lo, ci_hi] band as '95% CI'. With n=5 (df=4) the correct two-sided 97.5% multiplier is t=2.776, not 1.96 -- I verified the half-width is understated by ~42% at df=4 and ~120% at df=2. A reader looking at the shaded delivery-vs-density band is shown error bars materially narrower than the data support, which is exactly the kind of statistical mis-drawing the lens asks about (every reported number should be defensible, and an over-confident CI is misleading).",
+            "fix": "Use a t-multiplier from the sample size: replace z*se with t_{0.975, n-1}*se, e.g. from scipy.stats import t; mult = t.ppf(0.975, n-1) (or hardcode a small lookup table for n in 2..30 to avoid the scipy dependency). Keep the [0,1] clamp. Update the call sites that pass z=1.96 and the docstring so 'CI' actually means a t-interval. At minimum, if you must keep normal, change the docstring to stop claiming 't'."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/tests/test_integration_percolation.py",
+            "title": "Susceptibility-peak gate band 4.0<=peak<=5.2 is seed-fragile and the coarse 0.5 grid biases the argmax low",
+            "severity": "medium",
+            "issue": "The gate (test:52-73) locates the threshold by argmax of chi over a degree grid spaced 0.5 (linspace(2,8,13)) with reps=5 at fixed seed 777, asserting 4.0<=peak<=5.2. I swept 40 master seeds at the gate's exact resolution: the argmax lands on d=4.0 in 34/40 runs, 4.5 in 4/40, 5.0 once, and 3.5 once (which fails the band). So (a) the band has a ~2.5% seed-dependent failure rate -- a maintainer who bumps the seed or reps will hit flakiness that looks like a real regression; and (b) the most common estimate (4.0) sits on the band's lower edge and is biased ~0.5 BELOW the true d_c~=4.51 because the 0.5 grid cannot resolve finer, and the asymmetric band (4.0..5.2) hides that low bias rather than centering on 4.51.",
+            "fix": "Make the threshold estimate grid-robust and the gate stable: (1) refine the degree grid near the peak (e.g. 0.25 spacing over 3.5..5.5) and/or take a chi-weighted centroid of the top few points instead of a bare argmax, which removes most quantization bias; (2) raise reps to shrink the per-point noise that causes the d=4.5 dip / d=5.0 spike I observed; (3) center the assertion on d_c with a symmetric tolerance (e.g. abs(peak-4.51)<=0.6) so the test documents the target rather than an off-center band. Verify the chosen band passes over a handful of seeds, not just 777."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+            "title": "crossing_0p5 accepts DESCENDING through-0.5 crossings and returns only the first crossing, so noisy sweeps can report a spurious midpoint",
+            "severity": "medium",
+            "issue": "crossing_0p5 (scenario.py:122-128) uses the sign test (y[i]-0.5)*(y[i+1]-0.5)<=0 and returns the FIRST bracket. The headline delivery-vs-density curve is monotone increasing, but engine sweeps (sweep()) are noisy, so a tail dip back below 0.5 followed by a rise creates extra brackets. I confirmed: on [0.9,0.4,0.1] it returns a DOWNWARD crossing at x=1.8, and on a non-monotone [0,0.6,0.4,0.55,1.0] it returns the first (x=2.83) and ignores the real high-density transition. As the bracket fed into midpoint_with_ci, a single noisy rep can latch the reported delivery=0.5 threshold (and its bootstrap CI) onto a wrong-direction or premature root.",
+            "fix": "Restrict to UPWARD crossings consistent with a monotone delivery curve: require y[i] < 0.5 <= y[i+1] (or y[i] <= 0.5 < y[i+1]) instead of the symmetric product test, and prefer the LAST such upward crossing (or the unique one after smoothing) rather than the first. This makes the estimator robust to tail dips while still recovering the synthetic sigmoid covered by test_crossing_and_midpoint_recovers_synthetic_sigmoid."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/percolation.py",
+            "title": "susceptibility normalizes by N instead of the standard sum of non-largest cluster sizes; locates the peak correctly but the magnitude/units are non-standard",
+            "severity": "low",
+            "issue": "susceptibility (percolation.py:54-60) computes chi = sum_{non-largest} s^2 / N. The textbook percolation susceptibility (mean cluster size a site belongs to, excluding the spanning cluster) normalizes by the number of non-largest-cluster sites, chi = sum_{non-largest} s^2 / sum_{non-largest} s. The docstring presents the /N form as the estimator that 'peaks at the threshold'. I verified numerically that the argmax is unchanged by the normalization (both peak at d=4.25 at this size), so the THRESHOLD-LOCATION use is correct; but a reader who interprets the reported chi value as the standard susceptibility (e.g. for finite-size scaling chi ~ L^{gamma/nu}) will be off, because /N is a different, size-dependent quantity.",
+            "fix": "Either switch to the standard normalization sum_{rest} s^2 / sum_{rest} s, or keep /N but rename/annotate it (e.g. 'second-moment density', and state in the docstring that it is proportional-up-to-N to the standard susceptibility and used only for argmax peak location, not for absolute magnitude or scaling exponents). The gate (argmax) is unaffected by the choice."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+            "title": "midpoint bootstrap silently drops never-cross (NaN) resamples, biasing the CI when the curve top sits near 0.5",
+            "severity": "low",
+            "issue": "midpoint_with_ci (scenario.py:138-147) discards bootstrap resamples whose curve never reaches 0.5 (crossing_0p5 returns NaN). For the headline static curve this is benign because same_component_pair_fraction spans 0->1 and reliably crosses (I could not trigger any drops on a realistic monotone curve). But for engine sweeps whose top delivery sits near 0.5, a non-trivial fraction of resamples can never cross and are silently removed, so the reported 2.5/97.5 percentile CI is conditioned on 'resamples that happened to cross' -- a survivorship bias that narrows and shifts the interval without any flag to the reader.",
+            "fix": "Count and surface the NaN fraction (e.g. add 'n_noncross' or a fraction to the returned dict), and if it exceeds a small threshold either widen the CI to one-sided/open at the top or return NaN/'no robust crossing' rather than a falsely tight interval. This keeps the 'every reported number is defensible' contract."
+          }
+        ]
+      },
+      {
+        "lens": "QUALITY — DRY/clarity/dead-code/simplicity/test-adequacy (not bug-hunting)",
+        "verdict": "minor",
+        "strengths": [
+          "Module docstrings are genuinely excellent: each file's top-of-file comment states the invariant it upholds and the bias direction (e.g. buffer.py 'OLDEST-by-creation ... NEVER closest-to-TTL', budget.py 'result is an UPPER BOUND'). This is the kind of intent-documentation that makes the addressing-blind/upper-bound invariants auditable.",
+          "The RNG contract is cleanly centralized in config.make_rng with a lint test (test_lint_invariants.test_no_module_global_rng) that mechanically enforces 'no module-global RNG' across the whole package. Self-policing invariants are a strong quality signal.",
+          "test_lint_invariants also mechanically enforces the addressing-blind boundary (no sender/recipient in engine layers), and the percolation gate (test_oracle_kat_delivered_equals_same_component_pairs) cross-checks the engine against an independent union-find implementation rather than against itself. Excellent test design.",
+          "Buffer eviction is well-tested for the hard cases: the forbidden inversion (test_forbidden_inversion_evicts_oldest_not_nearest_ttl), no-resurrection (test_no_resurrection_evict_for_space_then_reoffer), RNG tie-break determinism AND both-outcomes coverage (test_tie_break_rng_determined_both_outcomes_occur), and a property test (test_eviction_property_oldest_le_survivors).",
+          "No dead wilson_ci function exists (the prompt's example of suspected dead code is already absent), and the cell-list index is validated to return exactly the brute-force pair set on both torus and walls (test_celllist_equals_bruteforce_random) including the cross-seam case."
+        ],
+        "findings": [
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/buffer.py",
+            "title": "NodeBuffer.expire() is unwired dead code; TTL expiry never runs in the time-stepped engine and is untested",
+            "severity": "high",
+            "issue": "buffer.py:46 defines expire(now) to drop blobs past their TTL and record them as seen, and the module docstring + README ('absolute TTL ... faithful') present this as a live mechanic. But grep confirms NO call site exists in engine.py, scenario.py, or run.py -- the engine never expires stored blobs during run_until/settle. A blob accepted while fresh stays in the store past its TTL forever and remains re-offerable to peers. No test exercises expire() through the engine: every integration/scenario cfg sets ttl=1e9/1e12/1e18 (effectively infinite), so the gap is invisible. This is both dead code (the method as written is unreachable in production) and a test-adequacy hole around the absolute-TTL invariant the sim is supposed to honor.",
+            "fix": "Either (a) wire it in: call self.buffers[i].expire(self.t) for all nodes at the top of each step in Engine.run_until (and in _finalize), then add an integration test with a finite ttl asserting a stored-but-expired blob is dropped and cannot be re-delivered; or (b) if expiry-at-offer (buffer.py:36) is intended to be the only mechanism, delete expire() and its standalone test, and correct the buffer docstring/README to say TTL is enforced only at offer time. Option (a) is the one consistent with 'absolute TTL'."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+            "title": "Per-(density,rep) RNG seeding reimplemented twice instead of reusing config.make_rng",
+            "severity": "medium",
+            "issue": "The canonical RNG-derivation contract is config.make_rng(master_seed, *path) = default_rng(SeedSequence([master_seed, *path])). scenario.py bypasses it twice: line 108 inlines `np.random.default_rng(np.random.SeedSequence([base_cfg.master_seed, di, rep]))` (byte-identical to make_rng(master_seed, di, rep)), and _seed_for at line 36 does `int(SeedSequence([base_seed, di, rep]).generate_state(1)[0])` to feed back into replace(master_seed=...). test_integration_percolation.py:62 inlines a third copy with literal seed 777. Three hand-rolled SeedSequence constructions undercut the 'one RNG contract' design and invite drift (e.g. someone 'fixing' make_rng's int() coercion wouldn't fix these).",
+            "fix": "Import make_rng into scenario.py and replace line 108 with `rng = make_rng(base_cfg.master_seed, di, rep)`. For _seed_for, prefer deriving the sub-Config's generators from a path rather than minting a fresh master_seed integer -- or at minimum route it through a single shared helper. Have the integration test call make_rng(777, di, rep) too so all per-(density,rep) streams share one definition."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/config.py",
+            "title": "validate() omits guards for parameters that cause silent division-by-zero / inf",
+            "severity": "medium",
+            "issue": "validate() (config.py:47) checks radius, speed ordering, boundary, mobility, seen_margin, buffer_cap, and CFL, but not blob_size, dt, ttl, throughput_ideal, p_fail, or n. blob_size<=0 silently triggers ZeroDivisionError/inf in budget.py:25 (`(usable*eff)/self.blob_size`); dt<=0 makes Engine.run_until (engine.py:45 `while start + step*dt < t_end`) and the mobility burn-in (mobility.py:66 `.../cfg.dt`) loop forever or divide by zero; p_fail<0 would crash rng.binomial. These fail far from the cause with cryptic errors instead of a clear ValueError at the boundary, which is where every other invariant is enforced.",
+            "fix": "Add to validate(): `if self.blob_size <= 0: raise ValueError('blob_size must be > 0')`; `if self.dt <= 0: raise ValueError('dt must be > 0')`; `if self.ttl < 0: raise ValueError('ttl must be >= 0')`; `if not 0.0 <= self.p_fail <= 1.0: raise ValueError('p_fail must be in [0,1]')`; `if self.throughput_ideal < 0 or self.n < 0: raise ...`. Add one test per new guard alongside the existing CFL/rwp tests in test_config.py."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+            "title": "mean_ci() name is generic but its behavior is delivery-ratio-specific (silent clamp to [0,1])",
+            "severity": "low",
+            "issue": "mean_ci (scenario.py:22) unconditionally clamps the CI to [0,1] via max(0.0, m-z*se)/min(1.0, m+z*se). That is correct for delivery ratios (its only current callers) but the name and signature advertise a general 'mean + CI' helper. If reused for overhead_mean or empirical_mean_degree (both present in the same row dicts), it would silently produce wrong bounds. The clamp is an undocumented domain assumption baked into a generic-looking name.",
+            "fix": "Rename to ratio_mean_ci (or add a `clamp01: bool = True` parameter and a one-line docstring stating the [0,1] assumption). Keep the [0,1] clamp only when clamp01 is set. Update the two call sites and the test_mean_ci_basic reference."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/blob.py",
+            "title": "Blob.hop_energy field is declared but never read anywhere (dead field)",
+            "severity": "low",
+            "issue": "blob.py:12 adds `hop_energy: int | None = None  # optional; default non-binding in v1`. grep shows it is never read or written outside this declaration. It widens the addressing-blind data surface the engine sees for no functional purpose and is the kind of speculative field that rots. The comment ('non-binding in v1') signals it's aspirational.",
+            "fix": "Remove the field until something consumes it (YAGNI), or if it must stay as a forward-compat marker, add a test asserting the engine/policies ignore it and reference the design section that will use it. Prefer removal -- frozen dataclasses are trivial to extend later."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+            "title": "Mean-degree formula and density<->n conversion duplicated across three sites",
+            "severity": "low",
+            "issue": "The expected-degree relation d = n*pi*r^2/(w*h) appears as density_to_n (scenario.py:18, `d*w*h/(pi*r*r)`), as lam_to_n in static_delivery_sweep (scenario.py:103, `w*h/(pi*r*r)`), and the empirical degree `2*len(neighbor_pairs(...))/n` is inlined at scenario.py:112 AND test_integration_percolation.py:66 -- while mobility.mean_degree already implements exactly that empirical formula. Same physics expressed four ways; a change to the edge convention would need four edits.",
+            "fix": "Have static_delivery_sweep call mobility.mean_degree(pos, r, w, h, boundary) instead of inlining `2*len(neighbor_pairs(...))/n` (and likewise in the integration test). Factor the lambda<->n constant into a single helper (e.g. n_per_unit_degree(w,h,r)) reused by both density_to_n and lam_to_n."
+          },
+          {
+            "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+            "title": "Untested gaps: select_offers scarcity uniformity, RWP end-to-end run, and dynamic in-run eviction",
+            "severity": "low",
+            "issue": "Several behaviors the design leans on are unexercised. (1) policies.select_offers under scarcity is only tested for reproducibility and count, never that the random subset is actually uniform/seeded-varying across seeds -- the 'measured, seeded variable, never addressing-aware' claim. (2) run_one is only ever invoked with mobility='static' (test_run_one_static_*); the RWP path through Engine.run_until + analytic contact_interval has no end-to-end test, despite RWP being a documented overlay. (3) buffer eviction is tested in isolation but never through the engine with a finite buffer_cap during a real run. These let regressions hide.",
+            "fix": "Add: a select_offers test asserting the chosen-id set varies across seeds and covers all elements over many seeds (mirroring the buffer tie-break both-outcomes test); a small run_one(cfg(mobility='rwp', ...)) smoke/regression test asserting determinism and 0<=ratio<=1; and an engine test with buffer_cap small + many blobs asserting oldest-by-creation eviction occurs mid-run."
+          }
+        ]
+      }
+    ],
+    "synthesis": {
+      "overallVerdict": "fix-then-pr",
+      "mustFix": [
+        {
+          "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/engine.py",
+          "title": "run_until() calls _finalize() every call, fragmenting one continuous contact into N episodes and charging the t_setup floor (and budget quantization floor) once PER FRAGMENT instead of once per episode",
+          "severity": "high",
+          "fix": "Verified: run_until(10) yields durations [10.0] but run_until(5)+run_until(10) yields [5.0,5.0]. run_one() slices the measure window into 10 sub-calls (scenario.py:53-56) plus warmup+drain, so every contact straddling a slice boundary is over-charged, making results depend on the arbitrary n_samp=10 slicing and contradicting the module docstring ('t_setup floor charged ONCE per episode') and the claimed dt-/sampling-independence. Fix: remove the _finalize() call from the end of run_until(); let self.open persist across calls (the existing 'key in self.open and in_at_end' branch re-confirms still-in-range pairs by extending last_end). Add an explicit finalize()/close() and call it once at the true end of run_one (eng.run_until(warmup+measure_window+drain); eng.finalize()). Add a regression test asserting run_until(5)+run_until(10) == run_until(10) (single [10.0] episode). Direction is conservative (under-counts), so the upper-bound invariant survives, but documented episode semantics and cross-slicing reproducibility do not."
+        },
+        {
+          "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/scenario.py",
+          "title": "RNG substream collision: node index 1000's buffer stream rng(1000+i) aliases the cohort stream rng(2000), correlating one node's eviction randomness with src/dst selection",
+          "severity": "high",
+          "fix": "Verified: make_rng(seed,1000+1000) is byte-identical to make_rng(seed,2000) (same SeedSequence path [seed,2000]); and the dynamic sweep routinely reaches n>>1000 (density_to_n(12,400,400,10)=6112, density_to_n(8,380,380,10)=3677), so node i=1000 is reachable. This violates the stated order-independent/independent substream contract. Fix in scenario.py:43 -- give each purpose a disjoint leading tag: buffers cfg.rng(3, i), cohort cfg.rng(2, ...), engine cfg.rng(1) (instead of the flat 1000+i / 2000 / 7 numbering) so no path can ever alias another regardless of n. Add a test asserting buffer streams are pairwise disjoint from cohort/engine streams across n up to several thousand. Severity is high only on the dynamic run_one/sweep path; the shipped run.py CLI uses static_delivery_sweep and is unaffected."
+        },
+        {
+          "file": "C:/Users/rob/Documents/meldingx/sim/soup_sim/buffer.py",
+          "title": "NodeBuffer.expire() is unwired dead code: TTL expiry never runs in the time-stepped engine, so stored blobs are never actively dropped and expired blobs crowd out deliverable ones in offer selection",
+          "severity": "high",
+          "fix": "Verified: grep for '.expire(' across the repo (excluding .venv) returns ZERO callers. The engine relies only on offer() rejecting now>=expires_at, so a blob accepted while fresh stays in store past its TTL forever. Consequences on the dynamic path: (1) select_offers reads the full store incl. expired blobs, spends up-to-k offer slots on them, they are rejected at the peer, and slots are NOT back-filled with fresh deliverable blobs -> deliverable blobs crowded out (reproduced: fresh id-99 + 10 expired, k=3, peer empty -> fresh NOT selected); (2) expired blobs count against buffer_cap and perturb the eviction cohort; (3) the 'absolute TTL active-eviction' semantics in the docstring/README are not honored. Every integration cfg uses ttl=1e9/1e12, so the gap is invisible to current tests. Fix (option a, consistent with 'absolute TTL'): call self.buffers[idx].expire(self.t) for involved nodes at the top of each step / before _exchange (and in finalize), OR at minimum filter expired blobs in select_offers' candidate list. Add a finite-TTL integration test asserting a stored-but-expired blob is dropped and cannot be re-delivered. If expiry-at-offer is intended as the only mechanism, instead delete expire() and correct the docstring/README -- but option (a) is the consistent choice. Bias is safe-direction (under-count) but makes the dynamic curve artificially pessimistic and is a test-adequacy hole around the absolute-TTL invariant."
+        }
+      ],
+      "shouldConsider": [
+        "mean_ci uses a fixed normal z=1.96 for all sample sizes while its docstring claims a 't/normal' CI (scenario.py:22). THIS IS THE ONLY CORRECTNESS-CLASS ISSUE ON THE SHIPPED run.py PATH: report.plot() shades [ci_lo,ci_hi] as '95% CI'. Verified understatement: ~42% at the gate's reps=5 (t.975,df4=2.776) and ~12% at run.py's default reps=12 (t=2.201). Fix: use mult=t.ppf(0.975,n-1) (or a small hardcoded lookup to avoid the scipy dependency), keep the [0,1] clamp, update the docstring. Promote toward must-fix if the headline plot/CI is part of what the PR is publishing.",
+        "crossing_0p5 (scenario.py:122) uses a symmetric sign test and returns the FIRST bracket, so it accepts DOWNWARD through-0.5 crossings and latches onto premature/tail roots on noisy (engine-sweep) curves. Verified: [0.9,0.4,0.1] returns a downward crossing; [0,0.6,0.4,0.55,1.0] returns the first (premature) crossing and ignores the real transition. The headline static curve is monotone so it is currently safe, but the engine sweep + bootstrap CI is exposed. Fix: require an UPWARD crossing (y[i]<0.5<=y[i+1]) and prefer the LAST such crossing.",
+        "midpoint_with_ci (scenario.py:138) silently drops never-cross (NaN) bootstrap resamples, giving a survivorship-biased, falsely-tight CI when the curve top sits near 0.5 (benign for the 0->1 static curve, a risk for engine sweeps). Surface n_noncross and widen/return NaN above a threshold.",
+        "Susceptibility-peak gate (test_integration_percolation.py:52-73) is seed-fragile: argmax over a coarse 0.5 grid (linspace(2,8,13), reps=5, seed 777) lands on d=4.0 in 34/40 seeds and below the band (3.5) in ~2.5%, biased ~0.5 below the true d_c~4.51 and on the band's lower edge. Refine the grid near the peak (0.25 over 3.5..5.5) and/or take a chi-weighted centroid, raise reps, and center the assertion symmetrically (abs(peak-4.51)<=0.6) so the test documents the target rather than an off-center, occasionally-flaky band.",
+        "budget.py:25 whole-blob quantization int((usable*eff)/blob_size) can under-count by one at exact integer boundaries due to float truncation. Always safe-direction but non-deterministic-looking across parameterizations. Fix: add a tiny epsilon (int(x+1e-9) or math.floor with epsilon).",
+        "config.validate() omits guards for blob_size<=0 (ZeroDivision/inf in budget.py:25), dt<=0 (infinite/zero-div loop in run_until and mobility burn-in), ttl<0, and p_fail outside [0,1] (rng.binomial crash). Add explicit ValueError guards at the boundary where every other invariant is enforced, plus one test each.",
+        "settle_static_fixpoint docstring claims 'fixpoint == connected-component reachability' but this only holds under unbounded buffers; with finite cap, eviction->seen->RejectedSeen makes the result order-dependent and non-component (verified cap=1 over 3 nodes -> [1],[2],[2]). The gate uses big caps so it passes. Document the unbounded-buffer precondition and assert/raise if cap < n where the claim is made.",
+        "DRY/clarity: per-(density,rep) SeedSequence is hand-rolled three times (scenario.py:108, _seed_for:36, test:62) instead of reusing make_rng -- route all through make_rng. mean-degree / density<->n formula is duplicated four ways (density_to_n, lam_to_n, two inlined 2*len(neighbor_pairs)/n) -- reuse mobility.mean_degree and a single n-per-unit-degree helper. mean_ci's silent [0,1] clamp is a delivery-ratio-specific assumption hidden behind a generic name (rename ratio_mean_ci or add clamp01 param). Blob.hop_energy is a declared-but-unread dead field (remove, YAGNI). cell_list.neighbor_pairs clamps only the high side of cell indices (np.minimum) -- use np.clip(...,0,ncx-1) for robustness (currently unreachable since production keeps positions in-box). n_local contention uses leg-START degree which can slightly over-deliver if nodes converge -- document the CFL-bounded snapshot or use max(deg(p0),deg(p1)). percolation.susceptibility normalizes by N rather than the standard sum of non-largest cluster sizes -- argmax unaffected, but annotate so the magnitude isn't misread for finite-size scaling.",
+        "Test-adequacy gaps: run_one is only tested with mobility='static' (no end-to-end RWP+contact_interval path); select_offers scarcity uniformity across seeds is untested; in-run eviction with finite buffer_cap during a real engine run is untested. These are exactly the dynamic-path behaviors that the three must-fix bugs live in -- add coverage alongside the fixes."
+      ],
+      "prRecommendation": "Fix-then-PR. The core science the PR actually ships is sound: the headline CLI (run.py -> static_delivery_sweep -> midpoint_with_ci) is engine-free, exact, and validated by an independent union-find oracle KAT (delivered pairs == same-component pairs) plus the d_c~4.51 susceptibility gate. Addressing-blindness, no-module-global-RNG, cross-process determinism, inversion-proof eviction, and the upper-bound invariant are all genuinely upheld and lint-enforced (verified in code, not just by regex). None of the three high-severity bugs break the upper-bound invariant (all are safe-direction under-counts or independence/semantics issues), so nothing produces a number that overstates delivery. HOWEVER, do not open the PR as-is: (1) all three highs sit on the dynamic engine path (run_one/sweep) which the README advertises as a real mechanic but which is currently only exercised by infinite-TTL tests that mask the defects -- shipping it with the _finalize fragmentation (results depend on arbitrary n_samp slicing), the rng(1000+i)==rng(2000) collision (reachable at n~3600-6100), and unwired expire() would publish a dynamic capability that does not behave as documented and is not reproducible across slicing. (2) On the shipped static path, the only correctness-class issue is mean_ci's z=1.96 CI mislabeled as 't' -- it understates the plotted '95% CI' band by ~12% at the default reps=12 and ~42% at the gate's reps=5; fix it before publishing a plot. Recommended sequence: fix the three highs (or, if the PR scope is deliberately the static cliff only, explicitly mark the dynamic engine as experimental/untested-for-finite-TTL and gate it out of the README claims) + fix the mean_ci t-multiplier, add the three named regression tests (cross-slicing episode equality, disjoint RNG substreams, finite-TTL expiry), then open. The crossing_0p5 upward-only fix and the susceptibility-gate de-flaking are strongly recommended in the same PR if the dynamic sweep or the gate seed is touched. Everything else is polish that can follow.\""
+    }
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Review"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Synthesize"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "code-review:correctness",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a8bb66846de3d0f96",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782391891334,
+      "queuedAt": 1782391891326,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "CORRECTNESS",
+      "promptPreview": "You are a rigorous, constructive code reviewer of the polleneus soup-simulator. Read the code under C:/Users/rob/Documents/meldingx/sim (soup_sim/*.py, tests/*.py, run.py) with your file tools, then review.\n\npolleneus invariants the sim must honor: pure flooding (no routing/targeting), engine/policies ADDRESSING-BLIND (read only blob id/created_at/ttl/size; src/dst only in metrics oracle), determi…",
+      "lastProgressAt": 1782392320496,
+      "tokens": 67569,
+      "toolCalls": 43,
+      "durationMs": 429162,
+      "resultPreview": "{\"lens\":\"CORRECTNESS\",\"verdict\":\"needs-fixes\",\"strengths\":[\"Geometry contact_interval is analytically correct and dt-independent: roots are clamped to [t0,t1], the enter>exit guard rejects contacts that start after the leg, full-leg containment returns (t0,t1), and the grazing disc==0 case correctly returns None (open-set convention). Verified against synthetic head-on, tangential, after-leg, and …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "code-review:invariants",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a08cab316b1177fe0",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782391891335,
+      "queuedAt": 1782391891326,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "INVARIANTS",
+      "promptPreview": "You are a rigorous, constructive code reviewer of the polleneus soup-simulator. Read the code under C:/Users/rob/Documents/meldingx/sim (soup_sim/*.py, tests/*.py, run.py) with your file tools, then review.\n\npolleneus invariants the sim must honor: pure flooding (no routing/targeting), engine/policies ADDRESSING-BLIND (read only blob id/created_at/ttl/size; src/dst only in metrics oracle), determi…",
+      "lastProgressAt": 1782392258638,
+      "tokens": 59227,
+      "toolCalls": 37,
+      "durationMs": 367303,
+      "resultPreview": "{\"lens\":\"INVARIANTS\",\"verdict\":\"minor\",\"strengths\":[\"Addressing-blindness genuinely holds in code: src/dst appear only in workload.py (generation), scenario.py (the wiring/registration layer), and metrics.py (the oracle). engine/policies/buffer/budget/mobility/geometry/cell_list/percolation never read sender/recipient. Verified by grep across the package, not just the lint regex. The Blob dataclas…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "code-review:stats-percolation",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "ac2384fbdbe0b1a59",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782391891335,
+      "queuedAt": 1782391891326,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "STATS-PERCOLATION",
+      "promptPreview": "You are a rigorous, constructive code reviewer of the polleneus soup-simulator. Read the code under C:/Users/rob/Documents/meldingx/sim (soup_sim/*.py, tests/*.py, run.py) with your file tools, then review.\n\npolleneus invariants the sim must honor: pure flooding (no routing/targeting), engine/policies ADDRESSING-BLIND (read only blob id/created_at/ttl/size; src/dst only in metrics oracle), determi…",
+      "lastProgressAt": 1782392527551,
+      "tokens": 48581,
+      "toolCalls": 25,
+      "durationMs": 636216,
+      "resultPreview": "{\"lens\":\"STATS-PERCOLATION\",\"verdict\":\"minor\",\"strengths\":[\"The oracle KAT (test_integration_percolation.py:32-49) is a genuinely strong, independent cross-check: it asserts the engine's iterative flood fixpoint produces EXACTLY the same set of (src,dst) pairs as union-find connected components on the identical neighbor_pairs graph. Two distinct algorithms (settle_static_fixpoint vs _UF) reaching …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "code-review:quality",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a91ba3c6888f5056b",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782391891336,
+      "queuedAt": 1782391891326,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "QUALITY — DRY/clarity/dead-code/simplicity/test-adequacy (n…",
+      "promptPreview": "You are a rigorous, constructive code reviewer of the polleneus soup-simulator. Read the code under C:/Users/rob/Documents/meldingx/sim (soup_sim/*.py, tests/*.py, run.py) with your file tools, then review.\n\npolleneus invariants the sim must honor: pure flooding (no routing/targeting), engine/policies ADDRESSING-BLIND (read only blob id/created_at/ttl/size; src/dst only in metrics oracle), determi…",
+      "lastProgressAt": 1782392141727,
+      "tokens": 64756,
+      "toolCalls": 41,
+      "durationMs": 250391,
+      "resultPreview": "{\"lens\":\"QUALITY — DRY/clarity/dead-code/simplicity/test-adequacy (not bug-hunting)\",\"verdict\":\"minor\",\"strengths\":[\"Module docstrings are genuinely excellent: each file's top-of-file comment states the invariant it upholds and the bias direction (e.g. buffer.py 'OLDEST-by-creation ... NEVER closest-to-TTL', budget.py 'result is an UPPER BOUND'). This is the kind of intent-documentation that makes…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "synthesize",
+      "phaseIndex": 2,
+      "phaseTitle": "Synthesize",
+      "agentId": "a425b8bf29db70232",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782392527561,
+      "queuedAt": 1782392527552,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "fix-then-pr",
+      "promptPreview": "Consolidate this fan-out code review of the soup simulator into a go/no-go for opening the PR.\n\nREVIEWS (JSON):\n[{\"lens\":\"CORRECTNESS\",\"verdict\":\"needs-fixes\",\"strengths\":[\"Geometry contact_interval is analytically correct and dt-independent: roots are clamped to [t0,t1], the enter>exit guard rejects contacts that start after the leg, full-leg containment returns (t0,t1), and the grazing disc==0 c…",
+      "lastProgressAt": 1782392759236,
+      "tokens": 50544,
+      "toolCalls": 15,
+      "durationMs": 231675,
+      "resultPreview": "{\"overallVerdict\":\"fix-then-pr\",\"mustFix\":[{\"file\":\"C:/Users/rob/Documents/meldingx/sim/soup_sim/engine.py\",\"title\":\"run_until() calls _finalize() every call, fragmenting one continuous contact into N episodes and charging the t_setup floor (and budget quantization floor) once PER FRAGMENT instead of once per episode\",\"severity\":\"high\",\"fix\":\"Verified: run_until(10) yields durations [10.0] but run…"
+    }
+  ],
+  "totalTokens": 290677,
+  "totalToolCalls": 161
+}

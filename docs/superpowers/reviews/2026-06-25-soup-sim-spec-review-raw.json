@@ -1,0 +1,606 @@
+{
+  "summary": "Fan-out design review of the soup-simulator feature spec: will it measure the right thing, faithfully, testably?",
+  "agentCount": 6,
+  "logs": [
+    "Review done: 5 lenses, 18 high/critical findings"
+  ],
+  "result": {
+    "reviews": [
+      {
+        "lens": "measurement-validity",
+        "verdict": "sound-with-fixes",
+        "strengths": [
+          "Correct first-slice instinct: isolating delivery-vs-density before any phone code is the right P0 move, and it faithfully exercises the invariants that actually govern delivery (inv 1 offline, inv 2 pure flooding, inv 5 absolute TTL, inv 7 gathering-scale density). The slice deliberately defers crypto/anonymity/anti-abuse, which are orthogonal to the percolation question.",
+          "The density control parameter N·πr²/(W·H) is the theoretically correct normalization: in the Gilbert disk / continuum-percolation model the giant component depends on points and radius only through the mean degree d = λπr², and the known critical mean degree is ~4.51. So sweeping this single dimensionless number (rather than N and r separately) is the right axis IF the confounders below are pinned.",
+          "The byte-budget abstraction for reconciliation is a defensible modeling decision for THIS question. The binding constraint on delivery at density is finite airtime per contact (parent §11), and a per-contact byte/count cap captures that without IBLT internals. The spec also correctly flags it for reviewer confirmation and schedules a later delta-measurement.",
+          "Anti-resurrection is taken seriously: the seen-record + 'delivery = first time recipient holds it' explicitly guards against the classic flooding-sim bug of double-counting re-accepted/replicated blobs inflating delivery ratio. The junk-flood known-answer test is a good honest-degradation check.",
+          "Determinism-by-seed as a first-class requirement (with a same-seed→identical test) is exactly right for a measurement instrument and makes every reported curve point reproducible/auditable.",
+          "Swappable policies (flood/eviction/retention/seen-record) means the eviction choice (youngest-by-real-age + randomized, per parent §9.5) can be measured as a variable rather than baked in — good for later validity checks."
+        ],
+        "findings": [
+          {
+            "title": "Single scalar density hides 2+ orthogonal axes — the 'cliff' you locate will be an artifact of which knob you swept",
+            "severity": "high",
+            "issue": "The percolation cliff at d≈4.51 is a CONNECTIVITY threshold (does a giant component of the contact graph exist). But the headline metric is DELIVERY, which also depends on (a) the per-contact byte budget B vs the offered set size, (b) buffer cap, (c) TTL vs the time to traverse the component, and (d) mobility mixing time. You can hold N·πr²/A fixed and get wildly different delivery by changing W×H (same density, different absolute area => different absolute travel time vs TTL) or by changing speed. Mean degree is scale-free; delivery latency is not. So 'the cliff' reported from one parameter set may be the airtime/TTL wall, not the percolation wall, and the spec presents them as one curve. This directly threatens the stated purpose ('locate the percolation cliff').",
+            "fix": "Separate the two regimes explicitly. (1) Add a STATIC, unbudgeted (B=∞), TTL=∞ connectivity baseline run whose only job is to reproduce the known continuum-percolation giant-component transition near mean-degree 4.51 — this VALIDATES the engine against ground truth before any mobility/budget confounder is added. (2) For the dynamic delivery curve, hold ALL of {W×H absolute, speed, B, buffer cap, TTL} fixed per sweep and report them in the CSV header; sweep density by varying N only (or r only) and document which. (3) Report delivery-vs-density AND latency-vs-density on the same axis so the reader can see whether the drop is connectivity (delivery never happens) or airtime/TTL (delivered but too slow / budget-starved). Label each curve with the regime it isolates."
+          },
+          {
+            "title": "Random Waypoint speed-decay and border concentration will bias the density axis and the cliff location",
+            "severity": "high",
+            "issue": "RWP has two well-documented validity bugs. (1) Speed decay: with speed drawn from [vmin,vmax], vmin>0 not enforced, average speed declines over the run toward a lower stationary value, so 'speed' is not the speed you think and contact rate drifts during the run. (2) Spatial non-uniformity / border effect: stationary RWP node density is concentrated toward the center (roughly bell-shaped), NOT uniform. That means the EFFECTIVE local density in the middle is higher than N·πr²/A and lower at the edges — so your control parameter systematically misstates the density nodes actually experience, shifting the apparent cliff. The spec names RWP as default but says nothing about initialization or these effects.",
+            "fix": "Three concrete steps: (a) Initialize node positions AND speeds from the RWP STATIONARY distribution (perfect/Palm-calculus initialization) so no warm-up bias and the spatial distribution is the steady one from t=0; cite this in the README. (b) Enforce vmin>0 (and document it) or use a constant speed to kill speed-decay. (c) Because RWP's center-concentration biases the effective-density-to-control-parameter mapping, ALSO run the percolation-validation sweep in STATIC uniform-random placement (where N·πr²/A IS the true mean degree) as the primary cliff measurement, and treat RWP as the mobility-overlay study. Optionally report the measured spatial node-density histogram as a sanity artifact."
+          },
+          {
+            "title": "No warm-up / steady-state handling and no specified message-injection window — cold-start bias will distort both delivery ratio and latency",
+            "severity": "high",
+            "issue": "The spec never says WHEN messages are created relative to the run, over WHAT window, or whether an initial transient is discarded. If all messages are injected at t=0 the network is in a cold transient (buffers empty, soup not mixed); if injected uniformly over the whole run, messages created near the end have less than TTL of wall-clock to be delivered and are unfairly counted as failures (right-censoring). Either choice silently biases delivery ratio. Latency origin is defined (creation→first recipient hold) but the denominator of 'delivery ratio' across the injection window is not, and censoring near end-of-run is unaddressed. This is the single most common DTN-sim methodology error.",
+            "fix": "Specify a 3-phase timeline in the spec: WARM-UP (run mobility + background/cover soup churn until contact-rate and buffer-occupancy reach steady state — detect via a moving-average plateau, or skip by stationary-init above), MEASUREMENT window (inject the measured messages at a fixed rate λ_msg over [t_start, t_end]), and DRAIN/COOLDOWN of at least one max-TTL after t_end so every measured message gets a full TTL of opportunity (no right-censoring). Define delivery ratio strictly over messages whose creation_ts ≤ t_end and which therefore had ≥ TTL of post-creation simulated time. State λ_msg, the recipient-selection rule, and confirm message load is light enough not to itself saturate the airtime budget (else you measure congestion, not percolation)."
+          },
+          {
+            "title": "Repetitions per density point and confidence intervals are entirely absent — a single seeded run cannot locate a cliff",
+            "severity": "high",
+            "issue": "Determinism-by-seed is necessary but NOT sufficient: one seed gives ONE sample of a random process. Near the percolation threshold variance EXPLODES (critical slowing-down / bimodal connected-vs-not outcomes), so a single run per density point can place the cliff anywhere within a wide band and you cannot tell signal from RNG. The spec's DoD ('the curve clearly shows the cliff') is unfalsifiable without error bars. Standard DTN practice is multiple independent replications with 95% CIs.",
+            "fix": "Mandate R independent replications per density point (different sub-seeds derived deterministically from a master seed, e.g. seed_i = hash(master, density_idx, i)) — start R≈20–30 and increase near the cliff. Report mean delivery ratio with a 95% confidence interval (Wilson interval for the ratio is better than normal at extremes near 0/1) and report latency as a distribution (median + IQR/percentiles, not just mean — latency is heavy-tailed). Make CI width a DoD acceptance gate (e.g. half-width < X at the cliff). Use finer density spacing in the transition region than in the flat tails."
+          },
+          {
+            "title": "Finite-area boundary topology (torus vs walls) is unspecified — this alone can move the threshold",
+            "severity": "medium",
+            "issue": "The spec says 'W×H area' but never states whether the domain wraps (torus) or has reflecting walls. This is not cosmetic: walls create edge nodes with systematically fewer neighbors (a finite-size boundary effect) that depresses connectivity and shifts the apparent critical density upward, while a torus removes boundary effects and gives the cleanest comparison to the infinite-plane theoretical threshold (~4.51). Mixing this choice with RWP's own border effect makes results uninterpretable. Reviewers/readers cannot reproduce a cliff number without knowing this.",
+            "fix": "Make the boundary an explicit, logged config field. For the percolation-VALIDATION sweep use a TORUS (wrap-around distance metric for both contact detection and mobility) so the engine can be checked against the known infinite-plane critical mean degree. For the realistic gathering scenario, walls (bounded venue) are the faithful choice — run it as a separate, labeled scenario and expect/report the upward threshold shift from finite-size effects. Add a unit test that contact detection uses the correct (wrapped vs clipped) distance under each mode."
+          },
+          {
+            "title": "Time-step discretization can fabricate or miss contacts — no guidance on Δt vs speed×r",
+            "severity": "medium",
+            "issue": "A hand-rolled time-stepped engine samples positions every Δt and tests in-range. If Δt is too large relative to speed and r, fast brief encounters are missed (under-counts contacts → understates delivery, shifts cliff right), and contact DURATION is quantized, which directly mis-sizes the per-contact byte budget B (B = duration×throughput). If Δt is too small the 50k-node runs become infeasible. The spec mentions neither a stability/CFL-style constraint nor a continuous-time contact test, so B and contact counts are silently Δt-dependent.",
+            "fix": "Add a documented constraint such as Δt ≤ α·r / v_max with α ≤ 0.1 (a node moves <<r per step), and put it in config validation (assert at startup). Add a Δt-sensitivity check to the test/validation plan: halve Δt and confirm delivery ratio and mean contact duration change by < a tolerance (convergence). Better: compute contact entry/exit analytically per straight-line RWP leg (closest-approach to the line segment) so contacts and durations are Δt-independent; if keeping discrete stepping, derive B from the integrated in-range time, not a single per-step snapshot."
+          },
+          {
+            "title": "Exchange-at-contact-start semantics under-specify symmetry, ordering, and budget direction — affects measured delivery",
+            "severity": "medium",
+            "issue": "§2 says exchange 'happens at contact start (and may be re-attempted while in range)' and each node offers blobs the other lacks bounded by budget B. Ambiguities that change the number: is B per-direction or shared? When both nodes have more to offer than B allows, WHICH blobs are chosen (FIFO? random? newest?) — this selection policy interacts with the cliff because it decides what propagates under scarcity. If exchange re-attempts every step while in range, a long contact effectively gets unbounded transfer, contradicting 'finite airtime per contact'. Determinism also requires a defined tie-break/iteration order over node pairs.",
+            "fix": "Specify: (1) B is consumed per contact-episode (entry to exit), not per step — track remaining budget across the in-range steps so a long sit transfers B total, matching the airtime model. (2) Define the offer-selection order under scarcity as an explicit, swappable policy (default: uniform-random among missing, seeded) and make it a measured variable. (3) Define B as per-direction or shared and justify against BLE half-duplex reality. (4) Fix a deterministic pair-iteration order (e.g. sorted by node id) and add it to the determinism test."
+          },
+          {
+            "title": "DoD 'curve clearly shows the cliff (or its absence)' has no quantitative pass criterion",
+            "severity": "medium",
+            "issue": "An acceptance criterion that depends on eyeballing a plot is not a measurement standard and is the kind of soft gate the parent doc's own ethos ('measure, don't assume') argues against. Two engineers can disagree on whether a curve 'clearly shows' a cliff.",
+            "fix": "Define the cliff quantitatively: e.g. estimate the critical density as the point of maximum slope (or where delivery crosses 0.5) via fitting a sigmoid/logistic to (density, delivery) and report the fitted midpoint with a CI from the replications; OR report the density at which delivery first exceeds a threshold with non-overlapping CIs. DoD becomes: validation sweep recovers the known static-percolation mean-degree threshold within a stated tolerance, and the dynamic sweep reports a midpoint estimate with CI. This also gives the regression test something numeric to assert."
+          },
+          {
+            "title": "Latency 'origin = creation' undercounts queueing/origination delay and is only over delivered messages (survivorship)",
+            "severity": "low",
+            "issue": "Latency = creation→first-recipient-hold over DELIVERED messages only is a survivorship-biased statistic: as density drops, the hardest (longest-path) messages fail and drop out of the latency sample, so mean latency can paradoxically DECREASE near the cliff even as the system gets worse. Reporting it without the delivery ratio beside it is misleading. Also, in the real system origination is gated/Poisson-mixed (parent §10) but that's correctly out of scope here — just be explicit the latency excludes origination delay.",
+            "fix": "Always present latency JOINTLY with delivery ratio at each density (never latency alone), and explicitly annotate that it is conditional on delivery. Consider also reporting a fixed-deadline success metric (fraction delivered within Δ of various deadlines) which is censoring-robust and arguably the more decision-relevant number for a TTL-bounded system. State in the spec that latency origin = blob creation_ts and excludes origination/mixing delay (out of scope)."
+          }
+        ],
+        "missing": [
+          "A percolation-VALIDATION harness that reproduces the known ground truth (static uniform placement on a torus, B=∞, TTL=∞ → giant-component appears near mean degree ~4.51). Without this, you cannot tell whether a measured cliff is real physics or an engine bug. This should be the first integration test, gating everything else.",
+          "An explicit experiment timeline in the spec: warm-up/steady-state criterion, message-injection window [t_start,t_end] with rate λ_msg, and a post-injection drain of ≥ one max-TTL to eliminate right-censoring. Plus a statement that the measured message load is light enough not to saturate the byte budget (otherwise you measure congestion, not percolation).",
+          "A statistics protocol: number of replications R per density point, deterministic sub-seed derivation, the confidence-interval method (Wilson for the ratio), latency reported as distribution/percentiles, finer density spacing near the transition, and a CI-width acceptance gate in the DoD.",
+          "Boundary topology as a first-class, logged config (torus for validation, walls for realistic venue) and RWP stationary-distribution initialization with vmin>0, with the spatial-density and speed-over-time sanity artifacts to prove it.",
+          "Time-step / contact-detection fidelity rule (Δt ≤ α·r/v_max, or analytic per-leg closest-approach contact times) and a Δt-convergence check, so contact counts and the budget-defining contact durations are not artifacts of the step size.",
+          "Precise exchange semantics: per-episode (not per-step) budget accounting, the offer-selection policy under scarcity as a named swappable default, direction/sharing of B, and a deterministic pair-iteration order — each with a unit test.",
+          "A full parameter manifest emitted into every CSV (W, H, N, r, speed dist, Δt, B, buffer cap, TTL, boundary mode, mobility mode, master seed, replication index, injection window, λ_msg) so any curve point is independently reproducible — the spec asks for 'explicit seed' but a seed alone does not reproduce a result without the rest of the config pinned.",
+          "A quantitative cliff-estimation definition (sigmoid-fit midpoint with CI, or delivery=0.5 crossing) so DoD #4 is falsifiable rather than eyeballed, and so it can back a regression assertion."
+        ]
+      },
+      {
+        "lens": "DESIGN-FIDELITY — does the sim faithfully represent the parent v0.4 mechanics that affect delivery, and does the byte-budget abstraction distort the measured percolation cliff?",
+        "verdict": "sound-with-fixes",
+        "strengths": [
+          "Scope discipline is genuinely correct: the first slice isolates the single most load-bearing, unmeasured claim in the parent (the §12.1 percolation cliff) and defers crypto/tokens/anonymity, which do not change whether a blob physically reaches the recipient. This is the right thing to measure first and matches roadmap P0 'measure, don't assume.'",
+          "The density control parameter N·pi·r^2/(W*H) is the textbook continuum-percolation / random-geometric-graph reduced density (expected nodes per radio disk = mean degree). Using mean degree rather than raw N or raw area is the correct, comparable, dimensionless x-axis for locating a percolation threshold, and makes the curve portable across W/H/r choices.",
+          "Faithfully carries the parent's hard invariants that actually gate delivery: pure flooding with no routing/targeting (inv 2), absolute created_at+ttl TTL with no reset-on-hop (inv 5, parent §6), seen-record as anti-resurrection so delivery is not inflated by re-accepting evicted/expired ids, and the §9.5 youngest-by-real-age + randomized eviction (NOT closest-to-TTL). Modeling these is what keeps the measured cliff representative of the real retention/anti-abuse design rather than a generic epidemic-routing sim.",
+          "Identifying airtime-per-contact (not storage) as the binding constraint and making it a first-class swept quantity (the byte/count budget) is aligned with the parent's central re-framing in §8/§11 that 'the buffer does not mean the radio can stir it.' A pure storage-capacity sim would measure the wrong wall; this one targets the right one.",
+          "Swappable policy modules (flood/eviction/retention/seen-record) plus determinism-by-seed and CSV-per-run is the correct experimental hygiene for a measurement instrument: it lets the eviction/retention choices in parent §9.5 be A/B-tested against the curve rather than assumed.",
+          "Known-answer integration tests (2 in-range -> delivered; permanently-out -> never; dense -> high, sparse -> low) are the right falsifiable anchors for a sim whose entire value is curve *shape*."
+        ],
+        "findings": [
+          {
+            "title": "Byte-budget abstraction is directionally OPTIMISTIC and can move the cliff: it omits BLE contention scaling with density and reconciliation overhead/decode-failure",
+            "severity": "high",
+            "issue": "The KEY MODELING DECISION sets per-contact budget B = contact_duration x assumed_throughput as a PER-CONTACT constant. But the parent's whole airtime thesis (§8/§11) is that effective throughput COLLAPSES with density: 3 BLE advertising channels, no hopping, collision probability high at ~200 co-located advertisers. A density-independent B makes airtime cheaper exactly where the parent says it gets expensive. Worse, the sim's x-axis IS density, so an error that is itself a function of density does not just shift the cliff, it can change its SHAPE and even hide it: real systems can show delivery rising then FALLING as density climbs (contention-limited), which a constant-B model structurally cannot reproduce. Two further omissions push the same (optimistic) direction: (a) rateless reconciliation has a fixed sketch/handshake overhead and a nonzero decode-failure/extra-round probability (Erlay/minisketch) that consumes airtime before any payload moves -- a pure byte budget with zero fixed cost lets infinitesimal contacts still deliver; (b) blobs are chained multi-PDU (~1KB), so transfer is quantized, not a smooth byte stream -- a contact that fits 0.9 blobs delivers 0, not 0.9.",
+            "fix": "Make throughput density-aware, not constant. Minimum: model effective per-contact throughput as throughput_ideal / (1 + alpha * n_local_contenders), where n_local_contenders = peers within r (or 2r) at contact time and alpha is a documented contention coefficient; sweep/sensitivity-test alpha and publish the cliff's sensitivity to it. Add a fixed per-contact handshake cost h (bytes or time) subtracted before payload, and a reconciliation decode-failure probability p_fail per contact that yields zero useful transfer (parameterized, default from Erlay numbers). Quantize transfer to whole blobs (~1KB units), not raw bytes. State explicitly in the README that with constant B the curve is an UPPER BOUND on delivery and the true cliff is at equal-or-higher density. This single change is the difference between a faithful airtime cliff and a storage-style cliff wearing an airtime label."
+          },
+          {
+            "title": "Random Waypoint default silently distorts the density axis: center-clustering + speed decay mean nominal density != experienced density",
+            "severity": "high",
+            "issue": "RWP is well documented as 'considered harmful' for exactly this kind of measurement: (1) the stationary spatial distribution is non-uniform, peaking in the center and near-zero at the borders, so the LOCAL density nodes actually experience is higher than the nominal N*pi*r^2/(W*H) you plot on the x-axis -- the cliff will appear at a LOWER nominal density than the true geometric threshold, and the offset depends on W/H aspect and r, so it is not even a clean constant bias; (2) average node speed decays over a long transient before steady state, so contact RATE (hence per-contact airtime budget B derived from contact duration) drifts during the run unless warmed up; (3) without periodic boundary conditions, finite-area boundary effects further shift the apparent percolation threshold relative to the theoretical mean-degree ~4.51. None of warmup, boundary handling, or the nominal-vs-experienced-density gap is specified.",
+            "fix": "Three concrete additions: (a) Use perfect/stationary RWP initialization (sample initial positions and speeds from the steady-state distribution, e.g. Le Boudec-Vojnovic perfect simulation) OR run a documented warmup/burn-in and discard it before metrics; assert in a test that mean speed and spatial occupancy are stationary across the measurement window. (b) Make STATIC (uniform-random or Poisson) placement the primary percolation-cliff configuration -- it is the regime where the N*pi*r^2/(W*H) control parameter is literally the theory's reduced density -- and treat RWP as the mobility overlay measured against that baseline; the spec already has static mode, just promote it for the headline cliff. (c) Either use a torus (periodic boundary) for the static percolation run to match continuum-percolation theory, or explicitly report results against the FINITE-AREA threshold and validate with the known-answer that the static curve's knee lands near mean degree ~4-4.5 (a built-in sanity gate that catches density-axis bugs)."
+          },
+          {
+            "title": "'Delivery = first time the recipient holds the blob' omits the time-ratcheted FS / readability window — a blob can arrive but be unreadable, which is the parent's actual delivery semantics",
+            "severity": "medium",
+            "issue": "The parent's delivery is not 'recipient possesses ciphertext' -- it is 'recipient can READ it.' Parent §5/§6 make decryptability expire on a clock-driven time-ratchet (sub-epoch keys deleted on schedule, whether or not read) and the honest send states (§13) explicitly include 'Expired before any peer saw it.' A blob that reaches the recipient AFTER its readable sub-epoch window has passed is, by the parent's own semantics, NOT delivered to a user -- yet this sim would score it delivered the instant the id is held. Since latency grows precisely near the cliff (sparse density), the late-arrival fraction is highest exactly where the headline number matters most, so this over-counts delivery in the most important region.",
+            "fix": "Add an optional readability deadline to the delivery predicate: delivered iff recipient holds the blob AND (now - created_at) <= readable_window, where readable_window <= ttl is a documented parameter (default = ttl for this slice to keep it simple, but the hook must exist and be swept). Report two curves when readable_window < ttl: 'arrived' vs 'arrived-in-time.' At minimum, document that this slice equates arrival with delivery and that the parent's FS window will only LOWER the curve, never raise it -- so again the measured curve is an upper bound."
+          },
+          {
+            "title": "Hop-energy decrement (parent §6 backstop) is omitted, so the sim models the wrong expiry mechanism in the no-trusted-clock regime that the cliff actually lives in",
+            "severity": "medium",
+            "issue": "The spec models TTL as a clean absolute created_at+ttl with a trusted global clock. But the parent is explicit (§6 'clock-trust hole') that in a blackout there is NO NTP, RTCs drift, created_at is forgeable, and the REAL expiry backstop is hop-energy (born at B, decrement-only, drop at 0) plus a gossip-median mesh clock. Hop-energy caps the number of re-shares a blob gets, which directly limits epidemic spread and therefore the delivery curve -- it is a delivery-affecting mechanic, not a crypto detail. Omitting it means the sim measures the cliff of an idealized infinite-rebroadcast flood, not the parent's energy-bounded flood; the true cliff is at higher density / lower delivery because blobs die by hop budget before saturating sparse regions.",
+            "fix": "Add hop-energy as a first-class blob field (born at B, decrement on each successful re-share, drop at 0) with a pluggable policy so it can be turned off to compare. Default B large enough to be non-binding for the v1 headline run, but REQUIRE a sensitivity sweep over B in the DoD, because the parent intends hop-energy to be a real lifetime knob. If hop-energy is deliberately deferred, the spec must say so explicitly and justify why an energy-unbounded flood is still representative of the cliff (it is not, for sparse density)."
+          },
+          {
+            "title": "Seen-record is specified as protecting delivery integrity but its sizing/window is unspecified — and a too-small window silently re-inflates delivery or starves it, corrupting the metric it exists to protect",
+            "severity": "medium",
+            "issue": "The spec correctly cites the parent's anti-resurrection role and the parent §6 requirement W >= maxTTL + margin. But the sim spec gives no window size, no aging discipline (FIFO-by-time vs FP-by-saturation), and no capacity. Under junk-flood (which §7 deliberately tests), a saturation-evicting seen filter would forget legit ids and re-accept them -> resurrection -> inflated/garbled delivery and latency; an over-aggressive filter could reject re-offered blobs that were legitimately dropped for buffer reasons -> understated delivery. Either way the headline metric is corrupted by an undocumented parameter, defeating the seen-record's stated purpose.",
+            "fix": "Pin the seen-record contract: window W >= maxTTL + margin (per parent §6), FIFO-by-time aging (not fingerprint-by-saturation), and a documented capacity that is asserted in the junk-flood integration test to NOT cause forgetting within W. Add a determinism/anti-resurrection test that floods past nominal capacity and asserts no expired/evicted id is ever re-accepted within W and that delivery count is exactly the unique-recipient-hold count. Record seen-record size/evictions as a metric so any silent saturation is visible in the CSV."
+          },
+          {
+            "title": "Contact/exchange timing is under-specified for a time-stepped engine: step size dt is a hidden parameter that can fabricate or destroy contacts (and thus the cliff)",
+            "severity": "medium",
+            "issue": "A discrete time-stepped engine with step dt and node speed v can MISS contacts (two fast nodes pass within r between samples -> no contact recorded) or OVER-count exchange opportunities (re-attempt-while-in-range every step inflates effective budget). The spec says 'exchange happens at contact start (and may be re-attempted while in range)' but never defines how budget B relates to a single contact vs per-step re-attempts. If B is applied per step, denser/slower scenarios get arbitrarily more total airtime, contaminating the very density axis being measured. dt is therefore a confound on the headline curve and is currently invisible.",
+            "fix": "Define the contact-airtime contract precisely: budget B is per CONTACT EPISODE (from in-range to out-of-range), tracked across steps, not per step; re-attempts may continue an episode but cannot exceed B for that episode. Choose dt from a CFL-style condition (dt such that v*dt << r, e.g. v*dt <= r/5) and assert it; add a test that closing-speed contacts are detected (the boundary/grazing case) and that two identical scenarios at dt and dt/2 give the same delivery within tolerance (dt-convergence test). Log dt and the missed-contact estimate in the CSV."
+          },
+          {
+            "title": "Eviction victim selection 'youngest-by-real-age + randomized' is ambiguous and risks contradicting the parent's intent, which would change the curve under buffer pressure",
+            "severity": "low",
+            "issue": "Parent §9.5 retains by real age = keep the YOUNGEST-BY-ACTUAL-CREATION (drop OLDEST-by-creation), explicitly NOT closest-to-TTL, with randomization and a per-neighbor buffer-share cap. The sim spec's phrasing 'eviction = youngest-by-real-age' is read two opposite ways: 'evict the youngest' vs 'retain the youngest (evict oldest).' It also omits the per-neighbor buffer-share cap, which is part of the same anti-flood eviction design and directly affects how a junk-flood degrades honest delivery (the §7 test). Getting the victim backwards inverts which blobs survive buffer pressure and mis-locates the buffer-limited part of the curve.",
+            "fix": "State the rule unambiguously: under cap, evict from the OLDEST-by-creation-age cohort with randomized tie-break (retain younger, anti-flood per parent §9.5); add the per-neighbor buffer-share cap as a parameter. Add a unit test asserting the exact victim on a hand-built buffer (e.g. given created_at set {t0<t1<t2} at cap, the evicted id is among the t0 cohort, never the closest-to-TTL). Cross-link the test name to parent §9.5 so the fidelity link is auditable."
+          },
+          {
+            "title": "Single-sender / traffic-matrix assumptions are unstated, yet they determine what 'delivery ratio' even means and whether buffers see realistic contention",
+            "severity": "low",
+            "issue": "Delivery ratio = delivered/total, but the spec never says how many distinct (sender,recipient) pairs exist, the message generation rate, or whether every node both originates and relays. With one message the curve is a percolation indicator; with a realistic venue-wide traffic matrix the buffers fill, eviction/airtime contention engage, and the cliff can appear at a very different density. Since buffer occupancy and circulated-blobs/min are headline metrics, the offered-load model is load-bearing and currently implicit.",
+            "fix": "Specify the traffic model as an explicit swept parameter: number of concurrent (sender,recipient) flows, per-node origination rate (Poisson), and whether all nodes relay. Run the headline cliff at low offered load (clean percolation signal) AND at a documented venue-scale offered load (airtime/buffer-limited signal), and report both -- they answer different sub-questions of 'when does delivery become useful.' Make total = messages whose recipient existed and whose TTL window overlapped a feasible delivery path, so the ratio is not silently penalized by messages that were impossible by construction."
+          }
+        ],
+        "missing": [
+          "Density-dependent throughput / contention model (with documented coefficient and sensitivity sweep), a fixed per-contact reconciliation handshake cost, a reconciliation decode-failure probability, and whole-blob (quantized) transfer — without these the byte budget is an optimistic upper bound, not a faithful airtime model.",
+          "RWP stationarity handling: perfect/steady-state initialization OR an explicit warmup/burn-in that is discarded, plus a statement of the nominal-density-vs-experienced-density gap; and promotion of STATIC uniform/Poisson placement (ideally on a torus / periodic boundary) as the primary headline-cliff configuration with a sanity gate that the static knee lands near mean degree ~4–4.5.",
+          "Explicit time-step dt selection rule (v*dt << r), a dt-convergence test, and a precise definition that the per-contact budget B is per contact EPISODE (not per step).",
+          "Seen-record concrete contract: window W >= maxTTL + margin, FIFO-by-time aging, documented capacity, and a flood-past-capacity anti-resurrection test; record its occupancy/evictions in the CSV.",
+          "Hop-energy backstop as a first-class, pluggable blob field with a B sensitivity sweep (or an explicit, justified deferral note that an energy-unbounded flood is acknowledged to overstate delivery in sparse density).",
+          "An optional readability-window delivery predicate (delivered iff held AND within readable_window<=ttl) so the slice can report 'arrived' vs 'arrived-in-time'; at minimum a README statement that arrival==delivery here is an upper bound relative to the parent's time-ratcheted FS.",
+          "Unambiguous eviction-victim definition (evict oldest-by-creation cohort, randomized tie-break, retain younger) plus the per-neighbor buffer-share cap, with an exact-victim unit test linked to parent §9.5.",
+          "Explicit traffic/offered-load model (number of flows, per-node Poisson origination rate, all-nodes-relay?) and a clear definition of the delivery-ratio denominator that excludes structurally-impossible messages; run the cliff at both low load and venue-scale load.",
+          "A stated validation gate that ties the sim to ground truth: the static, periodic-boundary curve's percolation knee must land within tolerance of the theoretical continuum-percolation mean-degree threshold (~4.5) before any mobility/airtime layer is trusted — this is the cheapest guard that the density axis and contact detection are correct.",
+          "A short 'fidelity-to-parent' traceability table in the README mapping each modeled mechanic to its parent section (inv 2 flooding, inv 5 absolute TTL §6, eviction §9.5, seen-record §6, airtime §8/§11) and explicitly listing what was abstracted away and the DIRECTION of the resulting bias (this slice should claim its curve is an upper bound on delivery)."
+        ]
+      },
+      {
+        "lens": "SCOPE-YAGNI: is \"delivery-vs-density only\" the right first cut, and is the included scope necessary-and-sufficient for a meaningful, trustworthy delivery curve?",
+        "verdict": "sound-with-fixes",
+        "strengths": [
+          "The 'measure, don't assume' framing with one falsifiable question (locate the percolation cliff before writing phone code) is exactly the right discipline. The parent project asserts physics ('uniform soup' flooding works at gathering scale); a seeded sim that can show the cliff is the cheapest possible way to validate or kill that assumption. This is a genuinely good first slice in spirit.",
+          "Modeling reconciliation as a per-contact BYTE BUDGET instead of a real IBLT is a correct YAGNI call for THIS question. The binding constraint on flooding-vs-density is finite airtime per contact, and a budget B = duration x throughput captures that without dragging in rateless-code internals. The spec is honest that this is an abstraction and names what it abstracts.",
+          "Cutting crypto, tokens/PoSW, the anonymity source-estimator, real BLE PHY, and bridges/ferrying is the right deferral set. None of those change the SHAPE of the delivery-vs-density curve (invariants 3/4/6 are about anonymity properties, not delivery), so excluding them keeps slice one honest to its stated question.",
+          "Modeling the invariants that DO affect delivery (5: absolute signed TTL via created_at+ttl everywhere; pure flooding with no routing/targeting per invariants 1/2; gathering-scale not metropolis per invariant 7) shows the author correctly separated delivery-relevant invariants from anonymity-relevant ones. The seen-record anti-resurrection rule is a real correctness concern for store-carry-forward and is right to include.",
+          "Strong, mostly known-answer test plan (2-in-range delivered, permanently-out never, dense->high, sparse->low, junk-flood degrades honest delivery) plus a determinism test. Known-answer integration tests on a sim are the correct way to guard against a sim that produces a pretty-but-wrong curve.",
+          "Swappable policies/ module (flood, eviction, retention, seen-record) is the right seam: it lets later slices swap eviction/retention without re-architecting, at near-zero extra cost now."
+        ],
+        "findings": [
+          {
+            "title": "Missing message workload model makes 'delivery ratio' undefined",
+            "severity": "critical",
+            "issue": "The headline metric is delivery ratio, but the spec never defines the OFFERED LOAD: how many messages exist, when they are generated, source/recipient selection, and over what window. DTN methodology treats message-generation (e.g., one new message every 25-35s, random src/dst) as a mandatory experimental input, not an afterthought. Without it, 'delivery ratio vs density' is the ratio of an unspecified numerator/denominator and the curve is not reproducible or interpretable. Worse, load interacts with the byte budget and buffer (more messages -> more contention -> the cliff moves), so an undefined workload silently confounds the very axis being swept.",
+            "fix": "Add a Workload sub-model to SCOPE IN and to the config dataclass: M distinct messages, generation process (default: single fixed cohort injected at warm-up end, so delivery ratio = fraction of (src,dst) pairs delivered before TTL; document this as the v1 choice over a Poisson stream to keep the first curve clean), src/dst selection (uniform random distinct pairs), and the exact delivery-ratio definition (delivered-before-TTL / generated). Make M and the generation mode explicit sweep-able params. Add a known-answer test pinning the denominator."
+          },
+          {
+            "title": "Buffer size and TTL are first-order confounds, not background settings",
+            "severity": "high",
+            "issue": "The spec sweeps ONLY density and treats buffer cap, TTL, and per-contact budget B as fixed config. The DTN literature is unambiguous that buffer size and TTL are themselves first-order drivers of delivery ratio (larger buffer/longer TTL -> higher delivery). So a single density sweep at one arbitrary (buffer, TTL, B) triple can show a 'cliff' that is actually a buffer-saturation or TTL-expiry artifact, not a connectivity percolation cliff. You would draw the wrong conclusion about the parent's physics. This is the core SCOPE-YAGNI tension: the slice is under-scoped on the controls that determine whether the cliff is even a percolation phenomenon.",
+            "fix": "Do not add a full multi-factor sweep (that would over-scope slice one). Instead: (a) require at least TWO density sweeps at contrasting buffer/TTL regimes (e.g., 'generous' buffer+TTL ~ effectively unbounded, and 'realistic' bounded) so the report can SEPARATE the connectivity cliff from resource-exhaustion effects; (b) add a documented 'reference regime' where buffer=inf, TTL=inf, B=inf so the pure topological percolation cliff is measured first as the baseline the bounded runs are compared against. This is cheap (same engine, different config rows) and is what makes the curve trustworthy."
+          },
+          {
+            "title": "Random-Waypoint transient (speed-decay) bias with no warm-up specified",
+            "severity": "high",
+            "issue": "Random Waypoint is known to have a transient where average node speed and spatial node distribution drift before reaching steady state ('Random Waypoint Considered Harmful'); RWP also concentrates nodes toward the center (border effect), which inflates contact rates early. The spec picks RWP as default and defines delivery as first-recipient-hold, but specifies no warm-up cutoff nor steady-state initialization. Results averaged from t=0 will be biased, and the bias is density-dependent, distorting exactly the curve being measured.",
+            "fix": "Add to the engine/scenario a mandatory warm-up period (discard metrics until t >= t_warmup) OR steady-state RWP initialization, and inject the message cohort only after warm-up. Make t_warmup a config field and document the chosen value. Add a sanity check/test that contact rate has stabilized (e.g., compare first-half vs second-half contact rate within tolerance). Cheap, and removes a real source of wrong curves."
+          },
+          {
+            "title": "Airtime/circulation is demoted to a 'proxy metric' but is arguably the co-headline",
+            "severity": "medium",
+            "issue": "The lens question asks whether airtime/circulation might be the real make-or-break to measure first. Standard DTN practice reports delivery ratio AND overhead/transmissions together because pure flooding's failure mode at high density is not low delivery, it is airtime collapse (everyone re-sharing everything saturates contact budgets). The spec already lists 'circulated-blobs-per-minute' but frames it as a secondary 'proxy.' For a PURE-FLOODING system the cost curve is co-equal with the delivery curve: delivery can be ~100% in a regime that is operationally dead due to airtime. Measuring delivery alone could green-light a design that does not survive contact.",
+            "fix": "Do NOT split into a separate slice (keep one slice), but promote circulation/airtime to a co-headline output plotted on the SAME density sweep: report delivery ratio, latency, AND transmissions-per-delivered-message (overhead ratio) and per-contact-budget-utilization across density. This is near-zero extra cost (the engine already exchanges blobs under budget B; just count bytes/transfers). It directly answers 'does flooding stay viable as density rises' which is the parent's actual bet."
+          },
+          {
+            "title": "'Recipient' field implies addressing, which collides with invariants 2 and 4",
+            "severity": "medium",
+            "issue": "blob = {id, created_at, ttl, sender, recipient, ...} and delivery = 'first time the RECIPIENT holds the blob.' In the real system there is no targeting (invariant 2: pure flooding, no routing) and sealed-sender (invariant 4): a node cannot tell a message is 'for it' except by trial-decrypt. The spec acknowledges this ('trial-decrypt modeled as id-recognition') but carrying sender/recipient as blob fields risks the engine accidentally using them for ANY decision (eviction priority, exchange ordering, stop-on-deliver), which would silently violate pure flooding and make the curve optimistic vs the real uniform soup.",
+            "fix": "Keep recipient as a SCORING-ONLY ground-truth label held outside the blob's forwarding logic (e.g., in the metrics layer / a sim-only oracle table), never readable by model/engine/policies code. Forwarding, eviction, and exchange must operate only on {id, created_at, ttl, size} (the uniform fields a real node sees). Add a test/assertion that no policy or exchange function references sender/recipient. This protects invariants 2 and 4 in the model and keeps the measured curve faithful."
+          },
+          {
+            "title": "Eviction policy choice is asserted without a comparison baseline, risking a policy-specific cliff",
+            "severity": "medium",
+            "issue": "Eviction is fixed to 'youngest-by-real-age + randomized (NOT closest-to-TTL).' That is a defensible anonymity-preserving choice, but it is a DESIGN decision being baked into a MEASUREMENT tool. Eviction policy materially shifts the delivery curve, so reporting a single cliff under one eviction rule conflates 'the flooding cliff' with 'this eviction rule's cliff.' The spec made policies swappable but does not require exercising that swap.",
+            "fix": "Slice one stays single-policy for the headline, but add ONE contrasting eviction baseline run (e.g., random-evict or FIFO) to the density sweep purely to show the cliff location is robust to eviction choice (or to flag if it is not). Since policies/ is already swappable, this is a config row, not new code. Document eviction as a confound checked, not a setting assumed."
+          },
+          {
+            "title": "Contact MODEL is binary disk with a byte budget but no contact-duration / re-contact dynamics specified",
+            "severity": "medium",
+            "issue": "Budget B is stated as 'contact duration x assumed throughput,' but mobility is time-stepped and contact is 'within r.' It is unspecified whether B is per discrete contact-event, per time-step while in range, or per (A,B) pair per unit time, and whether a pair that stays in range across many steps keeps getting fresh budget (effectively unbounded transfer) or is rate-limited. This directly sets how much floods per meeting, which is the binding constraint the whole modeling decision rests on. Ambiguity here can make B effectively infinite and erase the very airtime constraint the spec claims to capture.",
+            "fix": "Define B precisely: budget accrues at throughput x dt PER time-step in range, capped per contact-episode, with a contact-episode = contiguous in-range interval between the same pair; reset only after they separate and re-meet. State throughput and dt defaults and the resulting bytes-per-second. Add the budget-respecting exchange test to assert a long co-location does not transfer more than the episode cap."
+          },
+          {
+            "title": "Determinism guarantee under numpy + (future) parallelism is asserted but fragile",
+            "severity": "low",
+            "issue": "DONE criteria require 'same seed -> identical' and tests assert it, which is correct. But numpy RNG state is global-by-default and easily polluted by import order, matplotlib, or any incidental np.random call; and a density sweep is embarrassingly parallel, so the first optimization will likely break per-run reproducibility if seeds are derived from a shared global stream.",
+            "fix": "Mandate per-run isolated RNG via numpy Generator (np.random.default_rng(seed)) threaded explicitly through model/engine/policies (no module-level np.random.*). Derive each sweep cell's seed deterministically from (base_seed, density_index, replicate_index) so runs are independent AND reproducible regardless of execution order or parallelism. Add a test that runs two cells in swapped order and asserts identical CSV."
+          },
+          {
+            "title": "Single replicate per density risks reporting noise as a cliff",
+            "severity": "medium",
+            "issue": "Percolation near threshold is high-variance: a single seeded run per density point can show a sharp 'cliff' that is partly Monte-Carlo noise, especially near the critical density and with finite N. The spec emphasizes determinism (one seed) but does not require replication or confidence intervals, which is exactly what is needed to claim a cliff EXISTS rather than fitting an eye to one noisy curve.",
+            "fix": "Add R replicates per density point (different sub-seeds) and report mean +- CI (or min/max band) in the CSV and plot. Keep it cheap: small R (e.g., 5-10) is enough to distinguish a cliff from noise for a first slice. This is essential for the DONE criterion 'the curve shows the cliff for a documented param set' to be a defensible claim."
+          }
+        ],
+        "missing": [
+          "A precise definition of the headline metric: delivery ratio = (messages delivered to recipient before absolute TTL) / (messages generated), plus the message workload (count M, generation process, src/dst selection) that defines the denominator. Without this the first curve is not interpretable.",
+          "A documented PARAMETER TABLE for the reference run(s): N range, W x H, r, speed range, dt (time step), TTL, buffer cap, per-contact budget B (throughput x duration), warm-up duration, simulation horizon, message count M, replicates R, and base seed. The DONE criterion 'cliff for a documented param set' is unverifiable without this table being part of the spec.",
+          "A warm-up / steady-state handling rule for Random Waypoint (discard-until-t_warmup or steady-state init) so time-averaged metrics are not transient-biased.",
+          "Replication policy: R seeded replicates per density point with mean +- CI, so a 'cliff' is statistically distinguishable from Monte-Carlo noise near threshold.",
+          "An explicit statement of which 4 of the 7 invariants are IN-SCOPE for delivery faithfulness (1 no-internet, 2 pure-flooding, 5 absolute TTL, 7 gathering-scale) and which 3 are deliberately out-of-scope because they do not affect the delivery curve (3 anonymity-uniformity, 4 sealed-sender, 6 no-server-identity) — with the one caveat that invariants 2 and 4 must still be ENFORCED in code (forwarding/eviction may not read sender/recipient) even though their anonymity value isn't measured.",
+          "Co-headline cost output on the same sweep: transmissions-per-delivered-message (overhead ratio) and per-contact budget utilization vs density, so the report answers 'does pure flooding stay viable as density rises,' not just 'does delivery succeed.'",
+          "A precise contact/budget accounting rule (per-episode budget cap, accrual per time-step in range, reset on separation) since the entire 'byte budget instead of IBLT' modeling decision hinges on it being defined.",
+          "A validation/sanity-check checklist beyond known-answer tests: (a) at infinite buffer/TTL/budget the measured cliff should match the analytical RGG percolation threshold (lambda_c for density N*pi*r^2/(W*H)) within tolerance — this cross-checks the engine against theory and is the single most valuable correctness test for a percolation-measuring sim; (b) contact-rate stationarity check post-warm-up."
+        ]
+      },
+      {
+        "lens": "testability-arch",
+        "verdict": "sound-with-fixes",
+        "strengths": [
+          "Module decomposition is genuinely testable: model/ (entities+geometry+mobility), engine/ (loop+contact+exchange), policies/ (flood/eviction/retention/seen-record, swappable), metrics/, scenario/, report/. The policy/engine split is the right seam — it lets eviction, flooding, and seen-record be unit-tested in isolation and swapped for A/B comparison, which is exactly what 'measure don't assume' needs.",
+          "The byte-budget abstraction for reconciliation (§3) is the correct first-slice call for the delivery-vs-density question. It isolates the binding constraint (finite airtime per contact) behind a single tunable B, keeps the IBLT internals out of scope, and is trivially testable ('exchange never transfers more than B'). It also leaves a clean later-slice seam to drop in a real reconciliation model and measure the delta.",
+          "TDD-first with a named unit list (contact boundary, budget, only-missing rule, TTL timing, seen-record anti-resurrection, eviction cap+victim, determinism) plus known-answer integration scenarios is the right testing posture, and the anti-resurrection + absolute-TTL tests directly guard invariant 5 and prevent the most common silent metric-inflation bug (re-accepting evicted/expired ids inflating delivery).",
+          "The headline metric is well-chosen and falsifiable: a single control parameter (N·π·r²/(W·H)) swept against delivery ratio, with deterministic CSV + plot and an explicit seed, gives a reproducible artifact that can actually be argued about. Import-guarded matplotlib keeps the core + tests headless, which is correct for CI.",
+          "Faithful invariant mapping for a delivery-physics slice: pure flooding / only-offer-what-the-other-lacks (inv 2), uniform fixed-size blobs (inv 3), absolute created_at+ttl expiry everywhere (inv 5), no server/OOB and no internet (inv 1/6), dense-gathering W×H scope (inv 7). The correctly-scoped omissions (crypto, tokens, anonymity estimator) do not affect the delivery-vs-density answer."
+        ],
+        "findings": [
+          {
+            "title": "Single-seed runs cannot establish a percolation cliff — you need replications + confidence intervals per density point",
+            "severity": "critical",
+            "issue": "The spec pins each run to 'an explicit seed' and treats one run as a data point ('deterministic CSV per run'). But near a percolation threshold, delivery-ratio variance is maximal — that is the defining property of a critical region. A curve built from one seed per density point is indistinguishable from sampling noise exactly where the answer matters, so DoD #4 ('the curve clearly shows the cliff') is not actually verifiable. Standard DTN/MANET methodology runs each scenario with multiple independent seeds (commonly 10–20) and reports a mean with a 95% confidence interval; the spec has no notion of replication, CI, or error bars.",
+            "fix": "Make a density point = an aggregate over R replications (default R≥10), each with a distinct seed derived deterministically from one master seed (e.g. seeds = master_seed + replication_index, or numpy.random.SeedSequence.spawn). Emit per-replication rows AND an aggregate row (mean, std, 95% CI half-width) in the CSV; plot the curve with error bars / a shaded band. Add a test asserting that (a) the same master seed reproduces the full set of replication seeds and (b) replications with different seeds actually differ. The cliff claim in DoD #4 should be restated as 'mean delivery crosses [hi→lo] with non-overlapping CIs across the transition band.'"
+          },
+          {
+            "title": "Random-Waypoint non-stationarity (speed decay + border effect) silently corrupts the density x-axis and the curve",
+            "severity": "high",
+            "issue": "RWP is known to (1) suffer average-speed decay (instantaneous mean speed declines over the run when v_min>0 is not enforced) and (2) produce a non-uniform, center-biased steady-state spatial distribution (the 'border effect'). The headline control parameter N·π·r²/(W·H) assumes a *uniform* spatial density; under RWP the realized local density (and thus the contact rate that drives the curve) does not match the nominal x-axis, and it drifts during the run. The spec mentions a configurable speed but no v_min floor, no warm-up/transient discard, and no steady-state initialization — so the very axis of the headline plot is biased, and runs of different lengths are not comparable.",
+            "fix": "Three concrete additions: (a) enforce a configurable speed interval with v_min strictly > 0 (document it) to avoid speed decay; (b) add an explicit warm-up period whose contacts/deliveries are discarded from metrics (make warmup_steps a config field; collect metrics only after it), OR initialize node positions from the RWP stationary distribution; (c) the static-mode runs already sidestep this — keep static as the *primary* percolation-cliff probe and treat RWP as the mobility overlay, and report both. Add a sanity test/metric: realized mean spatial occupancy (binned node count) over the measurement window should be approximately stationary and match nominal density within a tolerance, else flag the run."
+          },
+          {
+            "title": "Determinism across two independent RNG streams (numpy + python random) is asserted but not specified — the most fragile testability claim",
+            "severity": "high",
+            "issue": "The stack is 'stdlib + numpy', and numpy's global state and python's random module are *separate* generators (verified: random.random.__self__ is not np.random). 'Deterministic given a seed' is unbuildable as stated unless the seeding strategy is pinned: who seeds what, whether the global singletons or injected instances are used, and the exact consumption order. Using module-global np.random.seed()/random.seed() also makes runs non-isolated (any library call advancing global state breaks reproducibility) and blocks safe parallel/replicated runs in one process — which collides head-on with finding 1's replication requirement.",
+            "fix": "Specify: inject a single numpy.random.Generator (numpy.random.default_rng(seed)) and, if python random is needed at all, a single random.Random(seed) instance threaded explicitly through model/engine/policies — NO module-global np.random.seed / random.seed anywhere (add a test or lint that greps for them). Prefer ONE generator (numpy) for everything to avoid two-stream interleaving ambiguity. Derive per-component/per-replication substreams via SeedSequence.spawn so order-independence holds. Strengthen the determinism test to byte-compare the full output CSV (not just a summary scalar) across two runs of the same seed, and assert two different seeds produce different output."
+          },
+          {
+            "title": "Time-step dt is unspecified, yet discrete-time contact detection can miss fast fly-through contacts — a correctness bug that masquerades as low density",
+            "severity": "high",
+            "issue": "The engine is 'time-stepped' but dt is never defined or constrained. With moving nodes, if a pair passes through each other's range within a single step (relative displacement per step >> 2r), the sampled-position contact check never fires — a missed contact that looks like reduced delivery, biasing the cliff toward higher densities. The spec also says exchange 'happens at contact start (and may be re-attempted while in range)' but does not define how the discrete loop detects contact *start* vs *ongoing*, which the per-contact budget B depends on (B is per *contact*, so mis-segmenting one long contact into many steps either multiplies or starves the budget).",
+            "fix": "Add a stability/CFL-style constraint to config and assert it: max_step_displacement = v_max*dt must be << r (e.g. v_max*dt ≤ r/4), and document the chosen dt. Define contact as a state machine (out→in = contact start; in→in = ongoing; in→out = end) with the budget B charged per contact *episode*, and unit-test all three transitions plus the 'budget shared across re-attempts within one episode does not exceed B' rule. Add a known-answer test for a fast tangential pass (a crossing geometry tuned so naive per-step sampling would miss it) to prove fly-through contacts are caught (or explicitly documented as out of scope with a recorded bias)."
+          },
+          {
+            "title": "Known-answer integration scenarios are qualitative ('high'/'low'), so they cannot actually gate the curve's correctness",
+            "severity": "medium",
+            "issue": "§7 integration scenarios say 'dense cluster → high delivery', 'sparse → low delivery (curve has the expected shape)'. 'High' and 'low' are not assertions — a test needs a number or an ordering. As written these can pass on a broken sim (e.g. resurrection inflating delivery would still read 'high'). The two genuinely deterministic cases (two in-range → delivered; permanently out → never) are good closed-form anchors; the rest are not pinned.",
+            "fix": "Convert to computable assertions: (a) monotonicity — delivery_ratio(density_i) is non-decreasing across an ordered density list within CI (the cliff is a *shape*, not a point, so assert ordering, not a magic threshold); (b) closed-form bounds — for the fully-connected dense cluster with B and TTL chosen so every blob can reach every node before expiry, assert delivery == 1.0 exactly; for permanently-disconnected, assert == 0.0 exactly; (c) a junk-flood regression — assert honest-delivery with flood < honest-delivery without flood by a stated margin, with the seen-record on, AND a paired assertion that the same scenario with resurrection artificially enabled would inflate the number (guards finding-1-style metric inflation). Pin each with an explicit seed set."
+          },
+          {
+            "title": "engine/ owns both contact detection and exchange, but exchange semantically belongs with policies/ — the seam will leak and hurt isolation",
+            "severity": "medium",
+            "issue": "§5 puts 'exchange' in engine/ while flood/eviction/retention/seen-record live in policies/. But an exchange *is* the flood policy applied under the budget against the seen-record and buffer — it touches all three policy modules. If the exchange loop lives in engine/ and reaches into policy internals, the 'swappable policy' goal erodes and exchange becomes hard to unit-test without standing up the full engine. There is also no named seam for the buffer/eviction interaction during accept (accept-then-evict vs evict-to-fit) which the eviction unit test depends on.",
+            "fix": "Define a thin Exchange protocol/interface in policies (or a dedicated exchange/ submodule) with an explicit signature, e.g. exchange(node_a, node_b, budget, flood_policy, seen_record, clock) -> TransferResult, that engine/ merely *drives* per contact episode. Specify the buffer contract (accept returns Accepted|RejectedSeen|RejectedExpired; on overflow, eviction policy selects victim deterministically given the injected RNG) so the eviction test can assert 'cap never exceeded' and 'correct victim' against a pure function. Keep engine/ responsible only for time, motion, and contact-episode bookkeeping. This also makes the §3 'swap byte-budget for real reconciliation later' seam concrete."
+          },
+          {
+            "title": "Eviction victim-selection test is under-specified given the policy is explicitly randomized",
+            "severity": "medium",
+            "issue": "§2/§9.5 eviction = 'youngest-by-real-age + randomized (NOT closest-to-TTL)'. §7 asks to test 'correct victim selection', but a *randomized* policy has no single correct victim — the test as phrased is ambiguous and will either be flaky or test the wrong thing. Determinism (finding 3) and randomness must be reconciled here explicitly.",
+            "fix": "Split the assertion: (a) determinism-given-RNG — with a fixed injected Generator, the victim is exactly reproducible (assert exact id); (b) policy-property — over many seeds, the victim is always drawn from the youngest-by-real-age candidate band and is NEVER the closest-to-TTL blob (the property the design actually cares about, guarding the 'TTL=7d flooder wins' attack from §9.5); (c) cap invariant — buffer size never exceeds the cap at any step, asserted as a loop postcondition. State the candidate-band rule (e.g. youngest k%) precisely in the spec so (b) is checkable."
+          },
+          {
+            "title": "No floating-point boundary policy for the contact radius — the boundary test is ill-defined",
+            "severity": "low",
+            "issue": "§7 wants a contact-detection boundary test (distance exactly == r), but the spec never states whether contact is dist < r or dist <= r, and with numpy float geometry exact-equality boundaries are fragile/platform-sensitive. An unspecified inequality makes the 'boundary' unit test non-portable and the determinism guarantee weaker across BLAS/numpy versions.",
+            "fix": "Pick and document the convention (recommend dist <= r, i.e. inclusive). Compare squared distances (dist2 <= r*r) to avoid sqrt and keep it exact-integer-friendly for test fixtures. Write the boundary test with coordinates whose squared distance is an exact integer equal to r*r so the == case is unambiguous and version-stable, plus just-inside and just-outside cases."
+          },
+          {
+            "title": "Performance/scale path to 50k nodes is hand-waved, risking O(N²) contact detection that blocks the density sweep",
+            "severity": "low",
+            "issue": "§6 mentions porting hot paths to Rust 'if 50k-node runs prove too slow', but the spec gives no contact-detection algorithm. Naive all-pairs distance is O(N²) per step; a density sweep × R replications × many steps at N=50k is infeasible in pure Python and will silently push the team toward shortcuts that compromise determinism. This is a testability risk because slow runs erode the replication count from finding 1.",
+            "fix": "Specify a spatial index for neighbor queries (uniform grid / cell-list bucketed by r, which is ideal since the query radius is constant; numpy-vectorized), and add a correctness test that the grid-based neighbor set is identical to brute-force all-pairs on a small N (so the optimization can't change results). Add a tiny perf smoke test (assert a fixed small scenario completes under a generous wall-clock bound) to catch accidental O(N²) regressions in CI without making CI flaky."
+          }
+        ],
+        "missing": [
+          "Replication + statistics policy: number of seeds per density point (R), how per-replication seeds derive from one master seed, and that the CSV/plot report mean + 95% CI (error bars/band). DoD #4's 'shows the cliff' must be redefined as a CI-backed statement, not eyeballing a single-seed line.",
+          "An explicit RNG contract: one injected numpy Generator (and at most one injected random.Random), NO module-global np.random.seed/random.seed, substreams via SeedSequence.spawn, and a determinism test that byte-compares the full output artifact across identical seeds and confirms different seeds diverge.",
+          "Time discretization spec: the value/derivation of dt, the v_max*dt ≤ r/4 (CFL-style) stability constraint with an assertion, and the contact-episode state machine (start/ongoing/end) that the per-contact budget B is charged against.",
+          "RWP stationarity handling: a documented v_min > 0, a warm-up/transient discard window (or stationary-distribution initialization), and a stationarity sanity metric/test; an explicit statement that static mode is the primary cliff probe and RWP the overlay.",
+          "Quantified known-answer scenarios: closed-form expected values for the deterministic cases (fully-connected dense → 1.0; disconnected → 0.0), a monotonicity-within-CI assertion for the curve shape, and a paired resurrection-on-vs-off assertion proving the seen-record actually prevents metric inflation.",
+          "Concrete component interfaces/contracts: the Exchange signature, the Buffer.accept result enum and overflow/eviction contract, the EvictionPolicy candidate-band rule, the SeenRecord window semantics (W ≥ maxTTL + margin per the parent §6), and the contact inclusivity convention (dist2 <= r*r) — each stated precisely enough to write the unit test before the code.",
+          "Contact-detection algorithm + a brute-force-equivalence test and a perf smoke test, so the 50k-node scale claim is backed by an O(N) neighbor query whose results are proven identical to all-pairs on small N.",
+          "Definition of 'total messages' (denominator) for delivery ratio: how many designated sender→recipient pairs/messages are injected, their injection schedule, and whether messages created too close to end-of-run (cannot possibly deliver within TTL) are excluded — otherwise the ratio is biased by run-length and injection timing, not density."
+        ]
+      },
+      {
+        "lens": "MISLEADING-RESULTS (adversarial: what makes this sim produce a wrong/misleading delivery-vs-density curve we then trust?)",
+        "verdict": "sound-with-fixes",
+        "strengths": [
+          "Right question, right order. \"Locate the percolation cliff before any phone code\" is exactly the P0 \"measure don't assume\" mandate, and a density-vs-delivery curve is the correct first slice. Deferring crypto/tokens/anonymity-estimator is the right scope cut for THIS question.",
+          "Several anti-fooling guards are already baked in and they are the right ones: TTL is absolute (created_at+ttl) everywhere (faithful to invariant 5, and prevents the classic bug of TTL resetting on each hop which would inflate delivery); a seen-record explicitly blocks resurrection of evicted/expired ids; eviction is deliberately NOT closest-to-TTL (avoids gaming the metric by always keeping near-delivered blobs). These show the author already anticipated the obvious cheats.",
+          "Determinism-by-seed with CSV-per-run + a determinism test (same seed -> identical) is the foundation of trustworthy results; it makes every suspicious curve reproducible and bisectable.",
+          "Modeling reconciliation as a per-contact BYTE BUDGET instead of real IBLT is a defensible abstraction for the delivery-vs-density question PROVIDED the budget is grounded and sensitivity-tested (see findings). It correctly identifies finite airtime/contact as the binding constraint and faithfully represents invariant 2 (pure flooding: offer everything the peer lacks, no routing/targeting).",
+          "Known-answer integration tests (2-in-range->delivered, permanently-out->never, dense->high, sparse->low, junk-flood->honest degrades) are a strong correctness net and encode the expected curve SHAPE, which catches gross modeling errors.",
+          "Policies (flood/eviction/retention/seen-record) are swappable, so the misleading-defaults risks below are fixable by config rather than rewrite."
+        ],
+        "findings": [
+          {
+            "title": "RWP border effect silently corrupts the density AXIS — the one quantity the whole study measures",
+            "severity": "critical",
+            "issue": "The control parameter is the NOMINAL density N·π·r²/(W·H), but Random-Waypoint does not produce a uniform spatial distribution. Nodes concentrate toward the center (the well-documented \"border effect\"), so the LOCAL density that actually drives contacts is higher in the middle and lower at edges than the nominal value. The headline x-axis is therefore not the density you think it is: the cliff will appear at a LOWER nominal density than the true uniform-percolation threshold, and the curve's position is an artifact of the mobility model, not physics. This is the single most dangerous defect because it biases the exact answer the sim exists to produce, and it is invisible unless you go looking.",
+            "fix": "(1) Do not report nominal density alone. Compute and log the EMPIRICAL/effective density: measure the realized mean number of neighbors within r (mean node degree in the contact graph) averaged over the steady-state window, and plot delivery against THAT, not just N·π·r²/(W·H). (2) Add a static uniform-random scatter mode (already in scope) and a torus/wrap-around (periodic boundary) option that eliminates the border effect; cross-check the cliff location across {uniform-static, RWP, torus}. If the cliff moves, the spec must report the spread, not one number. (3) Discard the warm-up transient and only measure in steady state (see speed-decay finding). Make the README state the cliff as a RANGE across mobility/boundary assumptions, not a point."
+          },
+          {
+            "title": "RWP speed decay biases latency and early-window delivery",
+            "severity": "high",
+            "issue": "Classic RWP draws trip speed in [vmin,vmax]; the average node speed DECAYS over the run until it reaches a (lower) stationary value. If the sim starts measuring at t=0, early contacts happen at artificially high mobility -> faster mixing -> optimistic latency and delivery early, drifting over time. Any run shorter than the relaxation time, or any per-minute metric (circulated-blobs-per-minute) computed including the transient, is biased and non-stationary, so comparing across density points is comparing apples to different-aged apples.",
+            "fix": "Require vmin > 0 (never allow vmin=0, which makes decay unbounded) OR use the perfect/steady-state RWP initialization (sample initial positions/speeds from the known stationary distribution) so the run is stationary from t=0. Define and log a warm-up period; exclude it from ALL metrics. Add a test that mean speed and mean degree are stationary across the measurement window (e.g., first-half vs second-half within tolerance) before any curve is accepted."
+          },
+          {
+            "title": "Unit-disk contact model + zero setup/contention overhead flatters delivery and can FAKE the cliff away",
+            "severity": "high",
+            "issue": "Contact = within r is a hard boolean disk. Real BLE has probabilistic, asymmetric, fading links AND non-trivial connection setup (scan + advertise + handshake + security re-establishment) before ANY bytes move. The spec explicitly defers PHY and setup overhead. Consequences: (a) the unit-disk model overestimates connectivity, shifting the cliff optimistically; (b) ignoring setup overhead means even a 1-second brush transfers a full budget, so SHORT contacts (the majority in sparse/mobile regimes) deliver for free — this disproportionately inflates the sparse end and can smear/erase the cliff, the very feature you are hunting. There is also no contention model: many nodes \"meeting\" simultaneously all transfer at full assumed throughput, which is physically impossible on a shared half-duplex medium and again over-delivers in dense regimes.",
+            "fix": "(1) Add a per-contact SETUP COST: usable budget B = max(0, (contact_duration - t_setup) * throughput), with t_setup a documented parameter (hundreds of ms to >1s for BLE connect+secure). Make contacts shorter than t_setup transfer ZERO. (2) Add a contact-establishment probability p_contact < 1 (or a minimum dwell time) to model missed/failed discoveries, and sweep it. (3) Model shared-medium contention at least crudely: cap aggregate throughput per node per timestep (a node servicing k simultaneous peers splits its airtime), so dense regimes cannot exceed a per-node airtime ceiling. (4) Report the curve under {ideal disk, disk+setup, disk+setup+contention} so reviewers see how much the cliff moves under each idealization."
+          },
+          {
+            "title": "\"Delivered\" risks conflating \"reachable in a connected component\" with \"actually carried within TTL under budget\" — and the duplicate/resurrection accounting must be airtight",
+            "severity": "high",
+            "issue": "Delivery is correctly defined as \"first time the recipient holds the blob\" and resurrection is guarded — good. But the misleading-results trap is in COUNTING: (a) if a blob is delivered, then evicted, then re-delivered, that must count once (first-hold) and never inflate ratio or per-minute counts; (b) the denominator matters — delivery RATIO must be over blobs whose recipient was offered/created within a window that gives a fair chance before TTL, otherwise blobs created near end-of-run depress the ratio artificially (or, if excluded sloppily, inflate it); (c) \"high delivery in a dense cluster\" can be a connectivity statement, not a delivery statement, if budget never binds — i.e. you may be measuring percolation of the CONTACT GRAPH rather than delivery under finite airtime/TTL, which would make the budget abstraction decorative.",
+            "fix": "Specify the delivery-ratio denominator explicitly: count only blobs created at t such that t + (warmup-excluded measurement horizon) leaves >= TTL of in-window simulated time (a \"fair-chance\" cohort); document it. Assert first-hold-only counting with a test (deliver -> evict -> re-acquire counts once; latency = first-hold time). Add a diagnostic metric: fraction of contacts where the byte budget was the BINDING constraint (offered > transferred). If that fraction is ~0 across the sweep, the sim is measuring contact-graph percolation, not airtime-limited delivery, and the budget value (or B definition) must be lowered/justified — flag this in the report rather than trusting the curve."
+          },
+          {
+            "title": "Budget value B is the load-bearing assumption and is currently unjustified — a wrong B invents or hides the cliff",
+            "severity": "high",
+            "issue": "B = contact_duration * assumed_throughput. Every result depends on assumed_throughput, contact_duration distribution, and blob size (~1KB). Pick B too generous (e.g., real-app BLE ~50 KB/s with no setup cost over multi-second contacts) and the budget never binds -> no airtime constraint -> cliff driven purely by connectivity (optimistic, possibly no visible cliff at relevant densities). Pick B too stingy and you manufacture a cliff that is an artifact of B, not density. A single chosen B is a single point estimate masquerading as physics.",
+            "fix": "Treat B as a swept/sensitivity parameter, not a constant. Ground it: derive throughput from a cited BLE figure (~50 KB/s app-layer on 1M PHY with DLE, minus L2CAP/ATT overhead) and contact_duration from a cited pedestrian-encounter distribution; record the source in the config. Run the density sweep at >= 3 budget levels (binding / marginal / non-binding) and show whether the cliff LOCATION is stable. Headline result must state: \"cliff at density X under throughput T, contact-duration D, blob 1KB; sensitivity to B = ...\". Refuse to publish a single curve without the B-sensitivity panel."
+          },
+          {
+            "title": "Random-Waypoint as the DEFAULT will systematically overestimate delivery (~20%+) and misrepresents the dense-gathering scope (invariant 7)",
+            "severity": "medium",
+            "issue": "Literature consistently shows RWP yields materially higher delivery ratios than realistic/clustered mobility (20%+ under load). RWP also models nodes wandering an open field independently — that is NOT the parent's \"dense-gathering, not metropolis\" scope (a crowd/venue with clustering, hotspots, and correlated movement). Defaulting to RWP both inflates numbers and tests the wrong topology, so the cliff is located for a scenario the product will never operate in.",
+            "fix": "Keep RWP only as a CALIBRATION/sanity baseline, explicitly labeled optimistic. Add at least one clustered/gathering mobility option appropriate to invariant 7 (e.g., a community/hotspot or static-clustered-with-jitter model where nodes concentrate in venue sub-areas). Report the cliff for the gathering scenario as the headline, with RWP as the optimistic bound. Document in the README that RWP numbers are an upper bound on delivery."
+          },
+          {
+            "title": "Eviction = \"youngest-by-real-age + randomized\" can bias the curve and needs a stated rationale + alternatives",
+            "severity": "medium",
+            "issue": "Dropping the YOUNGEST blob means freshly-injected messages are preferentially destroyed before they can spread, which can artificially DEPRESS delivery in dense/high-load regimes (where buffers fill) and exaggerate the appearance of a load-driven cliff. The randomization helps anonymity/uniformity (good for invariant 3) but the policy's effect on the measured curve is unanalyzed; a single eviction policy presented as THE result is misleading.",
+            "fix": "State the rationale (uniformity/anti-correlation with TTL) in the spec. Because eviction is already swappable, run the sweep under >= 2 policies (e.g., random-uniform vs FIFO-oldest) and report the delivery curve's sensitivity to eviction. If the cliff location is policy-dependent, say so. Add a metric: eviction rate and buffer-full fraction per density, so readers can see WHEN buffers bind vs when contacts/connectivity bind."
+          },
+          {
+            "title": "Time-step (Δt) and contact-detection discretization can create or hide contacts (false negatives / phantom transfers)",
+            "severity": "medium",
+            "issue": "A hand-rolled time-stepped engine sampling positions every Δt will MISS fast fly-by contacts if Δt is too coarse (node passes through the r-disk between samples -> contact never detected -> delivery underestimated), and will OVER-credit contact duration / allow a full budget transfer for a single-Δt graze if Δt is too coarse the other way. Either way the result depends on an arbitrary numeric knob, not physics, and Δt is not pinned in the spec.",
+            "fix": "Pin Δt in the config and prove insensitivity: add a convergence test that halving Δt changes delivery ratio and latency by less than a stated tolerance for the documented param set. Optionally detect contacts by closest-approach within the step (interpolate segment vs r) rather than endpoint sampling. Document the chosen Δt and the relationship max_speed*Δt << r so motion-per-step is small relative to the radio range."
+          },
+          {
+            "title": "Single-seed runs will produce noisy curves that can show a phantom or displaced cliff",
+            "severity": "medium",
+            "issue": "\"Deterministic CSV per run (explicit seed)\" is necessary for reproducibility but one seed per density point gives a high-variance estimate; near the percolation threshold variance is LARGEST, so a single seed can show a sharp cliff at a spot that is just sampling noise, or smear a real one. Determinism guarantees you can reproduce the wrong number, not that it is right.",
+            "fix": "Require a MULTI-SEED ensemble per density point (e.g., >= 20 seeds), report mean delivery with confidence intervals / error bands on the curve, and locate the cliff with uncertainty. Keep per-seed determinism for debugging but make the headline curve an ensemble with CIs. Add the seed-set to the config so the ensemble itself is reproducible."
+          },
+          {
+            "title": "Junk-flood test exists but no adversarial/airtime-poisoning metric is reported on the main curve",
+            "severity": "low",
+            "issue": "The junk-flood integration test checks that honest delivery DEGRADES, but the misleading-results risk is presenting the CLEAN curve as the product's expected performance while the realistic environment includes junk/duplicate airtime consumption competing for the same finite budget. A clean-only headline overstates real delivery.",
+            "fix": "Add a configurable background junk/load fraction and report the density-vs-delivery curve at >= 2 junk levels (0% and a realistic non-zero). State clearly which curve is the optimistic clean baseline. This also stress-tests the byte-budget abstraction under contention for airtime."
+          }
+        ],
+        "missing": [
+          "A STATIONARITY / WARM-UP protocol: explicit warm-up duration excluded from all metrics, plus a steady-state check (mean speed and mean contact-degree stable across the measurement window) that must pass before any curve is accepted. Without this, RWP speed-decay and transient mixing silently bias every number.",
+          "An EMPIRICAL-density definition and reporting requirement: plot delivery against measured mean neighbor count (realized contact-graph degree), not only the nominal N·π·r²/(W·H), so the x-axis reflects what nodes actually experience under the chosen mobility/boundary.",
+          "A BINDING-CONSTRAINT diagnostic: per density point, report the fraction of contacts where the byte budget actually bound (offered > transferred) and the buffer-full fraction. This distinguishes a true airtime/TTL-limited delivery curve from a mere contact-graph-percolation curve, and tells you whether the budget abstraction is doing any work.",
+          "An ENSEMBLE + uncertainty requirement: N seeds per density point, curves with confidence bands, cliff located with an uncertainty range — not a single deterministic line.",
+          "A SENSITIVITY MATRIX as a DONE criterion: the cliff location reported as a range across {mobility model: gathering vs RWP vs static-uniform}, {boundary: bounded vs torus}, {budget B: binding/marginal/non-binding}, {eviction policy}, and {Δt halved}. If the cliff is stable across these, trust it; if not, the README must report the spread. The current DONE (\"the curve shows the cliff for a documented param set\") is too weak — a single param set can show a fooled cliff.",
+          "EXPLICIT MODELING-ASSUMPTIONS / CAVEATS section in the README listing every idealization (unit-disk links, zero setup overhead unless added, no contention unless added, RWP optimism, abstracted reconciliation) and the DIRECTION each biases delivery (optimistic/pessimistic), so downstream readers never mistake the curve for measured BLE physics.",
+          "A Δt convergence test and the constraint max_speed*Δt << r documented in the config, so contact detection is not an artifact of step size.",
+          "A DELIVERY-RATIO DENOMINATOR definition (fair-chance cohort: only blobs with >= TTL of in-window time after creation) and a first-hold-only counting assertion test (deliver->evict->re-acquire counts once; latency = first hold), to prevent end-of-run cohort bias and duplicate/resurrection inflation.",
+          "A grounded PARAMETER PROVENANCE table: cite the source for assumed BLE throughput (~50 KB/s app-layer, 1M PHY + DLE, minus ATT/L2CAP overhead), setup cost t_setup, contact-duration distribution, and the gathering-scenario area/N — so B and density are traceable to reality, not invented."
+        ]
+      }
+    ],
+    "synthesis": {
+      "overallVerdict": "ready-after-fixes",
+      "mustFix": [
+        {
+          "title": "Define the message workload and the delivery-ratio denominator — without it the headline metric is undefined",
+          "severity": "critical",
+          "fix": "Add a Workload sub-model to SCOPE IN and to the config dataclass. Specify: (1) message count M and generation process — default to a single fixed cohort injected at warm-up end (cleanest first curve) with sweepable rate as an option; (2) src/dst selection = uniform-random distinct pairs; (3) the exact ratio: delivery_ratio = (messages first-held by recipient within absolute TTL) / (messages in the fair-chance cohort). Define the fair-chance cohort as messages whose creation_ts leaves >= one max-TTL of in-window simulated time after creation (excludes right-censored end-of-run messages). Confirm in spec that the measured load is light enough not to itself saturate budget B (else you measure congestion, not percolation). Add a known-answer test pinning the denominator. Flagged independently by 4 of 5 lenses (scope-YAGNI rated it critical)."
+        },
+        {
+          "title": "Add a percolation-validation harness against ground truth before trusting any curve",
+          "severity": "critical",
+          "fix": "Make the FIRST integration test a static, uniform-random (or Poisson) placement on a TORUS (periodic boundary) with B=inf, TTL=inf, buffer=inf. Assert its giant-component / delivery knee lands near the known continuum-percolation critical mean degree (~4.5) within a stated tolerance. This validates contact detection and the density axis against theory and gates everything downstream. Promote STATIC uniform placement to the PRIMARY headline-cliff configuration (it is the regime where N*pi*r^2/A literally equals the theory's reduced density); treat RWP as a mobility overlay measured against this baseline. Without this gate you cannot distinguish real physics from an engine bug. Raised by measurement-validity, design-fidelity, scope-YAGNI, and testability lenses."
+        },
+        {
+          "title": "Fix the density axis: RWP border effect, speed decay, and boundary topology corrupt the one quantity being measured",
+          "severity": "high",
+          "fix": "Three required additions: (a) Boundary mode becomes an explicit logged config field — TORUS for the validation/cliff sweep (matches infinite-plane theory), walls for the realistic-venue scenario (report the expected upward threshold shift separately). (b) RWP stationarity: enforce v_min > 0 (documented) to kill speed decay, and either use perfect/steady-state RWP initialization (Le Boudec-Vojnovic) OR a documented warm-up window discarded from all metrics. (c) Because RWP center-concentrates nodes, do NOT report nominal density alone — also compute and plot delivery against the EMPIRICAL/realized mean neighbor degree measured over the steady-state window. Add a stationarity sanity check (first-half vs second-half contact rate / mean degree within tolerance) that must pass before a curve is accepted. All 5 lenses raised RWP non-stationarity; misleading-results rated the border-effect axis corruption as critical."
+        },
+        {
+          "title": "Mandate replications + confidence intervals per density point — a single seed cannot locate a cliff",
+          "severity": "critical",
+          "fix": "Determinism-by-seed is necessary but not sufficient: variance is MAXIMAL at the percolation threshold, so one seed per density point is indistinguishable from noise exactly where the answer matters. Require R independent replications per density point (start R=20-30, denser near the cliff), with sub-seeds derived deterministically from a master seed (numpy SeedSequence.spawn or seed_i = hash(master, density_idx, i)). Report mean delivery with a 95% CI (Wilson interval for the ratio — better than normal near 0/1) and latency as a distribution (median + IQR/percentiles, not mean). Use finer density spacing in the transition region. Restate DoD #4 from 'curve clearly shows the cliff' (un-falsifiable eyeballing) to 'mean delivery crosses hi->lo with non-overlapping CIs across the transition band, and CI half-width < X at the cliff.' Flagged by all 5 lenses; two rated it critical."
+        },
+        {
+          "title": "Make the byte budget density-aware and grounded — a constant B is structurally optimistic and can hide or fake the cliff",
+          "severity": "high",
+          "fix": "The parent's airtime thesis is that effective throughput COLLAPSES with density (3 BLE advert channels, no hopping, collisions at scale). A density-independent B makes airtime cheapest exactly where the parent says it gets expensive, and since the x-axis IS density, a density-dependent error changes the cliff's SHAPE (real systems can show delivery rise then FALL — contention-limited — which constant B cannot reproduce). Required: (1) model effective throughput as throughput_ideal / (1 + alpha * n_local_contenders) where n_local_contenders = peers within r at contact time; sweep/sensitivity-test alpha. (2) Add a fixed per-contact setup/handshake cost t_setup subtracted before any payload — contacts shorter than t_setup transfer ZERO (kills the 'free delivery on a 1-second brush' bias that inflates the sparse end). (3) Add a reconciliation decode-failure probability p_fail yielding zero useful transfer. (4) Quantize transfer to whole ~1KB blobs (0.9 blobs delivers 0). (5) Ground throughput/t_setup/contact-duration in CITED BLE figures (parameter-provenance table). (6) Sweep B at >=3 levels (binding/marginal/non-binding) and report a binding-constraint diagnostic: fraction of contacts where budget actually bound — if ~0 across the sweep, you are measuring contact-graph percolation, not airtime-limited delivery, and the budget abstraction is decorative. State in README that constant-B is an UPPER BOUND on delivery. Raised by design-fidelity and misleading-results (both high)."
+        },
+        {
+          "title": "Pin time-step dt and per-episode budget accounting — dt is a hidden knob that fabricates or destroys contacts and erases the airtime constraint",
+          "severity": "high",
+          "fix": "Add a CFL-style constraint to config validation, asserted at startup: v_max * dt << r (e.g. v_max*dt <= r/4 to r/5). Add a dt-convergence check to the validation plan: halving dt must change delivery ratio and mean contact duration by < a tolerance. Better: compute contact entry/exit analytically per straight-line RWP leg (closest-approach to segment) so contacts and durations are dt-independent. Define contact as an explicit state machine (out->in = start, in->in = ongoing, in->out = end) and charge budget B per contact EPISODE (entry to exit) tracked across steps, NOT per step — otherwise a long co-location transfers unbounded bytes and the airtime constraint vanishes. Unit-test all three transitions, the per-episode cap, a fast tangential fly-through (geometry tuned so naive sampling would miss it), and dt-convergence. Log dt and a missed-contact estimate in the CSV. Raised by measurement-validity, design-fidelity, testability, and misleading-results."
+        },
+        {
+          "title": "Pin the RNG contract — 'deterministic by seed' is unbuildable as stated across numpy + python random and breaks under parallel replication",
+          "severity": "high",
+          "fix": "numpy global state and python's random module are separate generators; module-global np.random.seed()/random.seed() makes runs non-isolated (any incidental call advances global state) and blocks the per-replication parallelism that finding 'replications + CIs' requires. Mandate: inject a single numpy.random.Generator (np.random.default_rng(seed)) threaded explicitly through model/engine/policies; prefer ONE generator for everything; NO module-global np.random.*/random.seed anywhere (add a grep/lint test). Derive per-replication and per-component substreams via SeedSequence.spawn so order-independence holds. Strengthen the determinism test to byte-compare the FULL output CSV across two same-seed runs and assert two cells run in swapped order produce identical output. Raised by scope-YAGNI and testability (both high)."
+        },
+        {
+          "title": "Specify exchange semantics precisely — symmetry, offer-selection-under-scarcity, budget direction, and deterministic pair-iteration order all move the measured number",
+          "severity": "high",
+          "fix": "Specify in the spec: (1) B consumed per contact-episode, not per step (see dt finding). (2) Offer-selection order under scarcity (when both nodes have more to offer than B allows) is an explicit, swappable, seeded policy — default uniform-random among missing — and is a measured variable, since it decides what propagates under scarcity and interacts with the cliff. (3) B is per-direction or shared, justified against BLE half-duplex reality. (4) Fixed deterministic pair-iteration order (e.g. sorted by node id) added to the determinism test. (5) Buffer accept contract returns Accepted|RejectedSeen|RejectedExpired with accept-then-evict-to-fit semantics so the eviction unit test is a pure function. Raised by measurement-validity, design-fidelity, scope-YAGNI, and testability."
+        }
+      ],
+      "shouldConsider": [
+        "Protect invariants 2 (pure flooding) and 4 (sealed-sender) IN CODE even though their anonymity value is not measured here: keep recipient/sender as scoring-only ground-truth labels held in the metrics layer / sim oracle, never readable by model/engine/policies. Forwarding, eviction, and exchange must operate only on {id, created_at, ttl, size}. Add an assertion/test that no policy or exchange function references sender/recipient — otherwise the engine can silently use addressing and make the curve optimistic vs the real uniform soup.",
+        "Disambiguate the eviction rule (currently read two opposite ways). State explicitly: under cap, evict from the OLDEST-by-creation cohort with randomized tie-break (retain younger), NOT closest-to-TTL, per parent 9.5; add the per-neighbor buffer-share cap (part of the same anti-flood design, affects how junk-flood degrades honest delivery). Add an exact-victim unit test on a hand-built buffer plus a property test (victim always in youngest/oldest band, never closest-to-TTL) reconciled with the injected-RNG determinism test. Cross-link the test name to parent 9.5.",
+        "Pin the seen-record contract: window W >= maxTTL + margin (parent 6), FIFO-by-time aging (not fingerprint-by-saturation), documented capacity asserted in the junk-flood test to NOT cause forgetting within W. Add a flood-past-capacity anti-resurrection test asserting no expired/evicted id is ever re-accepted within W and that delivery count == unique-recipient-first-hold count. Record seen-record occupancy/evictions in the CSV.",
+        "Promote circulation/airtime to a CO-HEADLINE on the same density sweep (not a secondary 'proxy'): report transmissions-per-delivered-message (overhead ratio) and per-contact budget utilization vs density. For a pure-flooding system the cost curve is co-equal — delivery can be ~100% in a regime that is operationally dead from airtime saturation. Near-zero extra cost since the engine already counts transfers.",
+        "Run contrasting-regime sweeps cheaply (config rows, not new code): (a) a reference regime buffer=inf/TTL=inf/B=inf to isolate the pure topological cliff as the baseline; (b) at least two density sweeps at contrasting buffer/TTL so the report can separate a connectivity cliff from buffer-saturation / TTL-expiry artifacts; (c) one contrasting eviction policy (random or FIFO) to show the cliff location is robust (or flag if not). Buffer size and TTL are first-order drivers of delivery, not background settings.",
+        "Add an optional readability-window delivery predicate: delivered iff held AND (now - created_at) <= readable_window <= ttl (default = ttl for v1, but the hook must exist and be sweepable). The parent's delivery is 'can READ it', not 'possesses ciphertext'; late arrival is highest exactly near the cliff where the headline matters. At minimum, README states arrival==delivery here is an upper bound relative to the parent's time-ratcheted forward secrecy.",
+        "Consider adding hop-energy as a first-class pluggable blob field (born at B, decrement-on-reshare, drop at 0) — the parent's real expiry backstop in the no-trusted-clock regime, which caps re-shares and limits epidemic spread (a delivery-affecting mechanic). Default non-binding for v1, but EITHER require a B sensitivity sweep OR add an explicit justified deferral note that an energy-unbounded flood overstates delivery in sparse density.",
+        "Replace RWP-as-default-headline with a gathering/clustered/hotspot mobility model faithful to invariant 7 (dense-gathering, not metropolis); RWP overestimates delivery ~20%+ and models an open field, not a venue. Keep RWP only as an explicitly-labeled optimistic calibration bound.",
+        "Make the cliff definition quantitative so DoD #4 is falsifiable and can back a regression assertion: fit a logistic/sigmoid to (density, delivery), report the midpoint (or delivery=0.5 crossing) with a CI from the replications. DoD: validation sweep recovers the static-percolation mean-degree threshold within tolerance AND the dynamic sweep reports a midpoint estimate with CI.",
+        "Add a full parameter manifest into every CSV (W, H, N, r, speed dist + v_min, dt, B/throughput/t_setup, alpha, buffer cap, TTL, boundary mode, mobility mode, warm-up, horizon, M, lambda_msg, injection window, master seed, replication index) so any curve point is independently reproducible — a seed alone does not reproduce a result. Plus a README 'fidelity-to-parent' traceability table mapping each modeled mechanic to its parent section and listing each abstraction with the DIRECTION of its bias (this slice's curve is an UPPER BOUND on delivery).",
+        "Present latency JOINTLY with delivery ratio at every density and annotate it as conditional-on-delivery (survivorship bias: hardest messages drop out near the cliff, so mean latency can paradoxically improve as the system worsens). Consider a censoring-robust fixed-deadline metric (fraction delivered within deadline Delta) which is more decision-relevant for a TTL-bounded system.",
+        "Specify the contact-radius inequality (recommend dist <= r, compare squared distances dist2 <= r*r to avoid sqrt and keep boundary tests version-stable), and specify an O(N) spatial index (uniform grid / cell-list bucketed by r) with a brute-force-equivalence test on small N plus a perf smoke test — the 50k-node sweep x R replications is infeasible with O(N^2) all-pairs and slowness will erode the replication count.",
+        "Add a configurable background junk/load fraction and report the curve at >=2 junk levels (0% and realistic non-zero) so the clean curve is not mistaken for expected real-world performance, and the byte-budget abstraction is stress-tested under airtime contention.",
+        "Add an explicit MODELING-ASSUMPTIONS / CAVEATS section to the README listing every idealization (unit-disk links, setup/contention only if added, RWP optimism, abstracted reconciliation, arrival==delivery) with the direction each biases delivery, so downstream readers never mistake the curve for measured BLE physics."
+      ],
+      "scopeCheck": "The first-slice boundary is CORRECT and well-judged — arguably the strongest part of the spec. All five lenses independently endorsed 'locate the delivery-vs-density percolation cliff before any phone code' as the right P0 move, faithfully exercising the delivery-governing invariants (1 offline, 2 pure flooding, 5 absolute TTL, 7 gathering-scale) while correctly deferring the orthogonal ones (3 anonymity-uniformity, 4 sealed-sender, 6 no-server-identity) plus crypto/tokens/PoSW/real-PHY/bridges. The byte-budget-instead-of-IBLT abstraction is a defensible YAGNI call for THIS question. Two scope adjustments are needed, neither of which is a major re-cut: (1) the slice is slightly UNDER-scoped on the controls that determine whether the cliff is even a percolation phenomenon — it must add a static/torus percolation-validation baseline, replications+CIs, a workload model, and contrasting buffer/TTL/B regimes (all cheap config rows on the same engine, not new architecture); and (2) airtime/circulation should be promoted from secondary proxy to co-headline, since for a pure-flooding system the cost curve is co-equal with the delivery curve. Caveat that must be enforced in-code even though out-of-scope for measurement: invariants 2 and 4 require that forwarding/eviction/exchange never read sender/recipient. Do NOT expand into crypto/anonymity/mobile/full multi-factor sweeps — those remain correctly deferred.\",\"",
+      "signoffRecommendation": "CONDITIONAL APPROVAL — do not start the build on the current spec, but the concept and slice boundary are sound and this is a fix-the-spec exercise, not a re-think. All five independent lenses returned 'sound-with-fixes' (none said needs-rework), and their high/critical findings converge on the same short list of root causes, which is a strong signal. The risk is specific and well-understood: as written, the sim would produce a confident, reproducible, and WRONG delivery-vs-density curve that the team would then trust — the density axis is corrupted by RWP non-uniformity, the cliff is unverifiable from single-seed runs, the byte budget is optimistically density-independent, dt is an unpinned confound, and the headline metric's denominator is undefined. Mandate the eight MUST-FIX items as spec revisions before any code: (1) workload + delivery-ratio-denominator definition, (2) a static/torus percolation-validation harness that must recover the ~4.5 mean-degree threshold as the gating first test, (3) density-axis fixes (boundary topology + RWP stationarity + empirical-degree reporting), (4) replications with 95% CIs replacing eyeballed DoD, (5) density-aware grounded byte budget with a binding-constraint diagnostic, (6) pinned dt with per-episode budget accounting, (7) an explicit injected-Generator RNG contract, (8) precise exchange semantics. Re-review the revised spec (a quick second pass, not a full fan-out) to confirm the MUST-FIX items landed, then green-light the build. Of the three sign-off decisions: stack=Python is fine (numpy + cell-list index; keep the Rust hot-path option only if profiling demands it); the first-slice boundary is approved with the two scope adjustments above; mobility default should change — make STATIC the primary cliff probe and RWP a labeled optimistic overlay rather than the headline default. Estimated spec-revision effort is small relative to the cost of debugging a misleading curve after the fact, which is exactly the failure mode the parent's 'measure, don't assume' ethos is meant to prevent.\""
+    }
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Review"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Synthesize"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "review:measurement-validity",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a04fc4ab99412381b",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782388228807,
+      "queuedAt": 1782388228795,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "measurement-validity",
+      "promptPreview": "You are a rigorous, constructive reviewer of a SIMULATION feature spec for the polleneus project. Attack weaknesses AND give concrete fixes.\n\npolleneus 7 invariants (the sim must faithfully represent the ones that affect delivery): 1) no internet required; 2) pure flooding, no routing/targeting; 3) anonymity via uniformity; 4) sealed-sender; 5) self-destruct via absolute signed TTL; 6) no server/O…",
+      "lastProgressAt": 1782388368013,
+      "tokens": 40643,
+      "toolCalls": 8,
+      "durationMs": 139206,
+      "resultPreview": "{\"lens\":\"measurement-validity\",\"verdict\":\"sound-with-fixes\",\"strengths\":[\"Correct first-slice instinct: isolating delivery-vs-density before any phone code is the right P0 move, and it faithfully exercises the invariants that actually govern delivery (inv 1 offline, inv 2 pure flooding, inv 5 absolute TTL, inv 7 gathering-scale density). The slice deliberately defers crypto/anonymity/anti-abuse, w…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "review:design-fidelity",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "ad8637dcaf883b85b",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782388228807,
+      "queuedAt": 1782388228795,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "DESIGN-FIDELITY — does the sim faithfully represent the par…",
+      "promptPreview": "You are a rigorous, constructive reviewer of a SIMULATION feature spec for the polleneus project. Attack weaknesses AND give concrete fixes.\n\npolleneus 7 invariants (the sim must faithfully represent the ones that affect delivery): 1) no internet required; 2) pure flooding, no routing/targeting; 3) anonymity via uniformity; 4) sealed-sender; 5) self-destruct via absolute signed TTL; 6) no server/O…",
+      "lastProgressAt": 1782388391163,
+      "tokens": 44036,
+      "toolCalls": 9,
+      "durationMs": 162355,
+      "resultPreview": "{\"lens\":\"DESIGN-FIDELITY — does the sim faithfully represent the parent v0.4 mechanics that affect delivery, and does the byte-budget abstraction distort the measured percolation cliff?\",\"verdict\":\"sound-with-fixes\",\"strengths\":[\"Scope discipline is genuinely correct: the first slice isolates the single most load-bearing, unmeasured claim in the parent (the §12.1 percolation cliff) and defers cryp…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "review:scope-yagni",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a2fc0113c94d27c1b",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782388228808,
+      "queuedAt": 1782388228795,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "SCOPE-YAGNI: is \"delivery-vs-density only\" the right first …",
+      "promptPreview": "You are a rigorous, constructive reviewer of a SIMULATION feature spec for the polleneus project. Attack weaknesses AND give concrete fixes.\n\npolleneus 7 invariants (the sim must faithfully represent the ones that affect delivery): 1) no internet required; 2) pure flooding, no routing/targeting; 3) anonymity via uniformity; 4) sealed-sender; 5) self-destruct via absolute signed TTL; 6) no server/O…",
+      "lastProgressAt": 1782388367685,
+      "tokens": 22950,
+      "toolCalls": 5,
+      "durationMs": 138877,
+      "resultPreview": "{\"lens\":\"SCOPE-YAGNI: is \\\"delivery-vs-density only\\\" the right first cut, and is the included scope necessary-and-sufficient for a meaningful, trustworthy delivery curve?\",\"verdict\":\"sound-with-fixes\",\"strengths\":[\"The 'measure, don't assume' framing with one falsifiable question (locate the percolation cliff before writing phone code) is exactly the right discipline. The parent project asserts p…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "review:testability-arch",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "ab574fd54bf713fcd",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782388228808,
+      "queuedAt": 1782388228795,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "testability-arch",
+      "promptPreview": "You are a rigorous, constructive reviewer of a SIMULATION feature spec for the polleneus project. Attack weaknesses AND give concrete fixes.\n\npolleneus 7 invariants (the sim must faithfully represent the ones that affect delivery): 1) no internet required; 2) pure flooding, no routing/targeting; 3) anonymity via uniformity; 4) sealed-sender; 5) self-destruct via absolute signed TTL; 6) no server/O…",
+      "lastProgressAt": 1782388382519,
+      "tokens": 47616,
+      "toolCalls": 11,
+      "durationMs": 153711,
+      "resultPreview": "{\"lens\":\"testability-arch\",\"verdict\":\"sound-with-fixes\",\"strengths\":[\"Module decomposition is genuinely testable: model/ (entities+geometry+mobility), engine/ (loop+contact+exchange), policies/ (flood/eviction/retention/seen-record, swappable), metrics/, scenario/, report/. The policy/engine split is the right seam — it lets eviction, flooding, and seen-record be unit-tested in isolation and swapp…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "review:misleading-results",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "aad62e7c29700f0e3",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782388228808,
+      "queuedAt": 1782388228795,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "MISLEADING-RESULTS (adversarial: what makes this sim produc…",
+      "promptPreview": "You are a rigorous, constructive reviewer of a SIMULATION feature spec for the polleneus project. Attack weaknesses AND give concrete fixes.\n\npolleneus 7 invariants (the sim must faithfully represent the ones that affect delivery): 1) no internet required; 2) pure flooding, no routing/targeting; 3) anonymity via uniformity; 4) sealed-sender; 5) self-destruct via absolute signed TTL; 6) no server/O…",
+      "lastProgressAt": 1782388385140,
+      "tokens": 24558,
+      "toolCalls": 6,
+      "durationMs": 156332,
+      "resultPreview": "{\"lens\":\"MISLEADING-RESULTS (adversarial: what makes this sim produce a wrong/misleading delivery-vs-density curve we then trust?)\",\"verdict\":\"sound-with-fixes\",\"strengths\":[\"Right question, right order. \\\"Locate the percolation cliff before any phone code\\\" is exactly the P0 \\\"measure don't assume\\\" mandate, and a density-vs-delivery curve is the correct first slice. Deferring crypto/tokens/anony…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "synthesize",
+      "phaseIndex": 2,
+      "phaseTitle": "Synthesize",
+      "agentId": "a76ebeffe6cf2eee9",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782388391174,
+      "queuedAt": 1782388391165,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "ready-after-fixes",
+      "promptPreview": "You are the lead reviewer consolidating a fan-out design review of the soup-simulator spec into an actionable sign-off recommendation.\n\npolleneus 7 invariants (the sim must faithfully represent the ones that affect delivery): 1) no internet required; 2) pure flooding, no routing/targeting; 3) anonymity via uniformity; 4) sealed-sender; 5) self-destruct via absolute signed TTL; 6) no server/OOB ide…",
+      "lastProgressAt": 1782388480676,
+      "tokens": 45981,
+      "toolCalls": 1,
+      "durationMs": 89502,
+      "resultPreview": "{\"overallVerdict\":\"ready-after-fixes\",\"mustFix\":[{\"title\":\"Define the message workload and the delivery-ratio denominator — without it the headline metric is undefined\",\"severity\":\"critical\",\"fix\":\"Add a Workload sub-model to SCOPE IN and to the config dataclass. Specify: (1) message count M and generation process — default to a single fixed cohort injected at warm-up end (cleanest first curve) wi…"
+    }
+  ],
+  "totalTokens": 225784,
+  "totalToolCalls": 40
+}

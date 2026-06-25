@@ -1,0 +1,115 @@
+{
+  "summary": "Round-2 focused re-review: did the 7 must-fixes land and is the corrected percolation gate now theoretically sound?",
+  "agentCount": 2,
+  "logs": [
+    "Round-2 done: verdicts=GATE-THEORY (percolation: multi-hop fixpoint reachability, union-find oracle, susceptibility-peak threshold estimator, Poisson torus ensemble):minor-nits, MUSTFIX-AUDIT:minor-nits; blocking=0"
+  ],
+  "result": {
+    "reviews": [
+      {
+        "lens": "GATE-THEORY (percolation: multi-hop fixpoint reachability, union-find oracle, susceptibility-peak threshold estimator, Poisson torus ensemble)",
+        "verdict": "minor-nits",
+        "confirmations": [
+          "(a) settle_static_fixpoint (Task 9, line 81) is theoretically sound: iterating all-pairs exchange passes to a no-change fixpoint under B=inf/TTL=inf/buffer=inf (line 103) computes the transitive closure of the dist<=r adjacency relation, i.e. true connected-component reachability. It is monotone (buffers only grow over a finite universe) so termination is guaranteed. This is genuine multi-hop, not one-hop.",
+          "(a) The union-find oracle KAT (line 103) is a valid INDEPENDENT cross-check: union-find over neighbor_pairs (same_component_pairs) is a structurally different algorithm from iterative label-propagation, so asserting set-equality of delivered (src,dst) pairs == same_component_pairs genuinely catches exchange-stack bugs. The gate correctly uses the static fixpoint (timing-independent) rather than the dynamic engine, so the equality is not contaminated by contact-timing.",
+          "(a) The A-B-C multi-hop prerequisite test (Task 9, line 74) correctly guards the dynamic engine that the rest of the sweep relies on, while the gate itself is anchored on the static fixpoint - correct separation.",
+          "(b) The susceptibility estimator chi(d)=sum_{c!=largest}|c|^2/N (line 101) correctly EXCLUDES the largest/giant component. Web sources confirm chi exhibits its peak/divergence at p_c only when the giant is excluded, and p_c ~= argmax_p chi is the standard finite-size threshold estimator. The /N normalization is a per-rep constant in d and does not move the argmax.",
+          "(b) d_c ~= 4.51 is confirmed by literature (Gilbert disk critical mean degree 4.508-4.515, MC ~4.5122). The argmax window [4.0,5.2] brackets 4.51 with appropriate finite-size slack (peak is shifted/broadened on a finite torus). Knee bounds S(4.0)<0.1 (subcritical, sub-extensive largest component) and S(5.5)>0.3 (supercritical, 5.5 safely above the upper window edge) are loose, internally consistent continuum-percolation values.",
+          "(b) The CRITICAL round-1 defect is correctly retired: the plan explicitly does NOT assert delivery=0.5 ~= 4.51 (line 104). This is right - the fraction of src->dst pairs deliverable ~= S^2 at large d, so delivery=0.5 requires S~=0.71, which in 2D Gilbert percolation occurs well above threshold (~d 6-7, the order of magnitude the plan cites). Replacing delivery=0.5 with susceptibility-peak + giant-component-knee is the theoretically correct fix.",
+          "(b) Pair-level vs node-level quantities are kept distinct and consistent: the oracle KAT uses delivered PAIRS == same_component_pairs (pair-level, proportional to sum|c|^2), while the knee uses largest_component_fraction (node-level S). No conflation between S and S^2.",
+          "(c) The Poisson ensemble N~Poisson(lambda*WH) per rep on a torus (line 104) is the canonical grand-canonical Boolean/Gilbert ensemble against which d_c=lambda*pi*r^2 is DEFINED. The torus removes the boundary edge-deficit, consistent with the pinned edge convention d=lambda*pi*r^2 (line 16) and the Task 5 torus 5% degree test."
+        ],
+        "remaining": [
+          {
+            "title": "Susceptibility chi and largest_component_fraction S are computed per-rep but the plan does not state how they are aggregated across the Poisson ensemble before taking argmax / applying the knee bounds",
+            "severity": "low",
+            "fix": "In Task 12, specify that chi(d) and S(d) are the ENSEMBLE MEAN over reps at each density (mean of per-rep intensive chi=sum|c|^2/N and per-rep S=|largest|/N), then argmax over the density grid. With N varying per rep this averaging-of-intensive-quantities is the only correct way; without it a single unlucky rep could shift the argmax. This is the natural reading but should be pinned so the implementer does not, e.g., pool raw |c|^2 across reps with differing N."
+          },
+          {
+            "title": "Knee/peak bounds (S(4.0)<0.1, S(5.5)>0.3, peak in [4.0,5.2]) are finite-size-dependent and the plan does not pin a minimum N (or WH/r) to guarantee they hold",
+            "severity": "low",
+            "fix": "State a concrete system size in Task 12 (e.g. expected N on the order of a few thousand, matching the n=5000 torus test in Task 5) so the subcritical S(4.0)<0.1 bound is not violated by finite-size giant-component fluctuations and the susceptibility peak is sharp enough to land inside [4.0,5.2]. Optionally widen S(4.0) tolerance slightly if N must stay small for runtime. Pure execution detail, not a theory error."
+          }
+        ]
+      },
+      {
+        "lens": "MUSTFIX-AUDIT",
+        "verdict": "minor-nits",
+        "confirmations": [
+          "MUST-FIX 1 (gate re-spec) LANDED: Task 12 (lines 99-109) replaces delivery=0.5 with an independent union-find oracle (largest_component_fraction / susceptibility / same_component_pairs), a multi-hop fixpoint delivery path (settle_static_fixpoint), and a susceptibility-peak locator asserting chi(d) peaks in [4.0,5.2] plus a giant-knee gate S(4.0)<0.1 and S(5.5)>0.3. It explicitly states 'Do NOT assert delivery=0.5 ~ 4.51 (that crossing is ~d 6-7)'. The d_c~4.51 constant is correct: web sources bound the critical degree at 4.51218-4.51228 (99.99% CI 4.508-4.515) under exactly the pinned convention d=lambda*pi*r^2, edge iff center-to-center dist<=r.",
+          "MUST-FIX 2 (contact_interval wired + dt-convergence + t_setup-once + half-duplex shared budget) LANDED: Task 9 (lines 69-83) tracks episodes by physical entry->exit from contact_interval (cell-list only prunes candidates), charges t_setup once per entry->exit, and uses 'one shared pool per episode split across both directions (BLE half-duplex)'. Tests cover per-episode shared budget (budget=1 -> <=1 blob total, not 1 each way), t_setup-paid-once across K dt steps, sub-dt fly-through, and dt-convergence (delivery and mean_contact_duration differ < tol at dt vs dt/2). Task 3 line 32 confirms Task 9 now actually calls contact_interval (was dead code in v1). The susceptibility formula sum_{c != largest}|c|^2/N matches the standard second-moment / Fisher susceptibility analog confirmed via web search.",
+          "MUST-FIX 3 (per-replication CI across reps, not pooled Wilson) LANDED: Task 11 line 94 computes CI 'ACROSS the R per-rep delivery ratios -- t-interval or bootstrap -- NOT pooled over messages', exposes mean_ci(values), and line 95 tests that across-reps CI is wider than naive pooled. The separate logistic_cliff MLE on binomial counts (with bootstrap-over-reps midpoint CI) is a distinct quantity (threshold point estimate), not in conflict with the delivery CI.",
+          "MUST-FIX 4 (RWP stationary burn-in init + stationarity acceptance gate via stationary_ok) LANDED: Task 5 declares stationarity_ok(first_half, second_half, tol) (line 39), tests burn-in init produces first-half vs second-half mean-degree within tol (line 44), implements stationary init as an internal burn-in of n completed legs (line 47), and tests stationarity_ok False-on-drift/True-on-flat. Task 11 run_one returns stationary_ok and line 95 flags the row when a drifting RWP config is used. Consistent across Task 5 and Task 11.",
+          "MUST-FIX 5 (pinned center-to-center degree convention + torus 5% test + empirical~nominal gate) LANDED: Global constraint line 16 pins 'edge iff center-to-center dist <= r; d=lambda*pi*r^2 <-> 4.51'. Task 2 line 29 adds the docstring pin and the grazing (dist2==r*r in-range) measure-zero test. Task 5 line 43 tests torus mean_degree within 5% of n*pi*r^2/(WH) at n=5000. Task 11 line 95 asserts empirical_mean_degree ~ nominal density (<=5% torus). density_to_n=round(d*w*h/(pi*r^2)) (Task 11) correctly inverts mean_degree and d=lambda*pi*r^2 with a round-trip test.",
+          "MUST-FIX 6 (corrected fair-chance predicate) LANDED EXACTLY: Task 10 line 87 sets Metrics.fair_chance(blob) = (blob.created_at + max_ttl) <= warmup_end + measure_window and explicitly rejects the no-op '<= measure_end + drain'. KAT line 88 excludes a late-injected message lacking in-window TTL headroom from the denominator. Matches the round-1 prescription verbatim.",
+          "MUST-FIX 7 (multi-hop A-B-C prerequisite test + perf task) LANDED: Task 9 line 74 has the A-B-C line test (A,C out of range; B in range of both; C eventually holds A's blob; designed to FAIL a one-hop engine). Task 12b line 116 adds the perf task: static cell-list built once, vectorized neighbor_pairs, wall-clock benchmark with documented v1 node-count target and an explicit Rust-port trigger (50k as fast-follow if missed).",
+          "No cross-task contradictions found: budget interface AirtimeBudget.blobs_transferable(duration,n_local,rng) (Task 7) is consumed correctly by Task 9 with n_local at midpoint and a single shared k. The oracle-equality KAT (Task 12) uses B=inf/TTL=inf/buffer=inf so the fixpoint transfers everything and delivered pairs == same_component_pairs holds (budget non-binding). Interfaces settle_static_fixpoint, same_component_pairs/susceptibility/largest_component_fraction, fair_chance, density_to_n, mean_ci, logistic_cliff are type-consistent across Tasks 9/11/12."
+        ],
+        "remaining": [
+          {
+            "title": "Task 12 Poisson-ensemble system size (lambda*WH / N) is unspecified, yet the susceptibility-peak window [4.0,5.2] and the knee gates S(4.0)<0.1 / S(5.5)>0.3 are finite-size-dependent",
+            "severity": "low",
+            "fix": "Pin an explicit expected node count for the Task 12 Poisson ensemble (e.g. lambda*WH ~ 2000-5000 to match the n=5000 torus degree test in Task 5) and a number of reps, so the peak reliably lands in [4.0,5.2] and the knee inequalities hold. As written the brackets are sound for a sufficiently large torus but the test could be flaky on a small/underspecified N. State the chosen N and rep count in the Task 12 interface block."
+          },
+          {
+            "title": "Susceptibility-peak locator over a coarse mean-degree grid may not resolve a peak inside [4.0,5.2] if grid spacing is too wide",
+            "severity": "low",
+            "fix": "Specify the mean-degree sweep grid (e.g. d in {3.5,4.0,4.25,4.5,4.75,5.0,5.2,5.5} with step <=0.25 around 4.51) in Task 12 so argmax(chi) can actually fall in [4.0,5.2]; otherwise the assertion 'chi peaks in [4.0,5.2]' is underdetermined by the test setup."
+          }
+        ]
+      }
+    ],
+    "clean": true
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Re-review"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "r2:gate-theory",
+      "phaseIndex": 1,
+      "phaseTitle": "Re-review",
+      "agentId": "a130a70b76d59fd1a",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782389799587,
+      "queuedAt": 1782389799579,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "GATE-THEORY (percolation: multi-hop fixpoint reachability, …",
+      "promptPreview": "You are doing a FOCUSED ROUND-2 re-review of a corrected implementation plan. Read the plan at C:/Users/rob/Documents/meldingx/docs/superpowers/plans/2026-06-25-soup-sim.md with your file tools.\n\nYOUR LENS: GATE-THEORY — Read the plan (esp. Task 9 multi-hop engine, Task 12 gate, soup_sim/percolation.py interfaces). Confirm the percolation gate is now THEORETICALLY SOUND: (a) does settle_static_fix…",
+      "lastProgressAt": 1782389930443,
+      "tokens": 36292,
+      "toolCalls": 9,
+      "durationMs": 130856,
+      "resultPreview": "{\"lens\":\"GATE-THEORY (percolation: multi-hop fixpoint reachability, union-find oracle, susceptibility-peak threshold estimator, Poisson torus ensemble)\",\"verdict\":\"minor-nits\",\"confirmations\":[\"(a) settle_static_fixpoint (Task 9, line 81) is theoretically sound: iterating all-pairs exchange passes to a no-change fixpoint under B=inf/TTL=inf/buffer=inf (line 103) computes the transitive closure of …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "r2:mustfix-audit",
+      "phaseIndex": 1,
+      "phaseTitle": "Re-review",
+      "agentId": "a8f8521717835dea1",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782389799588,
+      "queuedAt": 1782389799579,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "MUSTFIX-AUDIT",
+      "promptPreview": "You are doing a FOCUSED ROUND-2 re-review of a corrected implementation plan. Read the plan at C:/Users/rob/Documents/meldingx/docs/superpowers/plans/2026-06-25-soup-sim.md with your file tools.\n\nYOUR LENS: MUSTFIX-AUDIT — Read the plan and verify ALL SEVEN must-fixes from round 1 actually landed and introduced no new inconsistency: (1) gate re-spec, (2) contact_interval wired into engine + dt-con…",
+      "lastProgressAt": 1782389892090,
+      "tokens": 30178,
+      "toolCalls": 6,
+      "durationMs": 92502,
+      "resultPreview": "{\"lens\":\"MUSTFIX-AUDIT\",\"verdict\":\"minor-nits\",\"confirmations\":[\"MUST-FIX 1 (gate re-spec) LANDED: Task 12 (lines 99-109) replaces delivery=0.5 with an independent union-find oracle (largest_component_fraction / susceptibility / same_component_pairs), a multi-hop fixpoint delivery path (settle_static_fixpoint), and a susceptibility-peak locator asserting chi(d) peaks in [4.0,5.2] plus a giant-knee…"
+    }
+  ],
+  "totalTokens": 66470,
+  "totalToolCalls": 15
+}

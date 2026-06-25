@@ -34,9 +34,10 @@ This spec covers both; **sign-off authorizes PR-1's plan first.**
 - **Within an open episode, iterate offer-rounds to a fixpoint**, each round consuming from the **shared
   per-episode airtime pool** (granted once; `t_setup` charged once per physical episode), and able to pick up
   blobs that arrived in a prior round → real multi-hop *within* a long contact, not one hop.
-- **Fix the latency timestamp:** stamp `on_deliver` at the **actual availability/delivery time**, and enforce
-  `delivered_at ≥ created_at` (the current `now=entry` stamping can produce negative latency). Latency curve is
-  **not published until this is fixed.**
+- **Fix the latency timestamp at the ENGINE (not a clamp):** stamp `on_deliver` with the **actual delivery
+  time** so `delivered_at ≥ created_at` holds *by construction*. Do **not** clamp/`max()` in `metrics` — a clamp
+  would hide the underlying timing bug. The test asserts no negative or pre-creation latency *arises at the
+  source* (it must fail if the engine ever emits one), and the latency curve is **not published until this passes.**
 - **Overlapping-contact determinism:** for simultaneous A–B and B–C, assert delivered-set + timestamps are
   invariant to `neighbor_pairs` ordering; if not, canonicalize by earliest-enter-first and document it.
 
@@ -48,7 +49,12 @@ PR-1 merges only if ALL pass:
 - **SI/epidemic growth:** in a clearly **supercritical, well-mixed** population (NOT near d_c, where mean-field
   SI is invalid), infected-count over time matches the closed form `I(t)=N/(1+(N-1)e^{-βt})` within a justified
   tolerance + CI over ≥N seeds, where **β is derived from the measured meeting rate** (not fitted).
-- **Multi-hop-over-time:** a ≥3-hop chain delivers across *separate* contacts as mobility reconfigures.
+- **Multi-hop-over-time (both directions):** a ≥3-hop chain *delivers* across *separate* contacts as mobility
+  reconfigures — AND a **negative arm**: the same chain does **not** deliver when an intermediate link never
+  forms (a node held out of range) and does **not** deliver when `t_setup` exceeds every contact duration
+  (airtime-starved). The negative arm catches an *over-delivery* engine bug (leaked budget pool, stale
+  never-settled `self.open` episode) that a positive-only test would miss — the exact channel by which an
+  engine bug could masquerade as an airtime effect in PR-2.
 - **Non-regression (hard gate):** `test_integration_percolation.py` (oracle-KAT + susceptibility peak) stays
   green bit-for-bit (or with an explicitly justified delta), AND the refined engine reproduces
   `settle_static_fixpoint` delivery in the `cap=∞ / ttl=∞ / α=0 / t_setup=0 / static` limit.

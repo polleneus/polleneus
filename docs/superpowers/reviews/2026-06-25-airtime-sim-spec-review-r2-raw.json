@@ -1,0 +1,105 @@
+{
+  "summary": "Targeted round-2 re-review: did the 6 must-fixes land and is the airtime measurement now valid?",
+  "agentCount": 2,
+  "logs": [
+    "Round-2 done: AIRTIME-VALIDITY:clean, ENGINE-SCOPE:minor-nits; blocking=0"
+  ],
+  "result": {
+    "reviews": [
+      {
+        "lens": "AIRTIME-VALIDITY",
+        "verdict": "clean",
+        "confirmations": [
+          "Fix #1 (collision-capable primary model): Section 3.1 makes the PRIMARY airtime model ALOHA-like and able to turn over -- `p_success(n)=exp(-beta*n)` on 3 shared advertising channels and/or density-dependent `t_setup(n)=t_setup0 + c*n` driving usable airtime negative, so an interior maximum is possible. The old monotone `1/(1+alpha*n)` is explicitly demoted to the 'optimistic-bound sensitivity case, not the primary' (lines 61-64). Decision #2 (line 123) and the Definition of Done (line 118) reinforce this.",
+          "Fix #1 corollary (forms distinguishable): line 70 requires the falsifiable prediction stated up front (linear => plateau, collision => knee near X) plus a test that the two model forms are actually distinguishable (interior max vs plateau), and treats model form as a first-class model-uncertainty band -- so a turn-over cannot be smuggled in by the model choice alone.",
+          "Fix #2 (decouple n_contenders from graph degree): line 65-67 redefines `n_contenders` as the co-channel/interference population, explicitly NOT the unit-disk connectivity degree ('carrier-sense range != connectivity range'), with the mapping and its bias direction required in the provenance table. This removes the round-1 density-axis artifact where the down-turn was just the degree axis.",
+          "Fix #2 corollary (alpha=0 control overlay): line 71-72 requires an alpha=0 control overlay on the SAME axes for every airtime curve, with the explicit interpretation rule that if alpha=0 already turns over, the down-turn is connectivity/buffer/TTL rather than airtime. This is also wired into the hard publish gate (line 88-89) and Definition of Done (line 118).",
+          "Fix #3 (real non-monotone knee estimator): line 84-85 defines Knee = argmax of circulated-blobs/min with a local quadratic-in-log-density fit (anti grid-pinning), bootstrapped over the per-rep matrix, returning 'no knee in range' (not NaN) when monotone, and explicitly forbids reusing the monotone 0.5-crossing machinery. A synthetic planted-peak test is required (line 85).",
+          "Fix #3 corollary (binding fraction is a HARD publish-gate): line 87-89 makes the saturation figure publishable ONLY IF the contention-limited binding fraction (decomposed from setup-starved / quantization-limited / demand-limited) exceeds a pre-registered threshold at/beyond the knee AND the alpha=0 control does not also turn over; otherwise the curve must be labelled connectivity/buffer/TTL-limited. This is a real gate, not advisory.",
+          "Fix #4 (precise metrics with offered baseline): line 76-78 defines airtime utilization = sum(charged_airtime)/sum(available_contact_time) with charged_airtime = t_setup + served_blobs*blob_size/eff (budget returns airtime, t_setup kept in the numerator as the real high-density sink), reported AGAINST OFFERED airtime (what would move every blob the peer lacks) so a flat curve is interpretable. Line 79-80 defines circulated-blobs/min via warmup-end/measure-end counter snapshots over the measure window, with a note on whether dummy/duplicate traffic counts.",
+          "Fix #5 (censoring-aware latency with controls): line 92-94 requires TTL-expired = censored at TTL, reporting T50 / Kaplan-Meier-style estimate JOINTLY with delivery ratio, and labels delivered-only mean latency a LOWER bound due to survivorship. Line 95-96 mandates >=1 airtime sweep at cap=inf AND ttl=inf as the confounder control (turn-down survives => airtime; vanishes => buffer/TTL), with cap/TTL pre-registered with bias direction.",
+          "Cross-cutting validity scaffolding also landed: PR split (engine fidelity gated first, then airtime model) so an engine bug cannot be mistaken for an airtime effect (Sections 1-2); fidelity gate ties beta to the MEASURED meeting rate rather than a fit and avoids mean-field SI near d_c (line 48-50); set-reconciliation overhead modeled as zero is named as an optimistic deferral (lines 102, 111); and every headline number is stated as an UPPER BOUND on real delivery (line 14)."
+        ],
+        "remaining": []
+      },
+      {
+        "lens": "ENGINE-SCOPE",
+        "verdict": "minor-nits",
+        "confirmations": [
+          "(1) PR split landed and explicit: spec §1 (lines 18-27) defines PR-1 'Engine fidelity (no airtime model, no new physics), gated hard, ships first, merges, then' PR-2 'Airtime model + measurement, built only on the trusted engine.' §6 line 122 and DoD §5 reinforce that sign-off authorizes PR-1's plan first. Engine refinement is correctly sequenced BEFORE any measurement.",
+          "(2a) PR-1 fidelity gate is pinned and falsifiable (spec §2.2, lines 43-54). Contact-timing fidelity is explicitly DECOUPLED from exchange: empirical RWP meeting rate + mean contact duration must match RWP analytic expressions within tolerance, 'proving the contact graph is right before testing exchange.'",
+          "(2b) SI gate is correctly de-tautologized: I(t)=N/(1+(N-1)e^{-betat}) with beta DERIVED from the measured meeting rate (explicitly 'not fitted'), tolerance + CI over >=N seeds. Validity regime is pinned to 'clearly supercritical, well-mixed (NOT near d_c, where mean-field SI is invalid)' — directly addresses the round-1 mean-field-near-threshold objection.",
+          "(2c) Multi-hop-over-time gate present: a >=3-hop chain must deliver across SEPARATE contacts as mobility reconfigures (distinct from intra-contact multi-hop).",
+          "(2d) Hard non-regression gate landed and grounded in real artifacts: spec §2.2 requires test_integration_percolation.py (oracle-KAT + susceptibility peak) to stay green bit-for-bit (or explicitly justified delta) AND the refined engine to reproduce settle_static_fixpoint delivery in the cap=inf/ttl=inf/alpha=0/t_setup=0/static limit. Verified the test file contains exactly oracle-KAT (delivered==same_component_pairs) and susceptibility-peak (4.0<=peak<=5.2, d_c~=4.51) assertions, and engine.py contains the settle_static_fixpoint component-reachability method this pins against.",
+          "(3a) Refined intra-contact exchange specified (§2.1): iterate offer-rounds to a fixpoint, single SHARED per-episode airtime pool granted once with t_setup charged once per physical episode, able to pick up blobs that arrived in a prior round (real multi-hop within one long contact). This correctly targets the current single-pass _exchange (engine.py lines 128-144) fed by a one-shot k from blobs_transferable.",
+          "(3b) Latency fix specified (§2.1): stamp on_deliver at actual delivery time AND enforce delivered_at>=created_at, with explicit note that 'current now=entry stamping can produce negative latency' — correctly identifies the real bug at engine.py line 119 (now=entry) that flows unclamped into metrics.delivered_at. Latency curve gated as not-published until fixed.",
+          "(3c) Overlap shuffle-invariance specified (§2.1): for simultaneous A-B and B-C, assert delivered-set + timestamps invariant to neighbor_pairs ordering; canonicalize by earliest-enter-first and document if not."
+        ],
+        "remaining": [
+          {
+            "title": "Multi-hop-over-time gate is positive-only; no negative/control arm to catch an over-delivery engine bug",
+            "severity": "medium",
+            "fix": "The other fidelity gates have a falsifying arm (percolation: disconnected-never KAT; SI: explicitly bounded to the supercritical-not-near-d_c regime). The multi-hop-over-time gate (§2.2) only asserts a >=3-hop chain DOES deliver. An engine bug that over-delivers — e.g. a stale self.open episode that never gets settled/deleted, or a budget pool that leaks across episodes — would pass this positive test yet inflate PR-2's circulated-blobs/min, exactly the channel by which an engine bug masquerades as an airtime effect. Add a negative arm: assert the same >=3-hop chain does NOT deliver when an intermediate link never forms (e.g. node held out of range) and does NOT deliver when t_setup exceeds every contact duration (airtime-starved). This makes the multi-hop gate falsifiable in both directions."
+          },
+          {
+            "title": "'Enforce delivered_at>=created_at' wording could license a metrics-side clamp that masks the engine bug instead of fixing it",
+            "severity": "low",
+            "fix": "§2.1 pairs the correct fix ('stamp on_deliver at the actual availability/delivery time') with 'enforce delivered_at>=created_at'. The negative latency originates in the engine (now=entry at engine.py:119) but delivered_at is recorded in metrics.on_deliver; if 'enforce' is implemented as a clamp in metrics, it hides the root cause and silently biases T50/latency low exactly where the engine timing is wrong. Pin one sentence: the >=created_at constraint must hold from the engine stamping true delivery time (the clamp/assert is a guard that must never actually fire on correct output), and add a test that the guard is not load-bearing (delivered_at equals the contact-availability time, not a clamped created_at)."
+          }
+        ]
+      }
+    ],
+    "clean": true
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Re-review"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "r2:airtime-validity",
+      "phaseIndex": 1,
+      "phaseTitle": "Re-review",
+      "agentId": "a38dcd2ef742e901e",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782400699471,
+      "queuedAt": 1782400699463,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "AIRTIME-VALIDITY",
+      "promptPreview": "You are doing a FOCUSED ROUND-2 re-review of a revised simulation spec. Read it with your file tools.\n\nLENS: AIRTIME-VALIDITY — Read the spec at C:/Users/rob/Documents/meldingx/docs/superpowers/specs/2026-06-25-airtime-sim-spec.md. Confirm the round-1 measurement-validity defects are fixed: (1) is the PRIMARY airtime model now collision-capable (can produce an interior maximum / rise-then-fall), w…",
+      "lastProgressAt": 1782400735700,
+      "tokens": 21465,
+      "toolCalls": 2,
+      "durationMs": 36229,
+      "resultPreview": "{\"lens\":\"AIRTIME-VALIDITY\",\"verdict\":\"clean\",\"confirmations\":[\"Fix #1 (collision-capable primary model): Section 3.1 makes the PRIMARY airtime model ALOHA-like and able to turn over -- `p_success(n)=exp(-beta*n)` on 3 shared advertising channels and/or density-dependent `t_setup(n)=t_setup0 + c*n` driving usable airtime negative, so an interior maximum is possible. The old monotone `1/(1+alpha*n)`…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "r2:engine-scope",
+      "phaseIndex": 1,
+      "phaseTitle": "Re-review",
+      "agentId": "a26cae97d7b7a3a78",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782400699472,
+      "queuedAt": 1782400699463,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "ENGINE-SCOPE",
+      "promptPreview": "You are doing a FOCUSED ROUND-2 re-review of a revised simulation spec. Read it with your file tools.\n\nLENS: ENGINE-SCOPE — Read the spec at C:/Users/rob/Documents/meldingx/docs/superpowers/specs/2026-06-25-airtime-sim-spec.md (and sim/soup_sim/engine.py if useful). Confirm: (1) the engine-refinement is split into its own gated PR-1 before measurement (PR-2); (2) the PR-1 fidelity gate is pinned +…",
+      "lastProgressAt": 1782400799857,
+      "tokens": 37724,
+      "toolCalls": 8,
+      "durationMs": 100385,
+      "resultPreview": "{\"lens\":\"ENGINE-SCOPE\",\"verdict\":\"minor-nits\",\"confirmations\":[\"(1) PR split landed and explicit: spec §1 (lines 18-27) defines PR-1 'Engine fidelity (no airtime model, no new physics), gated hard, ships first, merges, then' PR-2 'Airtime model + measurement, built only on the trusted engine.' §6 line 122 and DoD §5 reinforce that sign-off authorizes PR-1's plan first. Engine refinement is correct…"
+    }
+  ],
+  "totalTokens": 59189,
+  "totalToolCalls": 10
+}

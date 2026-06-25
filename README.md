@@ -1,4 +1,10 @@
-# polleneus
+<p align="center">
+  <img src="assets/logo.png" alt="polleneus — a honey badger blowing dandelion seeds into the wind" width="220">
+</p>
+
+<h1 align="center">polleneus</h1>
+
+<p align="center"><em>spread the word like seeds on the wind</em></p>
 
 > ⚠️ **DESIGN & RESEARCH — UNAUDITED — NOT A FINISHED PRODUCT.**
 > This repository contains a **design specification and adversarial reviews only**. There is **no usable

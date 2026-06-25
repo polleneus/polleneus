@@ -89,5 +89,37 @@ def same_component_pair_fraction(positions, r, w, h, boundary) -> float:
     return same / total if total else 0.0
 
 
+def temporal_reachable(episodes, source, n) -> set[int]:
+    """Independent INTERVAL-based time-respecting reachability — the physical ground truth.
+
+    `episodes` are (i, j, entry, exit). A node is infected at a time; a contact [entry,exit]
+    can carry the blob from an infected endpoint a (infected at t_a) to b iff t_a <= exit,
+    delivering at max(t_a, entry). Iterated to a fixpoint (a newly-lowered infection time can
+    enable earlier propagation through other overlapping contacts). This is computed purely
+    from contact geometry — it does NOT replay the engine's delivery order — so it is a real
+    independent check (it detects under-delivery across nested/overlapping contacts).
+
+    PRECONDITION: the blob exists from before the first contact (created_at <= t0). The oracle
+    ignores created_at; for a blob created mid-run, the engine's causality guard is the source
+    of truth, not this function. NOTE: both engine and oracle consume contact_interval, so a
+    bug in contact_interval itself would be invisible to an engine-vs-oracle comparison — the
+    deterministic discriminator tests hand-verify the contact intervals to cover that.
+    """
+    INF = float("inf")
+    inf_time = {source: -INF}
+    changed = True
+    while changed:
+        changed = False
+        for (i, j, entry, exit_) in episodes:
+            for (a, b) in ((i, j), (j, i)):
+                ta = inf_time.get(a, INF)
+                if ta <= exit_:
+                    cand = max(ta, entry)
+                    if cand < inf_time.get(b, INF):
+                        inf_time[b] = cand
+                        changed = True
+    return set(inf_time)
+
+
 def placement(n: int, w: float, h: float, rng) -> np.ndarray:
     return rng.uniform([0.0, 0.0], [w, h], (n, 2))

@@ -17,6 +17,11 @@ class AirtimeBudget:
         self.p_fail = p_fail
         self.blob_size = blob_size
 
+    def effective_goodput(self, n_local: int) -> float:
+        """Goodput (bytes/time) after local contention + reconciliation loss. Used by the
+        per-step engine to integrate airtime over a contact (time-varying contention)."""
+        return self.throughput_ideal / (1.0 + self.alpha * max(0, n_local)) * (1.0 - self.p_fail)
+
     def blobs_transferable(self, duration: float, n_local: int, rng) -> int:
         usable = max(0.0, duration - self.t_setup)
         if usable <= 0.0:

@@ -125,14 +125,52 @@ def test_cross_slicing_episode_equality():
 
 
 def test_finite_ttl_delivered_when_in_contact_during_validity():
-    # nodes in range from t=0; blob valid [0,5]; long run -> MUST deliver during the valid
-    # window (Codex P1: exchange happens DURING the contact, not at the later expiry time).
+    # nodes in range from t=0; blob valid [0,5]. Delivery must happen DURING the contact while
+    # the blob is valid (the old lazy-settle deferred exchange to the contact's EXIT, by when
+    # the blob had expired -> never delivered). Per-step propagation delivers at t~0; the
+    # receiver then legitimately expires it at t=5, so we assert the delivery EVENT, not has().
     c = cfg(n=2, dt=1.0, radius=10.0, ttl=5.0)
-    eng = make_engine([[50, 50], [55, 50]], c)
+    pos = np.array([[50.0, 50.0], [55.0, 50.0]])
+    mob = Mobility("static", pos, np.zeros_like(pos), c.width, c.height, 0.0, 0.0)
+    bufs = [NodeBuffer(c.buffer_cap, c.seen_margin, c.rng(i)) for i in range(2)]
+    rec = []
+    eng = Engine(c, mob, bufs, AirtimeBudget(c.throughput_ideal, 0, 0, 0, 1.0), c.rng(9),
+                 on_deliver=lambda n, b, t: rec.append((n, b.id, t)))
     eng.inject(Blob(0, created_at=0.0, ttl=5.0, size=1.0), 0)
     eng.run_until(20.0)
     eng.finalize()
-    assert eng.buffers[1].has(0)
+    assert any(n == 1 and bid == 0 and t < 5.0 for (n, bid, t) in rec)  # delivered while valid
+
+
+def test_delivery_time_never_before_created():
+    c = cfg(n=2, dt=1.0, radius=10.0, ttl=1e12)
+    pos = np.array([[50.0, 50.0], [55.0, 50.0]])
+    mob = Mobility("static", pos, np.zeros_like(pos), c.width, c.height, 0.0, 0.0)
+    bufs = [NodeBuffer(c.buffer_cap, c.seen_margin, c.rng(i)) for i in range(2)]
+    times = []
+    eng = Engine(c, mob, bufs, AirtimeBudget(c.throughput_ideal, 0, 0, 0, 1.0), c.rng(9),
+                 on_deliver=lambda n, b, t: times.append((t, b.created_at)))
+    eng.inject(Blob(0, created_at=3.0, ttl=1e12, size=1.0), 0)
+    eng.run_until(10.0)
+    eng.finalize()
+    assert times and all(t >= cr - 1e-9 for (t, cr) in times)  # delivered_at >= created_at by construction
+
+
+def test_overlap_pair_order_invariance():
+    def run(order):
+        c = cfg(n=3, mobility="static", speed_min=0.0, speed_max=0.0, radius=10.0, dt=1.0)
+        pos = np.array([[0.0, 50.0], [9.0, 50.0], [18.0, 50.0]])
+        mob = Mobility("static", pos, np.zeros_like(pos), c.width, c.height, 0.0, 0.0)
+        bufs = [NodeBuffer(BIG, 1e12, c.rng(3, i)) for i in range(3)]
+        rec = []
+        eng = Engine(c, mob, bufs, AirtimeBudget(1e12, 0, 0, 0, 1.0), c.rng(1),
+                     on_deliver=lambda n, b, t: rec.append((n, b.id, t)), _pair_order=order)
+        eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
+        eng.run_until(3.0)
+        eng.finalize()
+        return sorted(rec)
+    assert run(None) == run("reversed")  # canonical (i,j) per-step order -> input order irrelevant
+    assert (2, 0, 0.0) in run(None)      # multi-hop A->B->C reached within a single step (per-step propagation)
 
 
 def test_finite_ttl_not_delivered_when_contact_starts_after_expiry():

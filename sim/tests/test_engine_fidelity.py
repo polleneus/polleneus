@@ -29,14 +29,22 @@ def _spread_engine(c, one_hop=False):
                   on_deliver=lambda *_: None, one_hop=one_hop), bufs
 
 
-# --- analytic forms ---------------------------------------------------------
+def _linear_engine(positions, velocities, c, t_setup=0.0):
+    pos = np.array(positions, float)
+    mob = Mobility("linear", pos, np.array(velocities, float), c.width, c.height, 0.0, 0.0)
+    bufs = [NodeBuffer(BIG, 1e12, c.rng(3, i)) for i in range(len(pos))]
+    eng = Engine(c, mob, bufs, AirtimeBudget(1e12, 0.0, t_setup, 0.0, 1.0), c.rng(1),
+                 on_deliver=lambda *_: None)
+    return eng, bufs
+
+
+# --- analytic forms + contact-timing sanity (runs the engine) ---------------
 def test_analytic_forms():
     assert abs(expected_relative_speed(3.0) - (4.0 / np.pi) * 3.0) < 1e-9
     assert abs(expected_contact_duration(8.0, 3.0) - (np.pi * 8.0 / (2 * 3.0))) < 1e-9
     assert abs(analytic_meeting_rate_per_node(8.0, 3.0, 300, 40000.0) - (2 * 8 * 3 * 299 / 40000.0)) < 1e-9
 
 
-# --- Task 1: contact-timing sanity gate (runs the engine) -------------------
 def test_contact_timing_matches_rwp_analytics():
     durs, rates = [], []
     for s in range(3):
@@ -55,22 +63,54 @@ def test_contact_timing_matches_rwp_analytics():
     assert 0.5 * exp_rate <= np.mean(rates) <= 2.0 * exp_rate, (np.mean(rates), exp_rate)
 
 
-# --- Task 5: temporal-reachability oracle ----------------------------------
-def test_temporal_reachable_respects_time_order():
-    assert temporal_reachable([(0, 1, 1.0), (1, 2, 2.0)], 0, 3) == {0, 1, 2}   # journey exists
-    assert temporal_reachable([(1, 2, 1.0), (0, 1, 2.0)], 0, 3) == {0, 1}      # B-C before B infected
+# --- INDEPENDENT interval oracle: hand-known, both directions ---------------
+def test_temporal_reachable_interval_oracle():
+    # contact (i, j, entry, exit). A-B then B-C (later) -> C reachable.
+    assert temporal_reachable([(0, 1, 0.0, 1.0), (1, 2, 1.5, 2.0)], 0, 3) == {0, 1, 2}
+    # B-C happens (and ENDS) before B is infected by A -> C NOT reachable.
+    assert temporal_reachable([(1, 2, 0.0, 0.5), (0, 1, 1.0, 2.0)], 0, 3) == {0, 1}
 
 
-def test_engine_matches_temporal_reachability():
+# --- KEY discriminators (deterministic, dt-robust): nested overlap + time order ---
+def test_nested_overlap_delivers_node2():
+    # node0(blob)-node1 in range the WHOLE run; node2 grazes only node1 mid-run; node0-node2 never.
+    # node1 physically holds the blob from t=0, so node2 IS reachable. The old lazy-exit-settle
+    # model missed it ({0,1}); per-step propagation must deliver node2.
+    c = _cfg(n=3, mobility="static", speed_min=0.0, speed_max=0.0, radius=10.0, dt=1.0,
+             width=2000.0, height=2000.0, boundary="walls")
+    eng, bufs = _linear_engine([[0., 0.], [0., 9.], [-20., 15.]],
+                               [[0., 0.], [0., 0.], [2., 0.]], c)   # node2 sweeps x at y=15
+    eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
+    eng.run_until(40.0); eng.finalize()
+    assert bufs[1].has(0) and bufs[2].has(0)                         # node2 reached via node1
+    assert temporal_reachable(eng.episodes, 0, 3) == {0, 1, 2}       # independent oracle agrees
+
+
+def test_time_order_is_respected_not_flooded():
+    # node1 meets node2 FIRST (early), then meets node0(blob) LATE. A time-respecting engine
+    # must NOT deliver to node2 (node1 had nothing during the early contact). A flood-ignoring
+    # engine would wrongly deliver node2 (the union graph is connected).
+    c = _cfg(n=3, mobility="static", speed_min=0.0, speed_max=0.0, radius=10.0, dt=1.0,
+             width=2000.0, height=2000.0, boundary="walls")
+    eng, bufs = _linear_engine([[0., 0.], [0., 95.], [0., 100.]],
+                               [[0., 0.], [0., -2.], [0., 0.]], c)   # node1 descends past node2 then to node0
+    eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
+    eng.run_until(60.0); eng.finalize()
+    assert bufs[1].has(0) and not bufs[2].has(0)                     # node1 yes (late), node2 no (time order)
+    oracle = temporal_reachable(eng.episodes, 0, 3)
+    assert oracle == {0, 1}                                          # oracle agrees: 2 unreachable
+    assert any({1, 2} == {i, j} for (i, j, _e, _x) in eng.episodes)  # but node1-node2 DID contact (component connects 2)
+
+
+# --- broad consistency on RWP (saturated regime) ----------------------------
+def test_engine_matches_temporal_reachability_rwp():
     for s in range(5):
         c = _cfg(master_seed=s)
         eng, bufs = _spread_engine(c)
         eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
-        eng.run_until(80.0)
-        eng.finalize()
+        eng.run_until(80.0); eng.finalize()
         delivered = {k for k in range(c.n) if bufs[k].has(0)}
-        oracle = temporal_reachable(eng.episodes, 0, c.n)
-        assert delivered == oracle, (s, len(delivered), len(oracle))
+        assert delivered == temporal_reachable(eng.episodes, 0, c.n)
 
 
 def test_one_hop_mutant_fails_the_gate():
@@ -78,50 +118,37 @@ def test_one_hop_mutant_fails_the_gate():
         c = _cfg(master_seed=s)
         eng, bufs = _spread_engine(c, one_hop=True)
         eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
-        eng.run_until(80.0)
-        eng.finalize()
+        eng.run_until(80.0); eng.finalize()
         delivered = {k for k in range(c.n) if bufs[k].has(0)}
         oracle = temporal_reachable(eng.episodes, 0, c.n)
         assert delivered < oracle and len(delivered) < len(oracle)
 
 
-# --- Task 6: multi-hop both-arms + non-regression --------------------------
-def _linear_engine(positions, velocities, c, t_setup=0.0):
-    pos = np.array(positions, float)
-    mob = Mobility("linear", pos, np.array(velocities, float), c.width, c.height, 0.0, 0.0)
-    bufs = [NodeBuffer(BIG, 1e12, c.rng(3, i)) for i in range(len(pos))]
-    eng = Engine(c, mob, bufs, AirtimeBudget(1e12, 0.0, t_setup, 0.0, 1.0), c.rng(1),
-                 on_deliver=lambda *_: None)
-    return eng, bufs
-
-
-def test_multihop_over_time_positive_and_negatives():
-    base = dict(n=3, width=2000.0, height=200.0, radius=10.0, boundary="walls", dt=1.0, ttl=1e12)
-    # node0 (blob) static; node1 courier moves +x past node0 then to node2; node2 static far.
-    # POSITIVE: node2 reachable at x=100 via the courier
+# --- courier multi-hop both arms + non-regression ---------------------------
+def test_multihop_courier_positive_and_negatives():
+    base = dict(n=3, width=2000.0, height=200.0, radius=10.0, boundary="walls", dt=1.0, ttl=1e12,
+                mobility="static", speed_min=0.0, speed_max=0.0)
     c = _cfg(**base, master_seed=1)
     eng, bufs = _linear_engine([[0., 50.], [0., 50.], [100., 50.]], [[0., 0.], [2., 0.], [0., 0.]], c)
     eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
     eng.run_until(80.0); eng.finalize()
-    assert bufs[2].has(0)
-    # NEGATIVE-1: node2 too far for the courier to ever bridge -> not delivered
+    assert bufs[2].has(0)                                            # courier bridges
     c = _cfg(**base, master_seed=1)
     eng, bufs = _linear_engine([[0., 50.], [0., 50.], [1900., 50.]], [[0., 0.], [2., 0.], [0., 0.]], c)
     eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
     eng.run_until(80.0); eng.finalize()
-    assert not bufs[2].has(0)
-    # NEGATIVE-2: airtime-starved (t_setup exceeds every contact duration) -> nothing moves
+    assert not bufs[2].has(0)                                        # no bridge
     c = _cfg(**base, master_seed=1)
     eng, bufs = _linear_engine([[0., 50.], [0., 50.], [100., 50.]], [[0., 0.], [2., 0.], [0., 0.]], c, t_setup=1000.0)
     eng.inject(Blob(0, 0.0, 1e12, 1.0), 0)
     eng.run_until(80.0); eng.finalize()
-    assert not bufs[1].has(0) and not bufs[2].has(0)
+    assert not bufs[1].has(0) and not bufs[2].has(0)                 # airtime-starved
 
 
 def test_non_regression_static_fixpoint_is_component_reachability():
+    from soup_sim.percolation import placement
     c = _cfg(n=60, width=160.0, height=160.0, radius=20.0, mobility="static",
              speed_min=0.0, speed_max=0.0, master_seed=4)
-    from soup_sim.percolation import placement
     pos = placement(c.n, c.width, c.height, c.rng())
     mob = Mobility("static", pos, np.zeros_like(pos), c.width, c.height, 0.0, 0.0)
     bufs = [NodeBuffer(BIG, 1e12, c.rng(3, i)) for i in range(c.n)]

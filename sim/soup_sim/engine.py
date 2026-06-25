@@ -1,19 +1,17 @@
-"""Time-stepped flooding engine.
+"""Time-stepped flooding engine with PER-STEP propagation.
 
-Contacts are tracked as physical entry->exit EPISODES timed analytically by
-contact_interval (cell-list only prunes candidate pairs), so the contact graph and
-durations are dt-independent. The airtime budget (incl. the t_setup floor) is charged
-ONCE per episode over its analytic duration, as a single shared pool, and exchange
-iterates to a fixpoint within the episode. Episodes are processed/settled in a canonical
-(entry, i, j) order so overlapping contacts are deterministic. Each settled contact is
-recorded as (i, j, exit_time) in self.episodes, enabling the temporal-reachability gate.
+A blob propagates at the moment information becomes available: every step, each in-range
+pair exchanges blobs the peer lacks (drawing from a per-episode airtime pool that
+accumulates over the contact — t_setup paid once, goodput integrated with the step's local
+contention). This makes delivery match physical time-respecting reachability even when
+contacts overlap or nest (the lazy settle-at-exit model got this wrong). Contacts are timed
+analytically by contact_interval (cell-list only prunes candidates), so the contact graph is
+dt-independent. Each closed contact is recorded as (i, j, entry, exit) in self.episodes,
+the input to the independent interval-reachability oracle.
 
-The engine is addressing-blind: it knows only blob {id, created_at, ttl, size}; the
-metrics oracle decides whether a delivery counts via on_deliver(node_idx, blob, now).
-
-settle_static_fixpoint() is the unbounded static path used by the percolation gate.
-The optional one_hop flag (testing) disables forwarding (a node only offers blobs it
-ORIGINATED) — the negative control for the temporal-reachability gate.
+Addressing-blind: knows only blob {id, created_at, ttl, size}; metrics decides delivery via
+on_deliver(node, blob, now). Causality: a blob is never delivered over a contact that ended
+before it existed. one_hop (test mutant) disables forwarding (negative control).
 """
 from __future__ import annotations
 import numpy as np
@@ -33,19 +31,18 @@ class Engine:
         self.rng = rng
         self.on_deliver = on_deliver
         self.one_hop = one_hop
-        self._pair_order = _pair_order          # None | "reversed" (test hook for order-invariance)
+        self._pair_order = _pair_order
         self.t = 0.0
         self.open: dict[tuple[int, int], dict] = {}
         self.transmissions = 0
         self.durations: list[float] = []
-        self.episodes: list[tuple[int, int, float]] = []   # (i, j, exit_time)
-        self.origin: dict[int, int] = {}        # blob.id -> node that originated it
+        self.episodes: list[tuple[int, int, float, float]] = []  # (i, j, entry, exit)
+        self.origin: dict[int, int] = {}
 
     def inject(self, blob, node_idx) -> None:
         self.origin.setdefault(blob.id, node_idx)
         self.buffers[node_idx].offer(blob, now=self.t)
 
-    # ---- dynamic time-stepped run -------------------------------------------
     def run_until(self, t_end: float) -> None:
         dt = self.cfg.dt
         while self.t + dt <= t_end + _EPS:
@@ -66,57 +63,51 @@ class Engine:
         max_disp = float(np.max(np.linalg.norm(p1 - p0, axis=1))) if len(p0) else 0.0
         r_q = r + 2.0 * max_disp + _EPS
         cand = neighbor_pairs(p0, r_q, w, h, b)
-        if self._pair_order == "reversed":          # test hook: perturb input order; canonical sort below neutralizes it
+        if self._pair_order == "reversed":
             cand = list(reversed(cand))
         deg = self._degrees(p0, cand, r, w, h, b)
-        # compute contact intervals, then process in canonical (enter, i, j) order
         triples = []
         for (i, j) in cand:
             iv = contact_interval(p0[i], v_leg[i], p0[j], v_leg[j], r, t, t + dt_step, w, h, b)
             triples.append((i, j, iv))
-        triples.sort(key=lambda x: (x[2][0] if x[2] is not None else float("inf"), x[0], x[1]))
+        triples.sort(key=lambda x: (x[0], x[1]))  # canonical order -> deterministic overlaps
         seen = set()
-        settles = []  # (exit_time, i, j, entry) — applied in exit order so propagation == oracle
         for (i, j, iv) in triples:
             key = (i, j)
             seen.add(key)
             if iv is None:
                 if key in self.open:
-                    settles.append((self.open[key]["last_end"], i, j, self.open[key]["entry"]))
-                    del self.open[key]
+                    self._close(key)
                 continue
             enter, exit_ = iv
-            in_at_end = exit_ >= t + dt_step - _EPS
-            if key in self.open:
-                if in_at_end:
-                    self.open[key]["last_end"] = t + dt_step
-                else:
-                    settles.append((exit_, i, j, self.open[key]["entry"]))
-                    del self.open[key]
-            else:
-                if in_at_end:
-                    self.open[key] = {"entry": enter, "last_end": t + dt_step}
-                else:
-                    settles.append((exit_, i, j, enter))  # complete sub-step episode
+            seg = exit_ - enter
+            if key not in self.open:
+                self.open[key] = {"entry": enter, "last_end": exit_,
+                                  "setup_debt": self.budget.t_setup, "credit": 0.0}
+            st = self.open[key]
+            st["last_end"] = exit_
+            pay = min(seg, st["setup_debt"])           # amortize the handshake floor once
+            st["setup_debt"] -= pay
+            eff = self.budget.effective_goodput(int(max(deg[i], deg[j])))
+            st["credit"] += (seg - pay) * eff / self.budget.blob_size
+            allowed = int(st["credit"])
+            if allowed > 0:
+                self.buffers[i].expire(enter)
+                self.buffers[j].expire(enter)
+                st["credit"] -= self._exchange(i, j, allowed, enter, exit_)
         for key in list(self.open):
             if key not in seen:
-                settles.append((self.open[key]["last_end"], key[0], key[1], self.open[key]["entry"]))
-                del self.open[key]
-        for (ex, i, j, entry) in sorted(settles):           # settle in (exit, i, j) order
-            self._settle((i, j), entry, ex, deg)
+                self._close(key)
         self.t = t + dt_step
 
+    def _close(self, key) -> None:
+        st = self.open.pop(key)
+        self.episodes.append((key[0], key[1], st["entry"], st["last_end"]))
+        self.durations.append(st["last_end"] - st["entry"])
+
     def finalize(self) -> None:
-        if not self.open:
-            return
-        cfg = self.cfg
-        p = np.asarray(self.mob.positions, float)
-        cand = neighbor_pairs(p, cfg.radius, cfg.width, cfg.height, cfg.boundary)
-        deg = self._degrees(p, cand, cfg.radius, cfg.width, cfg.height, cfg.boundary)
-        settles = [(st["last_end"], k[0], k[1], st["entry"]) for k, st in self.open.items()]
-        for (ex, i, j, entry) in sorted(settles):           # settle in (exit, i, j) order == oracle
-            self._settle((i, j), entry, ex, deg)
-        self.open.clear()
+        for key in list(self.open):          # per-step model already exchanged; just record open contacts
+            self._close(key)
 
     @staticmethod
     def _degrees(pos, cand, r, w, h, b):
@@ -127,51 +118,37 @@ class Engine:
                 deg[j] += 1
         return deg
 
-    def _settle(self, key, entry, end, deg) -> None:
-        i, j = key
-        self.episodes.append((i, j, end))
-        now = entry  # exchange modeled at contact start: expire only blobs dead before it began
-        self.buffers[i].expire(now)
-        self.buffers[j].expire(now)
-        duration = max(0.0, end - entry)
-        self.durations.append(duration)
-        n_local = max(int(deg[i]), int(deg[j]))
-        k = self.budget.blobs_transferable(duration, n_local, self.rng)
-        if k > 0:
-            self._exchange(i, j, k, now)
-
-    def _offerable(self, src, peer_ids):
+    def _offerable(self, src, peer_ids, end):
         blobs = self.buffers[src].blobs()
-        if self.one_hop:  # negative control: forward only blobs this node ORIGINATED
+        if self.one_hop:                      # negative control: forward only originated blobs
             blobs = [bl for bl in blobs if self.origin.get(bl.id) == src]
-        return [bl for bl in blobs if bl.id not in peer_ids]
+        # causality: a blob can only move over a contact that was open after it existed
+        return [bl for bl in blobs if bl.id not in peer_ids and bl.created_at <= end + _EPS]
 
-    def _exchange(self, i, j, k, now) -> None:
-        remaining = k
-        progressed = True
+    def _exchange(self, i, j, k, now, end) -> int:
+        remaining, moved, progressed = k, 0, True
         while remaining > 0 and progressed:
             progressed = False
             for (src, dst) in ((i, j), (j, i)):
                 db = self.buffers[dst]
-                missing = self._offerable(src, db.ids())
-                for blob in select_offers(missing, set(), remaining, self.rng):
+                for blob in select_offers(self._offerable(src, db.ids(), end), set(), remaining, self.rng):
                     if remaining <= 0:
                         break
-                    deliver_t = max(now, blob.created_at)  # real time, not a metrics clamp
+                    deliver_t = max(now, blob.created_at)   # real time within the contact
                     if db.offer(blob, deliver_t) == "Accepted":
                         self.transmissions += 1
                         self.on_deliver(dst, blob, deliver_t)
                         remaining -= 1
+                        moved += 1
                         progressed = True
+        return moved
 
     def mean_contact_duration(self) -> float:
         return float(np.mean(self.durations)) if self.durations else 0.0
 
-    # ---- static unbounded path (percolation gate) ---------------------------
     def settle_static_fixpoint(self) -> None:
-        """Iterate exchange to a fixpoint = connected-component reachability (true multi-hop).
-        PRECONDITION: unbounded buffers (no eviction) and non-expiring blobs; with a finite
-        cap the result is order-dependent and is NOT component reachability."""
+        """Static unbounded path for the percolation gate: iterate exchange to a fixpoint =
+        connected-component reachability. PRECONDITION: unbounded buffers + non-expiring blobs."""
         cfg = self.cfg
         pairs = neighbor_pairs(np.asarray(self.mob.positions, float), cfg.radius,
                                cfg.width, cfg.height, cfg.boundary)

@@ -90,18 +90,29 @@ def same_component_pair_fraction(positions, r, w, h, boundary) -> float:
 
 
 def temporal_reachable(episodes, source, n) -> set[int]:
-    """Nodes reachable from `source` via a journey of non-decreasing contact EXIT times —
-    the dynamic analog of same_component_pairs (static union-find). The engine settles and
-    records episodes in (exit, i, j) order and applies them sequentially, so a faithful
-    engine's delivered set equals this oracle's result unconditionally. Equal-exit ties
-    resolve by (i, j), matching the engine's settle order.
+    """Independent INTERVAL-based time-respecting reachability — the physical ground truth.
+
+    `episodes` are (i, j, entry, exit). A node is infected at a time; a contact [entry,exit]
+    can carry the blob from an infected endpoint a (infected at t_a) to b iff t_a <= exit,
+    delivering at max(t_a, entry). Iterated to a fixpoint (a newly-lowered infection time can
+    enable earlier propagation through other overlapping contacts). This is computed purely
+    from contact geometry — it does NOT replay the engine's delivery order — so it is a real
+    independent check (it detects under-delivery across nested/overlapping contacts).
     """
-    infected = {source}
-    for (i, j, _t) in sorted(episodes, key=lambda e: e[2]):  # stable: preserves record order on ties
-        if i in infected or j in infected:
-            infected.add(i)
-            infected.add(j)
-    return infected
+    INF = float("inf")
+    inf_time = {source: -INF}
+    changed = True
+    while changed:
+        changed = False
+        for (i, j, entry, exit_) in episodes:
+            for (a, b) in ((i, j), (j, i)):
+                ta = inf_time.get(a, INF)
+                if ta <= exit_:
+                    cand = max(ta, entry)
+                    if cand < inf_time.get(b, INF):
+                        inf_time[b] = cand
+                        changed = True
+    return set(inf_time)
 
 
 def placement(n: int, w: float, h: float, rng) -> np.ndarray:

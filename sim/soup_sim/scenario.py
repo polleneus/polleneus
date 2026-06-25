@@ -13,6 +13,7 @@ from .metrics import Metrics
 from .workload import make_cohort
 from .cell_list import neighbor_pairs
 from .percolation import same_component_pair_fraction, placement
+from .knee import find_knee, binding_decomposition, binding_gate
 
 
 def density_to_n(d: float, w: float, h: float, r: float) -> int:
@@ -149,6 +150,55 @@ def static_delivery_sweep(base_cfg, degrees, reps: int) -> list[dict]:
             "overhead_mean": float("nan"), "stationary_ok": True, "per_rep_ratios": ratios,
         })
     return rows
+
+
+def _airtime_arm(base_cfg, densities, reps):
+    """One density sweep returning per-density airtime rows + the per-rep circulation matrix."""
+    rows, circ_matrix = [], []
+    for di, d in enumerate(densities):
+        n = density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius)
+        circ, util, deliv, t50s = [], [], [], []
+        agg = {"offered": 0, "served": 0, "starved": 0, "quant": 0, "contention": 0}
+        for rep in range(reps):
+            cfg = replace(base_cfg, n=max(2, n), master_seed=_seed_for(base_cfg.master_seed, di, rep))
+            r = run_one(cfg)
+            circ.append(r["circulated_per_min"])
+            util.append(r["utilization"])
+            deliv.append(r["delivery_ratio"])
+            t50s.append(r["t50"] if r["t50"] is not None else np.nan)
+            agg["offered"] += r["offered_blobs"]
+            agg["served"] += r["served_blobs"]
+            agg["starved"] += r["setup_starved_blobs"]
+            agg["quant"] += r["quantization_blobs"]
+            agg["contention"] += r["contention_blobs"]
+        m, lo, hi = mean_ci(circ)
+        rows.append({
+            "density": d, "n": n, "circulated_per_min_mean": m, "ci_lo": lo, "ci_hi": hi,
+            "utilization_mean": float(np.mean(util)), "delivery_mean": float(np.mean(deliv)),
+            "t50": float(np.nanmean(t50s)) if np.any(~np.isnan(t50s)) else None,
+            "binding": binding_decomposition(agg["offered"], agg["served"], agg["starved"],
+                                             agg["quant"], agg["contention"]),
+        })
+        circ_matrix.append(circ)
+    return rows, np.array(circ_matrix)
+
+
+def airtime_sweep(base_cfg, densities, reps):
+    """Airtime density sweep with TWO mandatory control arms (alpha=0 airtime-free; cap=inf/ttl=inf),
+    a saturation-knee estimate, and the binding publish-gate. Deterministic by master_seed."""
+    rng = np.random.default_rng(np.random.SeedSequence([base_cfg.master_seed, 777]))
+    rows, circ = _airtime_arm(base_cfg, densities, reps)
+    a0_rows, a0_circ = _airtime_arm(
+        replace(base_cfg, airtime_model="linear", alpha=0.0, beta=0.0, t_setup_slope=0.0), densities, reps)
+    ct_rows, ct_circ = _airtime_arm(
+        replace(base_cfg, buffer_cap=10 ** 9, ttl=1e9), densities, reps)
+    knee = find_knee(densities, circ, np.random.default_rng(rng.integers(0, 2 ** 31)))
+    a0_over = find_knee(densities, a0_circ, np.random.default_rng(rng.integers(0, 2 ** 31)))["status"] == "knee"
+    ct_over = find_knee(densities, ct_circ, np.random.default_rng(rng.integers(0, 2 ** 31)))["status"] == "knee"
+    binding_at_knee = rows[int(np.argmax([r["circulated_per_min_mean"] for r in rows]))]["binding"]
+    gate = binding_gate(knee, binding_at_knee, a0_over, ct_over)
+    return {"rows": rows, "alpha0_rows": a0_rows, "capttl_rows": ct_rows, "knee": knee, "gate": gate,
+            "predicted_knee_contenders": base_cfg.n_channels / base_cfg.beta if base_cfg.beta else None}
 
 
 def crossing_0p5(densities, mean_ratios) -> float:

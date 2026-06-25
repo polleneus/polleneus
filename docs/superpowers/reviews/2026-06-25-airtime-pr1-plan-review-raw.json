@@ -1,0 +1,303 @@
+{
+  "summary": "Fan-out review of the airtime PR-1 (engine fidelity) plan before building",
+  "agentCount": 4,
+  "logs": [
+    "Plan review done: 3 lenses, 8 high/critical"
+  ],
+  "result": {
+    "reviews": [
+      {
+        "lens": "SI-GATE-CORRECTNESS — validity and falsifiability of the SI epidemic-growth fidelity gate (Task 5), specifically the beta = measured per-node meeting-rate mapping, the well-mixed assumption under RWP-on-torus, the tolerance/seed design, and tautology risk.",
+        "verdict": "needs-rework",
+        "strengths": [
+          "Right instinct to anchor the fidelity claim in a MEASURED quantity (per-node meeting rate) rather than a hand-set rate, and to derive the comparison curve from the run itself (Task 5 lines 202-210). This is the correct shape for an 'exchange-tracks-contacts' gate.",
+          "Good explicit hedging: the plan flags calibration as genuinely run-dependent (line 212, 248) rather than hiding it, and demands >=5 seeds + a documented regime (line 212), which is the correct discipline even if the chosen numbers are wrong.",
+          "The analytic forms in Task 1 are individually correct: si_logistic is the exact closed-form solution of dI/dt = beta*I*(N-I)/N with I(0)=i0 (lines 59-60), and measured_meeting_rate = 2*n_meetings/(N*elapsed) correctly converts unordered episodes to meetings-per-node-per-time (lines 65-66).",
+          "The non-regression gate (Task 6, static/cap=inf/ttl=inf/alpha=0/t_setup=0 == component reachability) and the percolation oracle are a genuinely strong, independent backstop that the SI gate cannot silently corrupt (lines 14, 234-238).",
+          "expected_contact_duration = pi*r/(2*v_rel) (lines 62-63) is the correct mean-chord-length over relative speed and gives the right order of magnitude (~11 time units at the gate's parameters), which is itself useful for the timescale audit that exposes the gate's flaws."
+        ],
+        "findings": [
+          {
+            "title": "Engine is FRONT-PROPAGATION (component flooding), not mean-field SI — the gate compares the wrong process",
+            "severity": "critical",
+            "issue": "The gate (Task 5, lines 188-210) asserts I(t) tracks the logistic dI/dt = beta*I*(N-I)/N. But the engine does not implement mass-action SI. In the unbounded-budget regime the gate explicitly chooses (line 196-197: throughput_ideal=1e12, t_setup=0, alpha=0, buffer_cap=1e9), select_offers returns ALL missing blobs (policies.py:14-16) and blobs_transferable returns a huge k (budget.py:20-32), so within a SINGLE contact episode an infected node infects EVERY in-range susceptible at once. With mean degree d=8.48 at the chosen params (lambda*pi*r^2, computed: N=120, area 120x120, r=18), the seed instantly infects ~8.5 neighbors in O(dt), then the infection is graph BFS across the random geometric graph, completing in ~(domain_width/r)=~6.7 hops ~ a handful of dt (~2.5-5 time units). Mean-field SI predicts full epidemic in ~2*ln(N)/beta ~ 12.6 time units (computed below). These are different processes with different curves: the real I(t) is set by the LOCAL neighbor count d and graph diameter, not by the GLOBAL pairwise meeting rate. The literature confirms RGG epidemics show spatial clustering and front propagation that deviate from mean-field (arxiv 2102.13151, 1507.06002, 2509.25386). A faithful engine will therefore FAIL the gate (rise far too fast early), and the only way to make it 'pass' is to detune beta during 'calibration' (line 212) — i.e. fit the tolerance to noise, which destroys falsifiability.",
+            "fix": "Make the engine actually well-mixed before invoking mean-field, OR change the oracle to the right one. Cheapest correct fix: enforce one-transmission-per-contact and a sparse contact graph so mass-action holds. Concretely: (a) run in the SPARSE regime mean degree d well BELOW 1 (e.g. r small enough that lambda*pi*r^2 ~ 0.1-0.3) so a contact is almost always pairwise and an infected rarely has >1 susceptible neighbor at once; (b) cap transfers so each episode moves at most 1 blob (k=1) so meetings and transmissions are 1:1; (c) require mixing_time << infection_time (see next finding). Then I(t) is genuinely driven by the rate at which infecteds randomly encounter susceptibles = mass-action. Alternatively, drop the SI-logistic oracle entirely and gate on a quantity the engine actually computes: assert cumulative transmissions(t) equals (within tol) integral of [per-node meeting rate * I(t)*(N-I)/N], i.e. test the FLUX identity transmissions-track-contacts directly, which is what 'exchange-tracks-contacts' really means."
+          },
+          {
+            "title": "Mixing time >> infection time: the well-mixed (mass-action) premise is violated by ~5x at the chosen params",
+            "severity": "critical",
+            "issue": "Mean-field SI requires partners to be effectively uniformly-random draws, which needs the mobility mixing time to be MUCH shorter than the epidemic timescale. At the gate's params (speed 2.0, W=120) a node crosses the domain in W/v=60 time units and a single RWP leg averages ~0.52*W/v ~ 31 time units (computed). But the mean-field epidemic completes in ~12.6 time units (2*ln(N)/beta with the kinetic per-node meeting rate beta~0.76). So the epidemic finishes in well under ONE RWP leg — nodes barely move relative to their start positions during the whole outbreak. The system is in the QUENCHED-geometry (percolation) limit, NOT the annealed (well-mixed) limit. Worse, RWP has a documented stationary density that concentrates nodes in the center (Wikipedia random_waypoint_model; researchgate 220658476), so even the spatial distribution is non-uniform — a second, independent violation of well-mixedness. The plan's claim 'well-mixed' (line 188) and 'each contact is a transmission chance' (line 203) is simply not met at these parameters.",
+            "fix": "Pick parameters that put mixing_time << infection_time. Either (a) raise speed and/or shrink the domain so domain-crossing time is a small fraction of the outbreak time (target: leg time <= ~0.1 * outbreak time) — but watch CFL (speed_max*dt <= radius/4, config.py:58); or (b) slow the epidemic by going sparse (small d) so the outbreak spans many legs. Also switch boundary='torus' is already set (good, avoids walls), but to kill the RWP center-concentration use a random-DIRECTION / random-walk mobility on the torus (uniform stationary density) rather than RWP, or document and quantify the residual non-uniformity. Add an explicit, asserted precondition to the test: measure RWP stationary spatial uniformity and the ratio mixing_time/infection_time and SKIP/FAIL if the well-mixed regime is not actually entered, so the gate cannot silently run outside its validity window."
+          },
+          {
+            "title": "beta = meeting_rate_per_node omits the transmission-probability-per-contact and susceptible-fraction-at-contact factors",
+            "severity": "high",
+            "issue": "The plan maps beta := measured per-node meeting rate m, asserting 'each contact is a transmission chance' (lines 203, 210). The correct mean-field identity is dI/dt = m * p * I*(N-I)/N, where the (N-I)/N susceptible-fraction factor is ALREADY inside the logistic, and p = P(a contact actually transmits) = P(one endpoint infected, other susceptible AND a transfer occurs). Setting beta=m silently assumes p=1: every meeting transmits. That is only true if (a) budget is unbounded (true here) AND (b) the meeting is between exactly one infected and one susceptible. But m counts ALL meetings (S-S, I-I, S-I) — the vast majority are NOT S-I and carry no transmission. The (N-I)/N factor in the logistic is supposed to account for partner-susceptibility, but it double-relies on uniform mixing that does not hold (previous finding). Conversely, in the dense regime an S-I contact transmits to MULTIPLE susceptibles (p>1 effectively), so beta=m is an UNDER-estimate. Net: beta=m is off by an uncontrolled factor that depends on degree and clustering, and the direction of the error flips between sparse and dense regimes. This is exactly the kind of fudge a 0.20 tolerance can absorb in BOTH a faithful and a broken engine.",
+            "fix": "Derive beta from first principles for the chosen regime and verify it independently, do not assert beta=m. In the sparse one-transmission-per-contact regime, the correct map is beta = (pairwise meeting rate) * N = 2*r*v_rel/A * N (kinetic collision rate * population), which is dimensionally per-node-meeting-rate ONLY when every meeting is treated as a potential S-I event with p=1 and partners are uniform — i.e. it reduces to beta=m EXACTLY in that limit, but you must prove you are in that limit. Add a unit test that computes the kinetic beta = 2*r*E|v_rel|/A * N analytically and asserts the MEASURED m agrees with it to a few percent (this validates measured_meeting_rate itself). Only then use m as beta. Document p=1 as an explicit modeling assumption tied to the unbounded-budget + pairwise regime."
+          },
+          {
+            "title": "Near-tautology risk: I(t) and the meeting count are both produced by the same contact graph, so the gate can pass without validating 'exchange tracks contacts'",
+            "severity": "high",
+            "issue": "The orchestration prompt's concern is real. The gate reads I(t) from blob holders AND reads meetings from len(engine.durations) (line 210), both derived from the identical sequence of contact episodes in _process_step/_settle (engine.py:66-92,114-122). durations is appended once per settled episode regardless of infection state (engine.py:121-122), and exchange fires on those same episodes (engine.py:124-126). So the gate is partly checking the engine against a transform of its own contact graph. If the engine had a bug that, say, dropped 30% of transmissions but still counted all episodes, m would be unchanged but I(t) would lag — that case IS caught. But a bug that corrupts contact DETECTION (e.g. mis-times episodes) corrupts BOTH m and I(t) in the same direction, and the ratio test passes. The gate as written validates 'I(t) is consistent with the meeting rate the engine THINKS it had', not 'the engine's contacts match physical reality'. It is not fully tautological, but it is self-referential on the contact-detection layer — the layer most likely to have fidelity bugs.",
+            "fix": "Break the self-reference: compare against an INDEPENDENT meeting-rate prediction, not the engine's own count. Use the analytic kinetic rate beta_analytic = 2*r*E|v_rel|/A * N (or the existing analytics.expected_contact_duration / RWP contact-rate expectation the plan already promises in Task 1) as the curve's beta, and SEPARATELY assert engine's measured m agrees with beta_analytic. Then the gate is: physical-mobility-theory -> beta -> SI curve -> engine I(t), with the engine's own meeting count used only as a cross-check, not as the oracle input. That genuinely tests 'exchange tracks (physical) contacts'."
+          },
+          {
+            "title": "0.20 relative-error tolerance is unanchored — no evidence a faithful engine passes or a broken one fails",
+            "severity": "high",
+            "issue": "The plan asserts max_rel_err < 0.20 over the window plus final_fraction > 0.95 (lines 206-208), and admits the tolerance is set during 'calibration' so a faithful engine matches (line 212). There is no derivation of (a) the expected sampling/finite-N noise floor (N=120 is small; the logistic's mid-transition is the steepest and noisiest part, and 'max relative error over the window' is dominated by the early small-I region where relative error is enormous for any single-seed integer-count curve — I goes 1,2,4,... so rel-err vs a smooth curve is O(1) early), nor (b) a demonstration that a deliberately-broken engine (e.g. transmissions halved, or contacts mis-timed) actually exceeds 0.20. A 'max relative error' metric on a curve that starts at I=1 is almost guaranteed to blow past 0.20 in the first few samples even for a perfect process — so either the window must exclude the early phase (making the test weak) or the test is mis-specified.",
+            "fix": "Replace 'max relative error' with a metric whose noise floor you can compute: e.g. fit beta to the measured I(t) and assert the FITTED beta agrees with the independent analytic/measured beta within a tolerance derived from finite-N theory; or compare on the well-defined growth-rate (log-slope of I/(N-I) vs t, which is exactly beta for the logit-linear SI) over the mid-window [I in 0.2N, 0.8N], excluding the integer-quantized tails. Set the tolerance from a noise budget (bootstrap over the >=5 seeds: tolerance = k * std across seeds), not by eyeballing during calibration. Add an explicit NEGATIVE control to the gate: a mutant engine (e.g. transmissions *= 0.5, or settle at exit-time instead of entry) MUST fail the same assertion — without this, the gate is not demonstrably falsifiable."
+          },
+          {
+            "title": "Cumulative-meeting-rate average mismatches the instantaneous rate the logistic needs",
+            "severity": "medium",
+            "issue": "The plan computes meeting_rate = measured_meeting_rate(cumulative_meetings, N, elapsed) (line 210), i.e. a TIME-AVERAGED rate over the whole run, then feeds it as the single constant beta of the logistic. But len(engine.durations) accumulates episodes from t=0 including the RWP transient and the saturated phase. If the spatial distribution or contact rate is non-stationary over the (short) run — which it is, because the run is shorter than one RWP leg (see mixing finding) — the time-averaged m is not the instantaneous rate governing early growth, where the logistic is most sensitive to beta. Also, durations counts every episode including I-I and S-S meetings that never transmit, so cumulative meetings over-counts relative to the transmission-relevant rate by exactly the factor flagged in the beta finding.",
+            "fix": "Measure m over a stationary mid-window (after RWP burn-in is already applied in make_mobility:64-68, but the per-run transient and the saturation phase still bias it), and compute it as an instantaneous/windowed rate (meetings in [t1,t2]/window), not a cumulative average from t=0. Better, per the beta finding, use the analytic kinetic rate as beta and use measured m only to verify stationarity (assert windowed m is flat across the growth window)."
+          },
+          {
+            "title": "select_offers + unbounded budget make k effectively infinite, defeating any per-meeting accounting the gate assumes",
+            "severity": "medium",
+            "issue": "Task 5 sets throughput_ideal=1e12, t_setup=0, blob_size implied 1.0 (line 196-197). blobs_transferable returns int(usable*eff/blob_size) ~ 1e12*duration (budget.py:24-31), and select_offers returns min(all_missing, k) = all_missing (policies.py:12-16). So every contact transfers EVERYTHING. The plan's narrative 'each contact is a transmission chance' (line 203) implies one Bernoulli trial per contact, but the implementation does an all-or-nothing full sync. This is the mechanism behind the front-propagation finding, and it also means the gate cannot be interpreted as a per-contact SI at all. The plan does not reconcile 'unbounded budget' (Global Constraints line 13) with 'each contact is a transmission chance' (line 203) — these are contradictory premises for the SI mapping.",
+            "fix": "Decide which regime the gate lives in and make it explicit. For a clean SI mapping use a controlled budget: k=1 per episode (one blob per contact) in the sparse regime, so contact==single transmission opportunity and the mass-action interpretation is exact. Keep the unbounded-budget runs for the percolation/multi-hop gates (Task 6) where full sync is the point. Document that the SI gate deliberately uses a NON-unbounded budget (this is permitted by Global Constraints line 13: 'except where a test deliberately starves it' — extend that carve-out to 'or meters it')."
+          },
+          {
+            "title": "Window/dt aliasing of fast contacts can undercount meetings used as beta",
+            "severity": "low",
+            "issue": "contact_interval can open and close a sub-step episode within one dt (engine.py:87, _settle called for complete sub-step episodes), so durations does capture sub-dt contacts — good. But the gate plans to read len(engine.durations) only 'every K steps' (line 210). With dt=0.5 and contact duration ~11 (computed), most contacts span many steps and are counted once at settle, which is correct; however very fast crossing contacts (high v_rel tail) that both open and close between two K-step samples are still counted (settle appends immediately), so the count is fine — the risk is only that elapsed in measured_meeting_rate must use the SAME t-origin as the durations accumulation (from t=0 incl. any pre-injection warmup). If injection happens after some steps, meetings before injection inflate m relative to the epidemic's effective start.",
+            "fix": "Define t=0 of the SI curve as the injection instant and accumulate meetings from that same instant (snapshot len(engine.durations) at injection and subtract), so m and I(t) share an origin. Assert elapsed in measured_meeting_rate is (t_sample - t_inject)."
+          }
+        ]
+      },
+      {
+        "lens": "ENGINE-REFACTOR: correctness/safety of plan Tasks 2-4 (per-blob deliver_t stamping, fixpoint round loop over a single shared pool, canonical episode order) against the current engine.py and the percolation non-regression gate.",
+        "verdict": "ready-after-fixes",
+        "strengths": [
+          "Task 2's deliver_t = max(now, blob.created_at) is a legitimate real-time stamp, not a disguised clamp: now=entry is the physical contact start, and a blob created mid-contact genuinely could not move before created_at, so max(entry, created_at) is a real instant inside [entry, end]. It satisfies the spec invariant 'delivered_at >= created_at by construction at the engine' (plan line 16) and removes the negative latency that metrics.latencies() (metrics.py:47-49) would otherwise compute.",
+          "Task 3 preserves the single-pool invariant: the round loop shares one `remaining` counter across both directions and all rounds (plan lines 130-147), so test_per_episode_shared_budget_is_one_pool_not_per_direction (test_engine.py:75-83) and the new single-pool test (plan lines 118-126) both hold. k is computed once in _settle (engine.py:124), so t_setup/budget is granted once per episode.",
+          "Task 3's loop provably terminates and cannot double-count: each Accepted transfer decrements `remaining` (monotone to 0) and adds the blob to the destination, so select_offers' `missing` set (policies.py:11) shrinks monotonically; a no-transfer round sets progressed=False and exits. Held blobs are filtered by `b.id not in peer_ids`, so the idempotent-Accepted path in buffer.offer (buffer.py:38-39) is never re-entered for an already-held blob.",
+          "The hard non-regression gate is structurally safe: the percolation oracle KAT (test_integration_percolation.py:32-49) goes through settle_static_fixpoint (engine.py:150-172), which Tasks 2-4 do not touch; the threshold test is pure geometry. In the guarded limit (cap=inf, ttl=inf, alpha=0, t_setup=0) the dynamic delivered-SET is order- and round-independent, so Task 4's reorder and Task 3's loop cannot change it.",
+          "Verified the baseline is green before refactor: test_engine.py + test_integration_percolation.py = 13 passed. The plan's TDD structure (failing test first, then implement) is sound for each task."
+        ],
+        "findings": [
+          {
+            "title": "Task 3 within-call fixpoint loop is inert beyond round 1; the multi-hop benefit the plan attributes to it actually comes from Task 4 ordering",
+            "severity": "medium",
+            "issue": "Plan line 114 and the SI-gate rationale (Task 5, line 212) claim the Task-3 fixpoint loop lets 'a blob that becomes available to a node in round R be offered onward in round R+1'. But inside a single _exchange call only buffers[i] and buffers[j] change, and select_offers re-reads db.ids() each round, so after round 1 every transferable blob is already in the peer and round 2 transfers nothing (progressed=False). The plan even admits this for 2-node episodes (line 148). The genuine 'arrives at B via A-B then forwarded B-C in the same step' propagation is delivered by processing the A-B episode's _settle BEFORE the B-C episode's _settle (mutating B's buffer between two SEPARATE _exchange calls) -- i.e. by Task 4's episode ordering, NOT by Task 3's intra-call loop. As written, Task 3 adds loop machinery whose only observable effect over the current 2-call _exchange is RNG-stream divergence under scarcity (see next finding).",
+            "fix": "Either (a) keep the loop but correct the plan's claim: state that intra-step multi-hop forwarding is produced by canonical episode ordering (Task 4) plus shared buffers across episodes, and that the round loop only guards against future per-blob/per-round budget interactions; or (b) drop the loop and keep the current two-direction single-pass _exchange (which already satisfies the single-pool test) and rely solely on Task 4 ordering. Do not let Task 5's calibration 'apply the fixpoint' (line 212) be the justification, because the fixpoint loop does not move propagation forward within a step."
+          },
+          {
+            "title": "Task 3 round loop changes the RNG draw sequence under a scarce pool, perturbing which blobs propagate vs the current implementation",
+            "severity": "medium",
+            "issue": "The current _exchange (engine.py:131,138) calls select_offers exactly twice per episode; select_offers draws rng.permutation only when len(missing) > k (policies.py:14-15). The round loop calls select_offers per direction per round, and exits as soon as `remaining` hits 0 mid-direction. I simulated this: with a scarce pool the round loop and the current code consume a different number of permutation draws, so under scarcity they select DIFFERENT blobs even for identical seeds. This is a determinism/repro change. It does NOT hit the unbounded-budget percolation/SI runs (k is huge, len(missing) <= k, so no permutation is drawn), but it changes results in any airtime-starved scenario (e.g. Task 6 NEGATIVE-2), and changes existing recorded transmission counts if any future test pins them under scarcity.",
+            "fix": "Acknowledge in the plan that Task 3 is a behavior change under scarcity (not pure refactor) and that the determinism guarantee is 'same seed + same code path', not 'same delivered set as pre-refactor'. If pre-refactor parity under scarcity is desired, keep select_offers' draw count stable by selecting once up to k per direction per episode and only looping when buffers actually changed between rounds (guard the loop with a 'did any peer buffer gain a blob from a concurrent episode' check rather than re-permuting every round)."
+          },
+          {
+            "title": "Task 2's per-blob deliver_t is correct for the offer expiry check but the multi-hop onward stamp is stale (uses episode entry, not arrival time)",
+            "severity": "low",
+            "issue": "deliver_t = max(now, blob.created_at) with now=entry interacts correctly with buffer.offer's expiry test (buffer.py:36 `now >= blob.expires_at`) and _prune_seen/_evict_to_fit, because raising the stamp from entry toward created_at only makes expiry MORE conservative and is monotone vs the expire(entry) call in _settle (engine.py:119-120) -- no resurrection, no double-accept. However, for a blob that hops A->B then B->C within the SAME step (via Task 4 ordering), the B->C delivery is stamped with the B-C episode's own entry/created, NOT the A->B arrival time. Since each episode uses its own `now`, this is internally consistent, but the stamp is the contact-start of each hop, not a globally-increasing arrival clock. That is acceptable for an SI/latency gate at dt resolution, but the plan should state the semantics so Task 5's latency assertions are not mis-specified.",
+            "fix": "Document that delivery time is 'contact-entry of the delivering episode, floored at created_at', i.e. quantized to episode boundaries within dt; this is sufficient for delivered_at >= created_at and for the SI-rate gate, but is not a sub-step arrival clock. No code change needed; one sentence in Task 2 Interfaces (plan lines 77-78)."
+          },
+          {
+            "title": "Task 4 'entry_estimate' is not the true episode entry for continuing contacts, and it must reuse the already-computed contact_interval, not recompute it",
+            "severity": "medium",
+            "issue": "Plan line 158/175 says to sort candidate pairs by '(entry_estimate, i, j)' computed 'before episodes are opened'. For a pair already in self.open from a prior step, the THIS-leg contact_interval (engine.py:68, geometry.py:51) returns enter clamped to t (leg start) because the pair is already in range at t0 -- so entry_estimate == t for ALL continuing contacts, not their real self.open['entry']. That is still deterministic and stable (ties broken by (i,j)), so the determinism goal is met, but 'earliest-enter-first' is per-leg, not per-episode, and the plan's wording implies the latter. Separately, entry_estimate REQUIRES calling contact_interval first; a naive implementation that sorts then re-calls contact_interval in the loop would compute it twice. Also the 'vanished episodes' settle loop (engine.py:88-91) and the iv-is-None settle branch (engine.py:71-73) must be ordered too, or determinism is only partial.",
+            "fix": "Specify the implementation precisely: compute iv for every candidate ONCE into a list of (enter, i, j, iv), sort by (enter, i, j), then drive the existing open/settle logic from the sorted list (reuse iv, do not recompute). Define entry_estimate explicitly as 'this-leg enter from contact_interval (== t for continuing contacts)'. Apply the same (entry, i, j) ordering to the vanished-episode settle pass over self.open (engine.py:88-91) so the whole step is canonical."
+          },
+          {
+            "title": "Slice-1 percolation gate is safe, but the plan should pin WHY current neighbor_pairs order does not already make the dynamic path deterministic",
+            "severity": "low",
+            "issue": "I confirmed neighbor_pairs (cell_list.py:28-49) emits pairs in bucket-iteration order, NOT lexicographic (i,j) -- so the current dynamic engine's processing order is already non-canonical and bucket-layout-dependent. Task 4 fixes real nondeterminism. The percolation gate is unaffected because test_oracle_kat uses settle_static_fixpoint (order-independent) and the unbounded-limit delivered SET is order-invariant. The risk to flag: any FUTURE dynamic test that pins an exact transmission COUNT (not just final holder set) under scarcity will be sensitive to Task 4's reorder, just as it is to Task 3.",
+            "fix": "Add a one-line non-regression note in Task 4: 'final delivered-set is order-invariant only in the unbounded (no-scarcity) limit; transmission counts and selected blobs under a finite pool depend on canonical order -- by design.' This keeps the percolation gate (unbounded) green while making the scarcity-sensitivity explicit, consistent with the Task-3 note."
+          },
+          {
+            "title": "SI-gate beta mapping (beta = per-node meeting rate) omits the mean-degree/contact factor; this is the calibration that Tasks 3-4 are asked to 'fix' if it fails",
+            "severity": "low",
+            "issue": "Out of strict Tasks 2-4 scope but load-bearing: Task 5 (plan line 204) maps beta = meeting_rate_per_node. In a homogeneous well-mixed SI model dI/dt = beta*S*I/N the logistic rate is the per-infected EFFECTIVE transmission rate, which scales with the number of distinct susceptible contacts per unit time, not simply the per-node meeting rate; on a network it carries a mean-degree / <k^2>/<k> factor. If this mapping is wrong, the gate will 'fail' and the plan instructs (line 212) to 'apply the Task-3 fixpoint + per-blob delivery-time so propagation tracks contacts' -- i.e. it risks blaming the engine for a calibration error and over-fitting Tasks 3-4 to pass a mis-specified gate.",
+            "fix": "Before using a Task-5 failure to justify engine changes, calibrate the beta<->meeting-rate mapping on a KNOWN-faithful reference (or fit beta to the measured curve and assert only the SHAPE/saturation, as the plan's >0.95 final fraction already does). Keep Tasks 3-4 justified by their own unit tests (single-pool, shuffle-invariance), not by the SI gate. Reference: pairwise/network SI growth rate depends on degree moments, not bare contact rate."
+          }
+        ]
+      },
+      {
+        "lens": "COVERAGE-SCOPE: Does the PR-1 plan cover exactly the spec's PR-1 (engine fidelity) scope and correctly exclude PR-2 (airtime model, utilization, knee, latency-censoring, provenance)? Are all PR-1 spec items present (refined intra-contact exchange, engine-side latency fix, overlap determinism, full fidelity gate incl. contact-timing + SI + multi-hop both arms + airtime-starved arm, and the hard non-regression gate)? Is the test plan adequate and tasks right-sized?",
+        "verdict": "needs-rework",
+        "strengths": [
+          "redundant - see findings"
+        ],
+        "findings": [
+          {
+            "title": "Contact-timing fidelity gate (spec section 2.2, bullet 1) is effectively MISSING - the only self-tautological gate in the plan",
+            "severity": "critical",
+            "issue": "The spec pins as a falsifiable merge gate: 'empirical RWP pairwise meeting rate AND mean contact duration match the RWP analytic expressions within tolerance - proving the contact graph is right before testing exchange.' This is the foundational gate (it validates the contact graph before any exchange logic is trusted). The plan never implements it. Task 1's only contact-timing test (lines 49-51) is `abs(expected_contact_duration(10.0,2.0) - (np.pi*10.0/(2*2.0))) < 1e-9` and `abs(measured_meeting_rate(50,100,10.0) - (2*50/(100*10.0))) < 1e-9` - i.e. it asserts each helper returns its own arithmetic. That is a tautology that can never fail and never touches the engine. `expected_contact_duration` is defined (line 62) but never CONSUMED by any assertion anywhere in the plan. Task 5 uses only the meeting rate (to derive beta) and never asserts empirical-vs-analytic agreement for either meeting rate or contact duration. The engine already exposes engine.mean_contact_duration() (engine.py line 146) and engine.durations, so the data is right there - the gate is just absent. Net effect: the self-review's claim 'timing -> Task 1/5' (line 247) is incorrect; the contact-timing gate has no real test.",
+            "fix": "Add an explicit contact-timing fidelity test that RUNS the RWP engine and compares to analytics: assert abs(engine.mean_contact_duration() - expected_contact_duration(r, v_rel)) / expected < tol over >=N seeds, and assert abs(measured_meeting_rate(len(engine.durations), N, elapsed) - analytic_meeting_rate(r, E[v_rel], area)) / analytic < tol. Note the RWP pairwise meeting rate has a known closed form (lambda ~ 2*w*r*E[V*]/L^2; see Camp/Boleng/Davies and the ResearchGate RWP link-lifetime papers) - derive E[v_rel] for the per-leg uniform-speed setup and pin the analytic target rather than the helper's own output. Also sanity-check the mean-chord coefficient (the plan calls pi*r/(2*v_rel) the 'mean chord / relative speed' - confirm whether the intended chord constant is pi*r/2 vs a different disk-chord mean, and document the derivation), since a wrong coefficient would make the gate either trivially pass or spuriously fail."
+          },
+          {
+            "title": "Overlap-determinism test (Task 4) does not test invariance to neighbor_pairs ORDERING - it only re-tests run-to-run determinism that already holds",
+            "severity": "high",
+            "issue": "Spec section 2.1 requires: 'for simultaneous A-B and B-C, assert delivered-set + timestamps are invariant to neighbor_pairs ORDERING; if not, canonicalize by earliest-enter-first.' The Task 4 test (lines 162-173) defines run(seed) and asserts `run(1) == run(1)` - the same seed run twice. neighbor_pairs (cell_list.py) is fully deterministic for a fixed placement (iterates buckets in insertion order, pairs always i<j), so run(1)==run(1) is already true today and will pass BEFORE any canonicalization is added (Step 2 even says 'expect fail only if ordering is unstable; otherwise this pins it' - i.e. it is expected to pass trivially). The test therefore cannot fail if the canonicalization is wrong or absent, so it does not gate the spec requirement. The actual risk - that processing A-B before vs after B-C changes whether the blob reaches C in one step and with what timestamp - is never exercised.",
+            "fix": "Make the engine accept an explicit pair iteration order (or expose a hook to permute the cand list / self.open settle order), then assert the delivered-set AND on_deliver timestamps are identical for a forward vs reversed/shuffled pair order on a genuine overlapping A-B / B-C layout where order matters. Implement the Task-4 canonical (entry, i, j) sort in _process_step so the shuffled-order test passes by construction. Without a shuffle the test is not testing the invariant."
+          },
+          {
+            "title": "Task 5 beta mapping is calibrated/tuned, which conflicts with the spec's 'beta DERIVED from the measured meeting rate (not fitted)'",
+            "severity": "high",
+            "issue": "Spec section 2.2 bullet 2: 'beta is DERIVED from the measured meeting rate (not fitted).' Task 5 Step 3 (line 212) says 'First CALIBRATE the beta mapping (per-node meeting rate -> SI rate) so a faithful engine matches.' Calibrating a mapping constant until the curve matches is fitting in disguise - the gate then can no longer falsify a wrong engine, defeating its purpose. Separately, the mapping itself is conceptually off: the mean-field SI logistic I(t)=N/(1+(N-1)e^{-beta t}) has beta = the per-infected EFFECTIVE transmission rate; in a well-mixed population the relevant rate is the pairwise meeting rate, not a node's TOTAL meeting rate. measured_meeting_rate returns 2*n_meetings/(n_nodes*elapsed) = a node's total meeting rate, and the plan sets beta = that directly (lines 203, 210). The force of infection on a susceptible is beta*I/N (it meets infecteds in proportion to the infected fraction), so equating beta to the raw per-node meeting rate is only correct under complete uniform mixing and double-counts otherwise. (See the mean-field SI references: xdot = beta*x*(1-x) with x the infected FRACTION.)",
+            "fix": "Derive the mapping analytically up front: state beta = (per-node meeting rate) * P(met node is the contagion-relevant one) for the well-mixed regime, or beta = pairwise-meeting-rate scaled by N per the standard SI mass-action form, and write that constant as a fixed, documented expression - then assert the curve matches WITHOUT post-hoc tuning of the constant. If the engine systematically lags, that is a fidelity FAILURE to fix in the engine (Tasks 2-4), not a reason to adjust the mapping. Keep the supercritical/well-mixed regime caveat (correctly noted)."
+          },
+          {
+            "title": "Task 3's headline capability (blob from round R offered onward in round R+1) is a no-op for a 2-node _exchange and is never tested",
+            "severity": "medium",
+            "issue": "Task 3 Interfaces (line 114) and the spec section 2.1 emphasize 'pick up blobs that arrived in a prior round -> real multi-hop WITHIN a long contact.' But the round loop (lines 130-147) only re-iterates over the SAME two buffers bi, bj; for a 2-node episode nothing changes between rounds, so it converges in exactly one round - the plan itself admits this (line 148: 'For a 2-node episode this converges in one round'). The genuine intra-step multi-hop the spec wants (A->B->C in one step) happens ACROSS distinct episodes (A-B then B-C) and is governed by per-step processing order (Task 4), not by the inner round loop. The only Task 3 test (test_exchange_single_pool_over_rounds, lines 118-126) asserts the single-pool budget invariant (exactly one transfer with k=1) - which test_engine.py line 75 ALREADY covers (test_per_episode_shared_budget_is_one_pool_not_per_direction). So Task 3 adds loop machinery whose distinguishing behavior is neither reachable in the tested 2-node case nor exercised by any new assertion; the 'arrival in a prior round' clause is unverified.",
+            "fix": "Either (a) add a test that actually changes buffers between rounds within one _exchange (e.g. a 3-node concurrent-episode setup where settling order makes a blob available mid-loop) so the round loop's value is demonstrated, or (b) explicitly relocate the 'within a long contact, multi-hop' claim to the cross-episode per-step ordering (Task 4) and right-size Task 3 to just the single-shared-pool invariant + per-blob delivery time, removing the implication that the inner loop delivers intra-contact multi-hop. As written the loop is largely dead code relative to its stated purpose."
+          },
+          {
+            "title": "Tasks 5 and 6 ship as prose+ellipsis placeholders for the most safety-critical gate code, weakening the 'pinned, falsifiable' guarantee",
+            "severity": "medium",
+            "issue": "The spec calls the fidelity gate 'pinned, falsifiable.' Yet the two tasks that ARE the gate (Task 5 SI growth; Task 6 multi-hop both-arms + non-regression) are the only tasks given as comment-and-`...` skeletons (lines 206, 224-238: 'Full test body in build', '# ... build engine with RWP mobility, inject...', NEGATIVE-1/NEGATIVE-2 as comments). The self-review (line 248) acknowledges this and argues calibration is run-dependent - but the tolerances, seed count (>=5), regime bounds, and especially the negative-arm assertions (no over-delivery) are exactly the parts a reviewer must pin BEFORE build to prevent the gate being weakened to fit whatever the engine does. Tasks 1-4 have concrete code; the most consequential gates do not. This is an asymmetry in right-sizing: the falsifiable core is the least specified.",
+            "fix": "Promote the tolerances and assertions to concrete, pre-registered values in the plan: exact tol (0.20 rel-err), seed list, the supercritical degree target (mean degree >> 4.51 - the chosen radius=18 on 120x120 with N=120 should be justified against d_c), and full negative-arm assertions (assert NOT delivered for both held-out and airtime-starved). Pin these before build so calibration cannot silently relax the gate. The build may assemble plumbing, but the pass/fail thresholds must be fixed in the plan, not 'in build'."
+          },
+          {
+            "title": "analytics.py is outside the lint-invariants ENGINE_LAYERS set - addressing-blindness/RNG lints will not cover the new module",
+            "severity": "low",
+            "issue": "test_lint_invariants.py defines ENGINE_LAYERS (the set checked for sender/recipient leakage) and a separate no-module-global-RNG check that globs all of soup_sim/*.py. The new analytics.py (created in Task 1) is auto-covered by the module-global-RNG glob (good), but it is NOT in ENGINE_LAYERS, so the addressing-blind check skips it. analytics.py is pure math (no addressing), so risk is low today, but the plan's Global Constraint 'Engine/policies stay addressing-blind (lint test stays green)' implies new engine-adjacent modules should be covered. The plan does not mention adding analytics.py to ENGINE_LAYERS.",
+            "fix": "Add analytics.py to ENGINE_LAYERS in test_lint_invariants.py (it is addressing-blind and should stay so), or note explicitly in the plan that analytics.py is intentionally excluded because it never touches blobs/addressing. A one-line decision either way keeps the lint coverage honest as the package grows."
+          }
+        ]
+      }
+    ],
+    "synthesis": {
+      "overallVerdict": "needs-rework",
+      "mustFix": [
+        {
+          "title": "SI-gate rests on a well-mixed (mass-action) assumption that is violated by ~3.5x at the chosen parameters — the engine does front-propagation, not mean-field SI",
+          "severity": "critical",
+          "fix": "This is the single highest-risk item. Two of the three reviewers independently land here. Verified the arithmetic at Task 5's params (N=120, W=H=120, r=18, v=2): mean-field outbreak completes in 2*ln(N)/m ~ 12.5 time units, but one RWP leg averages ~44 time units and full domain crossing is 60. The epidemic finishes in ~1/4 of a single leg — nodes barely move, so partners are NOT uniform random draws; the system is in the quenched-geometry (percolation/front-propagation) limit, not the annealed (well-mixed) limit. Compounding this, the unbounded-budget regime the gate selects (throughput_ideal=1e12, t_setup=0, alpha=0) makes select_offers (policies.py:12-16) return ALL missing blobs and budget.blobs_transferable (budget.py:24-31) return a huge k, so one infected node infects EVERY in-range susceptible in a single episode — graph BFS across the RGG (mean degree 8.48), not a per-contact Bernoulli SI process. Before building: (a) put the gate in a regime where mixing_time << infection_time AND each contact is a single transmission (sparse mean degree well below 1, plus k=1 per episode so meetings:transmissions = 1:1 — extend Global-Constraints line 13 carve-out from 'starves it' to 'or meters it'); OR (b) drop the SI-logistic oracle and gate on the flux identity directly: assert cumulative transmissions(t) tracks integral of [per-node meeting rate * I(t)*(N-I)/N]. Also add an asserted precondition (measure RWP stationary uniformity and the mixing/infection-time ratio; SKIP/FAIL if the well-mixed window is not actually entered) so the gate cannot silently run outside its validity domain."
+        },
+        {
+          "title": "beta := measured per-node meeting rate is wrong, and 'calibrate beta so a faithful engine matches' (Task 5 Step 3) is fitting in disguise — it destroys the gate's falsifiability",
+          "severity": "critical",
+          "fix": "All three reviewers flag this; it directly contradicts the spec ('beta DERIVED from the measured meeting rate, not fitted'). The correct mean-field identity is dI/dt = m*p*I*(N-I)/N, where (N-I)/N is already in the logistic and p = P(a contact is S->I AND transmits). Setting beta=m silently assumes p=1 over ALL meetings, but measured_meeting_rate counts S-S, I-I and S-I meetings alike; in the dense regime an S-I contact transmits to many susceptibles (p effectively >1). The error is uncontrolled and flips sign between sparse and dense — exactly what a 0.20 tolerance absorbs in both faithful and broken engines. Fix in the plan BEFORE build: (1) derive beta analytically from first principles for the chosen regime as a fixed, documented closed-form (e.g. kinetic beta_analytic = 2*r*E|v_rel|/A * N for the pairwise/p=1 limit), write it as a constant expression, and assert the curve matches WITHOUT post-hoc tuning; (2) use the engine's own meeting count only as an independent CROSS-CHECK (assert measured m agrees with beta_analytic to a few percent), not as the oracle input — this breaks the self-reference where I(t) and the meeting count are both derived from the same contact graph; (3) replace Task 5 Step 3's 'calibrate beta' with 'if the engine lags, that is a fidelity FAILURE to fix in Tasks 2-4, not a reason to retune the constant.'"
+        },
+        {
+          "title": "Contact-timing fidelity gate (spec section 2.2 bullet 1) is effectively MISSING — Task 1's tests are tautologies that never touch the engine",
+          "severity": "critical",
+          "fix": "The spec pins the foundational gate: empirical RWP pairwise meeting rate AND mean contact duration must match the RWP analytic expressions within tolerance — proving the contact graph is right BEFORE exchange is trusted. The plan never implements it. Task 1's only contact-timing test (lines 49-51) asserts each helper returns its own arithmetic (abs(expected_contact_duration(10,2) - pi*10/(2*2)) < 1e-9), which can never fail. Verified: expected_contact_duration is defined (analytics line 62) but never CONSUMED by any assertion anywhere in the plan; Task 5 uses only the meeting rate to derive beta. The engine already exposes engine.mean_contact_duration() (engine.py:146) and engine.durations, so the data is present. Add a real test that RUNS the RWP engine over >=N seeds and asserts abs(engine.mean_contact_duration() - expected_contact_duration(r, E[v_rel]))/expected < tol AND abs(measured_meeting_rate(len(durations), N, elapsed) - analytic_meeting_rate(r, E[v_rel], area))/analytic < tol, pinning the analytic targets from RWP theory (not the helper's own output). Also resolve the chord-constant: the helper takes a v_rel argument but the gate must supply E[v_rel] (~2.55 for equal-speed uniform-direction = (4/pi)*v), not the bare per-node speed — document the derivation, since a wrong coefficient makes the gate trivially pass or spuriously fail."
+        },
+        {
+          "title": "Overlap-determinism test (Task 4) does not test invariance to neighbor_pairs ORDERING — it only re-runs the same seed, which already passes",
+          "severity": "high",
+          "fix": "Spec section 2.1 requires asserting the delivered-set + timestamps are invariant to neighbor_pairs ordering on a real overlapping A-B / B-C layout. The Task 4 test asserts run(1)==run(1) (same seed twice), which is already true today because neighbor_pairs (cell_list.py) is deterministic for a fixed placement — the plan even says Step 2 'expect fail only if ordering is unstable; otherwise this pins it', i.e. it passes trivially and cannot catch a wrong/absent canonicalization. Make the engine accept an explicit pair iteration order (or expose a hook to permute the candidate/settle list), then assert the delivered-set AND on_deliver timestamps are identical for forward vs reversed/shuffled order on a layout where processing A-B before vs after B-C actually changes whether the blob reaches C in one step. Implement the canonical (entry, i, j) sort so the shuffled-order test passes by construction."
+        },
+        {
+          "title": "0.20 max-relative-error tolerance is unanchored — no evidence a faithful engine passes or a broken one fails, and the metric is mis-specified for a curve starting at I=1",
+          "severity": "high",
+          "fix": "'Max relative error over the window' on a single-seed integer-count curve that starts at I=1 (1,2,4,...) is O(1) in the early small-I region for ANY process, so the metric either blows past 0.20 even for a perfect engine or forces excluding the early phase (making the test weak). N=120 is small and the mid-transition is the noisiest part. Replace with a metric whose noise floor is computable: fit beta to the measured I(t) and assert the FITTED beta agrees with the independent analytic beta within a tolerance derived from finite-N theory, OR compare the growth rate (log-slope of I/(N-I) vs t = beta for logit-linear SI) over the mid-window [0.2N, 0.8N], excluding integer-quantized tails. Set the tolerance from a noise budget (bootstrap std across the >=5 seeds), not by eyeballing during calibration. CRITICAL: add an explicit NEGATIVE control — a mutant engine (e.g. transmissions *= 0.5, or settle at exit-time instead of entry) MUST fail the same assertion. Without a demonstrated falsifying mutant the gate is not falsifiable. Pre-register the exact tol, seed list, and regime bounds in the plan; do not defer them to 'in build'."
+        }
+      ],
+      "shouldConsider": [
+        "Task 3's fixpoint round loop is largely dead code relative to its stated purpose (all three reviewers, medium). It is a no-op for 2-node episodes (the plan admits this on line 148); select_offers re-reads db.ids() each round so round 2 transfers nothing. The genuine intra-step multi-hop (A->B->C in one step) comes from Task 4's episode ordering plus shared buffers across SEPARATE _exchange calls, NOT the inner loop. Its new test (test_exchange_single_pool_over_rounds) duplicates the EXISTING test_per_episode_shared_budget_is_one_pool_not_per_direction (test_engine.py:75). Decide: either drop the loop and rely on Task 4 + the existing single-pool test, or keep it but correct the plan's claim and add a 3-node concurrent-episode test where buffers actually change mid-loop. Either way, do NOT let Task 5's 'apply the fixpoint' be the loop's justification.",
+        "Task 3 is a behavior change under scarcity, not a pure refactor (medium). The round loop calls select_offers per-direction per-round and exits mid-direction when remaining hits 0, consuming a different number of rng.permutation draws than the current two-call _exchange — so under a scarce pool it selects DIFFERENT blobs for identical seeds. This does not touch the unbounded percolation/SI runs (no permutation drawn when missing<=k) but changes results in airtime-starved scenarios (Task 6 NEGATIVE-2). Document the guarantee as 'same seed + same code path', not 'same delivered set as pre-refactor', and add a one-line note in Task 4 that transmission counts and selected blobs under a finite pool depend on canonical order by design (the percolation gate stays green because it is unbounded and order-invariant).",
+        "Task 4 entry_estimate is underspecified (medium). Verified in geometry.py:51: for a pair already in self.open, contact_interval returns enter clamped to t (leg start), so entry_estimate == t for ALL continuing contacts — 'earliest-enter-first' is per-leg, not per-episode. State this explicitly. Also specify the implementation: compute iv ONCE per candidate into (enter, i, j, iv), sort by (enter, i, j), then drive open/settle from the sorted list reusing iv (do NOT recompute contact_interval in the loop), and apply the SAME (entry, i, j) ordering to the vanished-episode settle pass (engine.py:88-91) or determinism is only partial.",
+        "Tasks 5 and 6 ship the most safety-critical gate code as prose + ellipsis placeholders while Tasks 1-4 have concrete code (medium). The falsifiable core (SI growth, multi-hop both-arms, non-regression, the NEGATIVE-1/NEGATIVE-2 over-delivery assertions) is the least specified. Promote tolerances, the seed list, the supercritical-degree justification (r=18 gives d=8.48, verified supercritical vs d_c=4.51), and the full negative-arm assertions to concrete pre-registered values in the plan so calibration cannot silently relax the gate during build.",
+        "Cumulative time-averaged meeting rate mismatches the instantaneous rate the logistic needs (low/medium). len(engine.durations) accumulates from t=0 over a run shorter than one RWP leg, so the time-average is not the instantaneous early-growth rate. Measure m over a stationary mid-window, define t=0 of the SI curve as the injection instant, snapshot len(durations) at injection and subtract, and assert elapsed uses (t_sample - t_inject) so m and I(t) share an origin.",
+        "Add analytics.py to ENGINE_LAYERS in test_lint_invariants.py, or note explicitly that it is intentionally excluded (low). Verified test_lint_invariants.py:6-7: the new module is auto-covered by the module-global-RNG glob but NOT by the addressing-blind check. It is pure math today, but a one-line decision keeps lint coverage honest as the package grows. Task 2's deliver_t = max(now, blob.created_at) is sound and needs no change (verified against buffer.offer expiry semantics, buffer.py:36) — just document that delivery time is quantized to the delivering episode's contact-entry floored at created_at, not a sub-step arrival clock, so Task 5 latency assertions are not mis-specified."
+      ],
+      "goRecommendation": "NO-GO as written. Do not start the build until the plan is revised. Tasks 2, 3 (descoped to the single-pool invariant + per-blob delivery time), and the engine-side mechanics of Task 4 are sound and ready — the refactor reviewer verified the baseline is green (13 passing) and that these changes cannot corrupt the percolation non-regression gate. The blocker is the fidelity GATE itself, which is the entire point of PR-1: as written it is not falsifiable. Three of three reviewers independently converge on the SI gate as the highest risk, and my own arithmetic at the gate's parameters confirms it. THE SINGLE HIGHEST-RISK THING is the SI-gate calibration: Task 5 instructs the builder to 'calibrate beta so a faithful engine matches', which is curve-fitting that makes the gate pass by construction regardless of engine fidelity — and it does so on top of a well-mixed assumption that is physically violated by ~3.5x (outbreak ~12.5 time units vs RWP leg ~44), comparing a logistic mean-field oracle against an engine that actually does full-sync front-propagation across a random geometric graph. That combination means a broken engine and a faithful one would both 'pass'. Three of the five MUST-FIX items (SI well-mixed regime, beta-not-fitted, missing contact-timing gate) are spec violations, not opinions. Required before GO: (1) re-derive beta as a fixed analytic constant and forbid post-hoc tuning; (2) either move the SI gate into a genuinely well-mixed/metered regime or replace the logistic oracle with a direct flux identity, with an asserted validity-window precondition; (3) implement the real contact-timing gate that runs the engine; (4) make the overlap-determinism test exercise pair-order invariance; (5) replace the unanchored 0.20 max-rel-err metric with a noise-budgeted growth-rate metric plus a demonstrated falsifying mutant (negative control). Recommend a fast re-review of only the revised Task 5/6 gate specification before building; Tasks 1-4 can proceed once Task 1's contact-timing assertion is added."
+    }
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Review"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Synthesize"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "plan-review:si-gate-correctness",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a0186773a84771170",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782401854923,
+      "queuedAt": 1782401854915,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "SI-GATE-CORRECTNESS — validity and falsifiability of the SI…",
+      "promptPreview": "You are a rigorous, constructive reviewer of an implementation PLAN for polleneus (PR-1 engine fidelity). Read the relevant files with your tools.\n\nYOUR LENS: SI-GATE-CORRECTNESS — The KEYSTONE risk. Read the plan (Task 5) at C:/Users/rob/Documents/meldingx/docs/superpowers/plans/2026-06-25-airtime-pr1-engine-fidelity.md. Is the SI epidemic-growth fidelity gate VALID and falsifiable? Scrutinize: d…",
+      "lastProgressAt": 1782402093045,
+      "tokens": 50578,
+      "toolCalls": 20,
+      "durationMs": 238122,
+      "resultPreview": "{\"lens\":\"SI-GATE-CORRECTNESS — validity and falsifiability of the SI epidemic-growth fidelity gate (Task 5), specifically the beta = measured per-node meeting-rate mapping, the well-mixed assumption under RWP-on-torus, the tolerance/seed design, and tautology risk.\",\"verdict\":\"needs-rework\",\"strengths\":[\"Right instinct to anchor the fidelity claim in a MEASURED quantity (per-node meeting rate) rat…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "plan-review:engine-refactor",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a8a35e56c71527cbc",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782401854924,
+      "queuedAt": 1782401854915,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "ENGINE-REFACTOR: correctness/safety of plan Tasks 2-4 (per-…",
+      "promptPreview": "You are a rigorous, constructive reviewer of an implementation PLAN for polleneus (PR-1 engine fidelity). Read the relevant files with your tools.\n\nYOUR LENS: ENGINE-REFACTOR — Read the plan (Tasks 2-4) and the current engine at C:/Users/rob/Documents/meldingx/sim/soup_sim/engine.py. Are the refinements correct and safe? (1) Task 2 per-blob deliver_t=max(now,created): is that a legitimate real-tim…",
+      "lastProgressAt": 1782402148224,
+      "tokens": 53194,
+      "toolCalls": 24,
+      "durationMs": 293300,
+      "resultPreview": "{\"lens\":\"ENGINE-REFACTOR: correctness/safety of plan Tasks 2-4 (per-blob deliver_t stamping, fixpoint round loop over a single shared pool, canonical episode order) against the current engine.py and the percolation non-regression gate.\",\"verdict\":\"ready-after-fixes\",\"strengths\":[\"Task 2's deliver_t = max(now, blob.created_at) is a legitimate real-time stamp, not a disguised clamp: now=entry is the…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "plan-review:coverage-scope",
+      "phaseIndex": 1,
+      "phaseTitle": "Review",
+      "agentId": "a40de27926b85cc3e",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782401854924,
+      "queuedAt": 1782401854915,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "COVERAGE-SCOPE: Does the PR-1 plan cover exactly the spec's…",
+      "promptPreview": "You are a rigorous, constructive reviewer of an implementation PLAN for polleneus (PR-1 engine fidelity). Read the relevant files with your tools.\n\nYOUR LENS: COVERAGE-SCOPE — Read the plan and the airtime spec at C:/Users/rob/Documents/meldingx/docs/superpowers/specs/2026-06-25-airtime-sim-spec.md. Does the plan cover exactly the PR-1 scope (engine fidelity) and correctly EXCLUDE PR-2 (airtime mo…",
+      "lastProgressAt": 1782402049901,
+      "tokens": 58477,
+      "toolCalls": 25,
+      "durationMs": 194976,
+      "resultPreview": "{\"lens\":\"COVERAGE-SCOPE: Does the PR-1 plan cover exactly the spec's PR-1 (engine fidelity) scope and correctly exclude PR-2 (airtime model, utilization, knee, latency-censoring, provenance)? Are all PR-1 spec items present (refined intra-contact exchange, engine-side latency fix, overlap determinism, full fidelity gate incl. contact-timing + SI + multi-hop both arms + airtime-starved arm, and the…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "synthesize",
+      "phaseIndex": 2,
+      "phaseTitle": "Synthesize",
+      "agentId": "a788647b92832d087",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782402148233,
+      "queuedAt": 1782402148225,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "needs-rework",
+      "promptPreview": "Consolidate this fan-out review of the airtime PR-1 (engine fidelity) plan into a go/no-go for building.\n\nPlan: C:/Users/rob/Documents/meldingx/docs/superpowers/plans/2026-06-25-airtime-pr1-engine-fidelity.md\n\nREVIEWS (JSON):\n[{\"lens\":\"SI-GATE-CORRECTNESS — validity and falsifiability of the SI epidemic-growth fidelity gate (Task 5), specifically the beta = measured per-node meeting-rate mapping, …",
+      "lastProgressAt": 1782402277189,
+      "tokens": 59024,
+      "toolCalls": 16,
+      "durationMs": 128956,
+      "resultPreview": "{\"overallVerdict\":\"needs-rework\",\"mustFix\":[{\"title\":\"SI-gate rests on a well-mixed (mass-action) assumption that is violated by ~3.5x at the chosen parameters — the engine does front-propagation, not mean-field SI\",\"severity\":\"critical\",\"fix\":\"This is the single highest-risk item. Two of the three reviewers independently land here. Verified the arithmetic at Task 5's params (N=120, W=H=120, r=18,…"
+    }
+  ],
+  "totalTokens": 221273,
+  "totalToolCalls": 85
+}

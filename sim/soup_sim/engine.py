@@ -38,52 +38,58 @@ class Engine:
 
     # ---- dynamic time-stepped run -------------------------------------------
     def run_until(self, t_end: float) -> None:
+        # Full dt steps, then ONE clamped partial step so self.t lands exactly on t_end
+        # (no overshoot of warmup/injection/sample boundaries). self.open persists across
+        # calls so a physically continuous contact stays ONE episode; call finalize() once
+        # at the true end.
+        dt = self.cfg.dt
+        while self.t + dt <= t_end + _EPS:
+            self._process_step(dt)
+        rem = t_end - self.t
+        if rem > _EPS:
+            self._process_step(rem)
+            self.t = t_end
+
+    def _process_step(self, dt_step: float) -> None:
         cfg = self.cfg
-        w, h, b, r, dt = cfg.width, cfg.height, cfg.boundary, cfg.radius, cfg.dt
-        start = self.t
-        step = 0
-        while start + step * dt < t_end - _EPS:
-            self.t = start + step * dt
-            p0 = np.asarray(self.mob.positions, float).copy()
-            self.mob.step(dt)
-            p1 = np.asarray(self.mob.positions, float)
-            v_leg = (p1 - p0) / dt
-            max_disp = float(np.max(np.linalg.norm(p1 - p0, axis=1))) if len(p0) else 0.0
-            r_q = r + 2.0 * max_disp + _EPS
-            cand = neighbor_pairs(p0, r_q, w, h, b)
-            deg = self._degrees(p0, cand, r, w, h, b)
-            seen = set()
-            for (i, j) in cand:
-                seen.add((i, j))
-                iv = contact_interval(p0[i], v_leg[i], p0[j], v_leg[j], r, self.t, self.t + dt, w, h, b)
-                key = (i, j)
-                if iv is None:
-                    if key in self.open:
-                        self._settle(key, self.open[key]["entry"], self.open[key]["last_end"], deg)
-                        del self.open[key]
-                    continue
-                enter, exit_ = iv
-                in_at_end = exit_ >= self.t + dt - _EPS
+        w, h, b, r = cfg.width, cfg.height, cfg.boundary, cfg.radius
+        t = self.t
+        p0 = np.asarray(self.mob.positions, float).copy()
+        self.mob.step(dt_step)
+        p1 = np.asarray(self.mob.positions, float)
+        v_leg = (p1 - p0) / dt_step
+        max_disp = float(np.max(np.linalg.norm(p1 - p0, axis=1))) if len(p0) else 0.0
+        r_q = r + 2.0 * max_disp + _EPS
+        cand = neighbor_pairs(p0, r_q, w, h, b)
+        deg = self._degrees(p0, cand, r, w, h, b)
+        seen = set()
+        for (i, j) in cand:
+            seen.add((i, j))
+            iv = contact_interval(p0[i], v_leg[i], p0[j], v_leg[j], r, t, t + dt_step, w, h, b)
+            key = (i, j)
+            if iv is None:
                 if key in self.open:
-                    if in_at_end:
-                        self.open[key]["last_end"] = self.t + dt
-                    else:
-                        self._settle(key, self.open[key]["entry"], exit_, deg)
-                        del self.open[key]
-                else:
-                    if in_at_end:
-                        self.open[key] = {"entry": enter, "last_end": self.t + dt}
-                    else:
-                        self._settle(key, enter, exit_, deg)  # complete sub-step episode
-            for key in list(self.open.keys()):
-                if key not in seen:
                     self._settle(key, self.open[key]["entry"], self.open[key]["last_end"], deg)
                     del self.open[key]
-            step += 1
-        self.t = start + step * dt
-        # NOTE: do NOT finalize here — self.open persists across run_until() calls so a
-        # physically continuous contact stays ONE episode (t_setup charged once). Call
-        # finalize() exactly once at the true end of the simulation.
+                continue
+            enter, exit_ = iv
+            in_at_end = exit_ >= t + dt_step - _EPS
+            if key in self.open:
+                if in_at_end:
+                    self.open[key]["last_end"] = t + dt_step
+                else:
+                    self._settle(key, self.open[key]["entry"], exit_, deg)
+                    del self.open[key]
+            else:
+                if in_at_end:
+                    self.open[key] = {"entry": enter, "last_end": t + dt_step}
+                else:
+                    self._settle(key, enter, exit_, deg)  # complete sub-step episode
+        for key in list(self.open.keys()):
+            if key not in seen:
+                self._settle(key, self.open[key]["entry"], self.open[key]["last_end"], deg)
+                del self.open[key]
+        self.t = t + dt_step
 
     def finalize(self) -> None:
         if not self.open:
@@ -107,18 +113,20 @@ class Engine:
 
     def _settle(self, key, entry, end, deg) -> None:
         i, j = key
-        self.buffers[i].expire(self.t)   # absolute-TTL: drop expired before offering
-        self.buffers[j].expire(self.t)
+        # The exchange happens DURING the contact, modeled at its start (entry): expire only
+        # blobs already dead before the contact began, then transfer what was valid for it.
+        now = entry
+        self.buffers[i].expire(now)
+        self.buffers[j].expire(now)
         duration = max(0.0, end - entry)
         self.durations.append(duration)
         n_local = max(int(deg[i]), int(deg[j]))
         k = self.budget.blobs_transferable(duration, n_local, self.rng)
         if k > 0:
-            self._exchange(i, j, k)
+            self._exchange(i, j, k, now)
 
-    def _exchange(self, i, j, k) -> None:
+    def _exchange(self, i, j, k, now) -> None:
         bi, bj = self.buffers[i], self.buffers[j]
-        now = self.t
         remaining = k
         for blob in select_offers(bi.blobs(), bj.ids(), remaining, self.rng):
             if remaining <= 0:

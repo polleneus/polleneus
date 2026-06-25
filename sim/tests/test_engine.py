@@ -124,11 +124,23 @@ def test_cross_slicing_episode_equality():
     assert durations([10.0]) == durations([5.0, 10.0]) == [10.0]
 
 
-def test_finite_ttl_blob_expires_from_store_and_is_not_delivered():
+def test_finite_ttl_delivered_when_in_contact_during_validity():
+    # nodes in range from t=0; blob valid [0,5]; long run -> MUST deliver during the valid
+    # window (Codex P1: exchange happens DURING the contact, not at the later expiry time).
     c = cfg(n=2, dt=1.0, radius=10.0, ttl=5.0)
     eng = make_engine([[50, 50], [55, 50]], c)
     eng.inject(Blob(0, created_at=0.0, ttl=5.0, size=1.0), 0)
-    eng.run_until(20.0)   # settle happens at finalize (t=20) -> blob already expired at t=5
+    eng.run_until(20.0)
     eng.finalize()
-    assert not eng.buffers[1].has(0)   # expired -> never delivered
-    assert not eng.buffers[0].has(0)   # absolute TTL -> dropped from origin store too
+    assert eng.buffers[1].has(0)
+
+
+def test_finite_ttl_not_delivered_when_contact_starts_after_expiry():
+    # node1 only enters range ~t=45, long after the blob's ttl=5 -> not delivered
+    c = cfg(n=2, dt=1.0, radius=10.0, ttl=5.0)
+    eng = make_engine([[0.0, 50.0], [100.0, 50.0]], c, mode="linear",
+                      velocities=[[0.0, 0.0], [-2.0, 0.0]])
+    eng.inject(Blob(0, created_at=0.0, ttl=5.0, size=1.0), 0)
+    eng.run_until(60.0)
+    eng.finalize()
+    assert not eng.buffers[1].has(0)

@@ -67,6 +67,11 @@ fixed or explicitly recorded as accepted in the PR.
 - **External — `@codex review` on the PR** (step 5) — comment `@codex review`; triage its findings with the
   same rigor (verify before applying — a confident-but-wrong suggestion is not implemented); fix, push, and
   re-request until clean. *(Active once the Codex GitHub App is installed on the org — see SETUP.)*
+  - **Best-effort, with a 10-minute timeout.** Codex's responsiveness is treated as *advisory, not blocking*:
+    if it has not responded within ~10 min of a request, **proceed on the in-repo fan-out review** (which is
+    the binding gate). When Codex *does* respond, its findings are triaged and fixed under the same 2-round
+    bound before merge. (Rationale: observed Codex latency is inconsistent; we don't let a flaky external
+    bot stall the loop, but we still benefit from its findings whenever they arrive.)
 
 ---
 

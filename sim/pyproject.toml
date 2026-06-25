@@ -1,0 +1,14 @@
+[project]
+name = "soup_sim"
+version = "0.1.0"
+description = "Simulator for the polleneus pure-flooding uniform-soup model (delivery + airtime vs density)"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+dev = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

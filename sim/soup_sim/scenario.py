@@ -19,8 +19,22 @@ def density_to_n(d: float, w: float, h: float, r: float) -> int:
     return int(round(d * w * h / (np.pi * r * r)))
 
 
-def mean_ci(values, z: float = 1.96):
-    """t/normal CI across the per-replication observations."""
+# Student-t two-sided 95% critical values by df (df>30 -> ~normal 1.96).
+_T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306,
+        9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131,
+        16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086, 21: 2.080, 22: 2.074,
+        23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042}
+
+
+def _t_crit(df: int) -> float:
+    if df <= 0:
+        return 0.0
+    return _T95.get(df, 1.96)
+
+
+def mean_ci(values):
+    """Student-t 95% CI across the per-replication observations (the replication unit is
+    the SEED, not the message — small reps need t, not the normal z, or the band is too tight)."""
     arr = np.asarray(values, float)
     n = len(arr)
     if n == 0:
@@ -29,7 +43,8 @@ def mean_ci(values, z: float = 1.96):
     if n == 1:
         return (m, m, m)
     se = float(np.std(arr, ddof=1)) / np.sqrt(n)
-    return (m, max(0.0, m - z * se), min(1.0, m + z * se))
+    t = _t_crit(n - 1)
+    return (m, max(0.0, m - t * se), min(1.0, m + t * se))
 
 
 def _seed_for(base_seed: int, di: int, rep: int) -> int:
@@ -38,15 +53,17 @@ def _seed_for(base_seed: int, di: int, rep: int) -> int:
 
 def run_one(cfg) -> dict:
     cfg.validate()
-    mob = make_mobility(cfg, cfg.rng())
+    # Disjoint substream namespaces (leading tag) so no path can alias another at any n:
+    # mobility=0, engine=1, cohort=2, buffers=(3, i).
+    mob = make_mobility(cfg, cfg.rng(0))
     metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
-    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(1000 + i))
+    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i))
                for i in range(cfg.n)]
     budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size)
-    eng = Engine(cfg, mob, buffers, budget, cfg.rng(7), on_deliver=metrics.on_deliver)
+    eng = Engine(cfg, mob, buffers, budget, cfg.rng(1), on_deliver=metrics.on_deliver)
 
     eng.run_until(cfg.warmup)
-    for blob, src, dst in make_cohort(cfg, inject_time=cfg.warmup, rng=cfg.rng(2000)):
+    for blob, src, dst in make_cohort(cfg, inject_time=cfg.warmup, rng=cfg.rng(2)):
         metrics.register(blob, src, dst)
         eng.inject(blob, src)
 
@@ -55,6 +72,7 @@ def run_one(cfg) -> dict:
         eng.run_until(cfg.warmup + cfg.measure_window * s / n_samp)
         samples.append(mean_degree(mob.positions, cfg.radius, cfg.width, cfg.height, cfg.boundary))
     eng.run_until(cfg.warmup + cfg.measure_window + cfg.drain)
+    eng.finalize()  # settle any still-open episodes exactly once at the true end
 
     first = float(np.mean(samples[: n_samp // 2]))
     second = float(np.mean(samples[n_samp // 2:]))

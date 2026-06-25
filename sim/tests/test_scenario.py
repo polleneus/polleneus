@@ -15,6 +15,16 @@ def cfg(**kw):
     return Config(**d)
 
 
+def test_buffer_substreams_disjoint_from_cohort_and_engine():
+    # buffer path (3, i) must never alias mobility(0)/engine(1)/cohort(2) even at large i
+    from soup_sim.config import make_rng
+    base = 12345
+    others = {tuple(make_rng(base, t).integers(0, 1 << 31, 4)) for t in (0, 1, 2)}
+    for i in (0, 1, 1000, 2000, 6000):
+        s = tuple(make_rng(base, 3, i).integers(0, 1 << 31, 4))
+        assert s not in others
+
+
 def test_density_to_n_roundtrip():
     n = density_to_n(5.0, 200.0, 200.0, 10.0)
     d_back = n * np.pi * 100 / (200.0 * 200.0)

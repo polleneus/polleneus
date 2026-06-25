@@ -81,9 +81,11 @@ class Engine:
                     del self.open[key]
             step += 1
         self.t = start + step * dt
-        self._finalize()
+        # NOTE: do NOT finalize here — self.open persists across run_until() calls so a
+        # physically continuous contact stays ONE episode (t_setup charged once). Call
+        # finalize() exactly once at the true end of the simulation.
 
-    def _finalize(self) -> None:
+    def finalize(self) -> None:
         if not self.open:
             return
         cfg = self.cfg
@@ -105,6 +107,8 @@ class Engine:
 
     def _settle(self, key, entry, end, deg) -> None:
         i, j = key
+        self.buffers[i].expire(self.t)   # absolute-TTL: drop expired before offering
+        self.buffers[j].expire(self.t)
         duration = max(0.0, end - entry)
         self.durations.append(duration)
         n_local = max(int(deg[i]), int(deg[j]))
@@ -136,6 +140,10 @@ class Engine:
 
     # ---- static unbounded path (percolation gate) ---------------------------
     def settle_static_fixpoint(self) -> None:
+        """Iterate exchange to a fixpoint = connected-component reachability (true multi-hop).
+        PRECONDITION: unbounded buffers (no eviction) and non-expiring blobs; with a finite
+        cap the result is order-dependent and is NOT component reachability. The percolation
+        gate uses effectively-infinite caps/TTL so this precondition holds."""
         cfg = self.cfg
         pairs = neighbor_pairs(np.asarray(self.mob.positions, float), cfg.radius,
                                cfg.width, cfg.height, cfg.boundary)

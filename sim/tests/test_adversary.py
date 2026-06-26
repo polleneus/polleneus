@@ -64,6 +64,21 @@ def test_reachability_ranks_true_source_top():
     assert int(np.argmin(out["scores"])) == 0               # candidate nearest the source ranks top
 
 
+def test_origin_vs_relay_beats_first_spy_via_upstream():
+    from soup_sim.adversary import estimate
+    # true origin = idx 0; decoy relayer = idx 1 sits closer to the earliest receiver (so first-spy
+    # wrongly fingers the relayer). upstream flags the relayer (it had an in-range upstream holder).
+    recv = np.array([[0., 0.], [50., 0.]])
+    hear = [(0, 1.0), (1, 5.0)]
+    cands = np.array([[10., 0.], [1., 0.]])           # origin far from R0; relayer near R0
+    reach = np.array([[1., 2.], [1., 2.]])            # identical reach -> reachability base is a tie
+    fs = estimate("first_spy", hear, recv, cands, np.random.default_rng(0))
+    assert int(np.argmin(fs["scores"])) == 1          # first-spy wrongly picks the relayer (nearer R0)
+    ovr = estimate("origin_vs_relay", hear, recv, cands, np.random.default_rng(0),
+                   reach=reach, upstream=[False, True])
+    assert int(np.argmin(ovr["scores"])) == 0         # origin-vs-relay correctly picks the true origin
+
+
 def test_random_guess_is_uniform_permutation():
     from soup_sim.adversary import estimate
     out = estimate("random_guess", [(0, 1.0)], np.array([[0., 0.]]), np.zeros((5, 2)), np.random.default_rng(1))

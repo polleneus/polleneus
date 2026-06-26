@@ -12,6 +12,7 @@ better). See anonymity.py SCOPE_TAG.
 from __future__ import annotations
 import numpy as np
 from .geometry import dist2
+from .anonymity import UPSTREAM_PENALTY
 
 
 def place_receivers(cfg, f, mode, rng) -> np.ndarray:
@@ -54,7 +55,28 @@ def realized_coverage(receivers, adv_range, cfg, rng, n_mc=20000) -> float:
     return float(np.mean(covered))
 
 
-def estimate(method, msg_hearings, receivers, cand_pos, rng, reach=None) -> dict:
+def _reachability_scores(msg_hearings, receivers, cand_pos, reach):
+    """-correlation(predicted reach-times, observed hear-times) over heard receivers; falls back to
+    first-spy geometry when there's no usable gradient. Lower = more suspicious."""
+    C = len(cand_pos)
+    earliest_recv = min(msg_hearings, key=lambda rt: rt[1])[0]
+    point = np.asarray(receivers[earliest_recv], float)
+    rec_idx = [r for (r, _t) in msg_hearings]
+    obs = np.array([t for (_r, t) in msg_hearings], float)
+    if reach is None or len(rec_idx) < 2 or np.allclose(obs, obs[0]):
+        return point, np.linalg.norm(np.asarray(cand_pos, float) - point, axis=1)
+    scores = np.zeros(C)
+    for c in range(C):
+        pred = np.asarray(reach[c], float)[rec_idx]
+        if np.allclose(pred, pred[0]):
+            scores[c] = 0.0
+        else:
+            corr = np.corrcoef(pred, obs)[0, 1]
+            scores[c] = -corr if np.isfinite(corr) else 0.0
+    return point, scores
+
+
+def estimate(method, msg_hearings, receivers, cand_pos, rng, reach=None, upstream=None) -> dict:
     """Rank candidates by suspicion (LOWER score = more suspicious) + a point estimate.
     msg_hearings = list[(recv_idx, first_hear_time)]; cand_pos = (C,2) candidate positions at
     the reference time; reach = (C,R) predicted forward-reachability times (reachability only).
@@ -75,19 +97,16 @@ def estimate(method, msg_hearings, receivers, cand_pos, rng, reach=None) -> dict
     if method == "first_spy":
         return {"point": point, "scores": np.linalg.norm(np.asarray(cand_pos, float) - point, axis=1)}
     if method == "reachability":
-        rec_idx = [r for (r, _t) in msg_hearings]
-        obs = np.array([t for (_r, t) in msg_hearings], float)
-        if reach is None or len(rec_idx) < 2 or np.allclose(obs, obs[0]):
-            # not enough gradient to correlate -> fall back to first-spy geometry
-            return {"point": point, "scores": np.linalg.norm(np.asarray(cand_pos, float) - point, axis=1)}
-        scores = np.zeros(C)
-        for c in range(C):
-            pred = np.asarray(reach[c], float)[rec_idx]
-            if np.allclose(pred, pred[0]):
-                scores[c] = 0.0                         # candidate predicts no gradient -> uninformative
-            else:
-                corr = np.corrcoef(pred, obs)[0, 1]
-                scores[c] = -corr if np.isfinite(corr) else 0.0
+        _pt, scores = _reachability_scores(msg_hearings, receivers, cand_pos, reach)
+        return {"point": np.asarray(cand_pos[int(np.argmin(scores))], float), "scores": scores}
+    if method == "origin_vs_relay":
+        # reachability + a penalty for candidates whose first-hold had an in-range UPSTREAM holder
+        # of this id (likely a relayer, not the origin) — defeats the receive-before-originate gate.
+        _pt, scores = _reachability_scores(msg_hearings, receivers, cand_pos, reach)
+        scores = scores.astype(float).copy()
+        if upstream is not None:
+            up = np.asarray(upstream, dtype=bool)
+            scores[up] += UPSTREAM_PENALTY              # relayers ranked LESS suspicious as the origin
         return {"point": np.asarray(cand_pos[int(np.argmin(scores))], float), "scores": scores}
     raise ValueError(f"unknown estimator method {method!r}")
 

@@ -55,16 +55,27 @@ class Config:
     mixing_lambda: float = 0.0         # Poisson mixing: Exp(lambda) forward hold per blob (0 ⇒ no hold)
     originate_gate_relays: int = 0     # receive-before-originate: relay >= G distinct foreign ids before emitting own
     originate_gate_time: float = 0.0   # ...and/or be alive >= T before emitting own
+    # Slice-4 clustered "gathering" mobility (used only when mobility == "clustered")
+    n_clusters: int = 1                # number of cluster centers (gathering zones)
+    cluster_sigma: float = 0.0         # intra-cluster Gaussian spread (arena units)
+    cluster_leak: float = 0.0          # per-retarget prob. a node wanders uniformly (0=islands, 1=RWP)
 
     def validate(self) -> None:
         if self.boundary not in ("torus", "walls"):
             raise ValueError(f"boundary must be torus|walls, got {self.boundary!r}")
-        if self.mobility not in ("static", "rwp"):
-            raise ValueError(f"mobility must be static|rwp, got {self.mobility!r}")
+        if self.mobility not in ("static", "rwp", "clustered"):
+            raise ValueError(f"mobility must be static|rwp|clustered, got {self.mobility!r}")
         if self.speed_min < 0 or self.speed_max < self.speed_min:
             raise ValueError("speed: require 0 <= speed_min <= speed_max")
-        if self.mobility == "rwp" and self.speed_min <= 0:
-            raise ValueError("rwp requires speed_min > 0 (avoids RWP speed decay)")
+        if self.mobility in ("rwp", "clustered") and self.speed_min <= 0:
+            raise ValueError("rwp/clustered requires speed_min > 0 (avoids speed decay)")
+        if self.mobility == "clustered":
+            if self.n_clusters < 1:
+                raise ValueError("n_clusters must be >= 1")
+            if not 0.0 <= self.cluster_leak <= 1.0:
+                raise ValueError("cluster_leak must be in [0, 1]")
+            if self.cluster_sigma < 0.0:
+                raise ValueError("cluster_sigma must be >= 0")
         if self.radius <= 0:
             raise ValueError("radius must be > 0")
         if self.speed_max * self.dt > self.radius / 4.0:

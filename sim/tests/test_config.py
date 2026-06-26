@@ -27,6 +27,18 @@ def test_rwp_requires_positive_speed_min():
         base(mobility="rwp", speed_min=0.0, speed_max=1.0).validate()
 
 
+def test_clustered_mobility_validates():
+    c = base(mobility="clustered", speed_min=1.0, speed_max=1.0, n_clusters=8,
+             cluster_sigma=10.0, cluster_leak=0.1)
+    c.validate()                                          # ok
+    with pytest.raises(ValueError, match="n_clusters"):
+        base(mobility="clustered", speed_min=1.0, speed_max=1.0, n_clusters=0).validate()
+    with pytest.raises(ValueError, match="cluster_leak"):
+        base(mobility="clustered", speed_min=1.0, speed_max=1.0, cluster_leak=1.5).validate()
+    with pytest.raises(ValueError, match="rwp|clustered|speed_min"):
+        base(mobility="clustered", speed_min=0.0, speed_max=1.0).validate()   # moving model needs speed>0
+
+
 def test_rng_substreams_independent_and_deterministic():
     c = base()
     a1 = c.rng(1).integers(0, 1_000_000, 5)

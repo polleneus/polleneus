@@ -41,18 +41,39 @@ def test_anonymity_defense_sweep_structure_and_determinism():
     assert a["mixing"]["timing_only_rank1"] is not None                # the TTL=inf confound arm ran
 
 
+def test_defenses_off_pipeline_dormant_deterministic_and_wired():
+    # bit-identical safety: with defenses OFF the pipeline takes the pre-PR-2 path (no background soup,
+    # deterministic), and turning a defense ON actually changes the run (feature wired, not a silent no-op).
+    from dataclasses import replace
+    from soup_sim.scenario import _run_one_anonymity
+    off = replace(tiny(), mixing_lambda=0.0, originate_gate_relays=0)
+    a = _run_one_anonymity(off)
+    b = _run_one_anonymity(off)
+    assert a["acquired"] == b["acquired"] and a["delivery"] == b["delivery"]   # deterministic
+    assert all(bid < 10_000_000 for (_n, bid) in a["acquired"])               # background soup NOT injected
+    on = _run_one_anonymity(replace(off, mixing_lambda=0.5))
+    assert on["acquired"] != a["acquired"]                                    # mixing ON changes the run
+
+
 @pytest.mark.slow
 def test_anonymity_defense_sweep_realistic():
     from dataclasses import replace
     from soup_sim.scenario import anonymity_defense_sweep
+    from soup_sim.anonymity import MIN_INTERSECTION_SIZE
     base = replace(base_defense_cfg())
     out = anonymity_defense_sweep(base, f=0.7, reps=4)
-    # mixing's credited gain must NOT be pure message-dropping: if mixing cuts rank-1 but the TTL=inf
-    # timing-only arm does NOT also cut it, defense_gate must refuse credit.
-    m = out["mixing"]
-    if m["verdict"]["credited"]:
-        assert m["timing_only_rank1"] <= m["baseline_rank1"]           # gain survived TTL=inf
-    assert out["gate"]["intersection"] >= 0 and out["mixing"]["intersection"] >= 0
+    # NON-VACUOUS: the same-detected-set intersection must clear the floor, so the verdict is a real
+    # credit/refuse decision -- not the "intersection too small" early return (which would pass even if
+    # the whole credit machinery were deleted).
+    assert out["mixing"]["intersection"] >= MIN_INTERSECTION_SIZE
+    assert out["gate"]["intersection"] >= MIN_INTERSECTION_SIZE
+    labels = {out["mixing"]["verdict"]["label"], out["gate"]["verdict"]["label"]}
+    assert any("intersection" not in lb.lower() for lb in labels)   # credit path actually exercised
+    # a credited gain must NOT be pure message-dropping: it must survive THAT arm's TTL=inf control.
+    for arm in ("mixing", "gate"):
+        a = out[arm]
+        if a["verdict"]["credited"]:
+            assert a["timing_only_rank1"] <= a["baseline_rank1"]    # gain survived TTL=inf
 
 
 def base_defense_cfg():

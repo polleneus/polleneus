@@ -157,10 +157,12 @@ def _run_anonymity_defenses(args) -> None:
         a = out[arm]
         v = a["verdict"]
         print(f"{arm.upper():8s}: baseline rank-1 {a['baseline_rank1']:.2f} -> defended "
-              f"{a['defended_rank1']:.2f}  (same-detected-set n={a['intersection']})  ->  {v['label']}")
-        print(f"          cost: delivery {a['cost']['delivery']:.2f}  credited={v['credited']}")
-    print("note: a credited defense means the rank-1 drop SURVIVED the TTL=inf timing-only control")
-    print("      (i.e. it is timing-scramble, not message-dropping). Un-credited != useless; see CSV.")
+              f"{a['defended_rank1']:.2f}  (TTL=inf control {a['timing_only_rank1']:.2f}; "
+              f"same-detected-set n={a['intersection']})  ->  {v['label']}")
+        print(f"          cost: delivery {a['cost']['delivery']:.2f}  t50 {a['cost']['t50']:.1f}  "
+              f"credited={v['credited']}")
+    print("note: a credited defense means the rank-1 drop SURVIVED the TTL=inf control on THAT arm")
+    print("      (i.e. it is timing-scramble/structural, not message-dropping). Un-credited != useless; see CSV.")
 
 
 def main() -> None:

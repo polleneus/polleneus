@@ -138,12 +138,15 @@ coverage (`--preset anonymity-defenses`, default f=0.7) and credited only when a
   survivorship. So baseline vs defended rank-1 is compared **only on messages detected in BOTH
   arms** (same seed → same cohort), with a `MIN_INTERSECTION_SIZE` floor below which the result is
   "inconclusive", not "protected".
-- **TTL=∞ timing-only control** — mixing could cut rank-1 just by dropping messages (TTL expiry of
-  delayed blobs), not by scrambling timing. A parallel **TTL=∞ arm** keeps every blob alive; the
-  mixing gain is credited only if it **survives** there (real timing-scramble), else it's labelled
-  *message-dropping*, not anonymity.
-- **Must-localize baseline** — a drop is meaningless if the attack couldn't localize the baseline
-  in the first place; the PR-1 capability gate must pass first.
+- **TTL=∞ control, per defense** — either defense could cut rank-1 just by dropping messages: a
+  mixing-delayed blob can hit TTL expiry, and a gate-held origination can expire before it is ever
+  forwarded. So **each** arm has its own parallel **TTL=∞ control** (`timing_only` for mixing,
+  `gate_timing_only` for the gate) that keeps every blob alive; the gain is credited only if it
+  **survives** there (real timing-scramble / structural hiding), else it's labelled *message-dropping*,
+  not anonymity.
+- **Must-localize baseline (defenses OFF)** — a drop is meaningless if the attack couldn't localize
+  the baseline in the first place; the PR-1 capability gate is measured on a **defenses-off** clone
+  (not the defended source) and must pass first.
 - **Relay-density check** — the gate arm is only trustworthy if nodes actually relayed enough
   foreign traffic (`MIN_RELAY_DENSITY`); a starved gate is an artifact, not a defense.
 - **Cost is always reported** — every arm prints its delivery so a credited anonymity gain is read
@@ -189,8 +192,8 @@ airtime sweep + control arms, anonymity sweep + defense sweep, per-rep CIs) ·
 | anonymity: worst-case auxiliary info (all trajectories) | §10 | **conservative** for exposure (safe direction) |
 | anonymity defenses (mixing + originate-gate) | §10 | slice-3 PR-2: credited gain is an **UPPER BOUND on protection** (single-event/external-passive only; intersection + insider NOT evaluated) |
 | defense credit: same-detected-set intersection | §10 | removes survivorship (slowed spread ≠ anonymity); below `MIN_INTERSECTION_SIZE` → inconclusive, not credited |
-| defense credit: TTL=∞ timing-only control | §10 | separates timing-scramble from message-dropping; a gain that dies at TTL=∞ is **not** credited as anonymity |
-| defense credit: must-localize baseline + relay-density | §10 | no credit if the attack couldn't localize the baseline, or if the gate arm was relay-starved (artifact) |
+| defense credit: per-arm TTL=∞ control | §10 | each defense has its own TTL=∞ control (mixing + gate); a gain that dies at TTL=∞ is **not** credited as anonymity (it was message-dropping) |
+| defense credit: must-localize (defenses-off) baseline + per-node relay-density | §10 | no credit if the attack couldn't localize the **defenses-off** baseline, or if the gate arm was relay-starved (per-node density, not per-relaying-node) |
 | crypto / tokens | §5/§9 | **not modeled** (deferred) |
 | clustered "gathering" mobility | — | RWP open-field only (clustered mobility is a named fast-follow) → **optimistic** |
 | delivery | — | arrival == delivery (ignores read-window / FS) → **upper bound** |

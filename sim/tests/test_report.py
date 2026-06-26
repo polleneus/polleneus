@@ -61,12 +61,12 @@ def test_defense_csv_carries_both_tags_as_columns():
     out = {
         "scope_tag": "[UPPER BOUND on anonymity]",
         "defense_scope_tag": "[defense benefit NOT evaluated against intersection/insider]",
-        "mixing": {"baseline_rank1": 0.30, "defended_rank1": 0.12, "intersection": 80,
+        "mixing": {"baseline_rank1": 0.30, "defended_rank1": 0.12, "timing_only_rank1": 0.13, "intersection": 80,
                    "verdict": {"credited": True, "label": "credited: real timing-scramble gain"},
-                   "cost": {"delivery": 0.91}},
-        "gate": {"baseline_rank1": 0.30, "defended_rank1": 0.20, "intersection": 70, "relay_density": 3.4,
-                 "verdict": {"credited": False, "label": "no material drop"},
-                 "cost": {"delivery": 0.88}},
+                   "cost": {"delivery": 0.91, "t50": 18.0}},
+        "gate": {"baseline_rank1": 0.30, "defended_rank1": 0.20, "timing_only_rank1": 0.29, "intersection": 70,
+                 "relay_density": 3.4, "verdict": {"credited": False, "label": "no material drop"},
+                 "cost": {"delivery": 0.88, "t50": 22.0}},
     }
     s = anonymity_defense_to_csv_string(out, {"master_seed": 5, "mixing_lambda": 0.05})
     lines = s.splitlines()

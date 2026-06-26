@@ -61,7 +61,7 @@ class Engine:
         self.record_positions = record_positions
         self.position_log: list = []
         # slice-3 PR-2 defenses (default off ⇒ bit-identical): Poisson mixing + receive-before-originate
-        self._mix_rng = cfg.rng(5) if cfg.mixing_lambda > 0 else None   # ONE persistent generator
+        self._mixing_on = cfg.mixing_lambda > 0                          # no RNG touched when off ⇒ bit-identical
         self.forward_delay: dict[tuple[int, int], float] = {}            # (node, blob_id) -> Exp(lambda) hold
         self.relayed: dict[int, set] = {}                                # node -> set of distinct foreign ids forwarded
         self.gated_origins: set = set()                                  # blob ids subject to the originate-gate
@@ -76,8 +76,13 @@ class Engine:
         self.buffers[node_idx].offer(blob, now=self.t)
 
     def _draw_mix_delay(self, node_idx, blob_id) -> None:
-        if self._mix_rng is not None:                          # Poisson mixing on -> hold before forwardable
-            self.forward_delay[(node_idx, blob_id)] = float(self._mix_rng.exponential(1.0 / self.cfg.mixing_lambda))
+        # Hold is keyed deterministically on (blob, holder) — NOT a persistent generator — so a given
+        # (blob, holder) gets the SAME Exp(lambda) hold regardless of delivery order or which defense arm
+        # runs. This is what makes the mixing vs TTL=inf timing-only control a fair comparison (same
+        # timing scramble, only message survival differs); a lazy order-dependent draw would confound it.
+        if self._mixing_on:                                    # Poisson mixing on -> hold before forwardable
+            self.forward_delay[(node_idx, blob_id)] = float(
+                self.cfg.rng(5, int(blob_id), int(node_idx)).exponential(1.0 / self.cfg.mixing_lambda))
 
     def run_until(self, t_end: float) -> None:
         dt = self.cfg.dt
@@ -221,7 +226,9 @@ class Engine:
             # distinct foreign ids (and been alive >= T). Only MEASURED gated originations are held
             # (background soup is un-gated, so the gate can't deadlock the whole network). default no-op.
             if (gate_g or gate_t) and bl.id in self.gated_origins and self.origin.get(bl.id) == src:
-                if len(self.relayed.get(src, ())) < gate_g or self.t < gate_t:
+                # time check uses the contact end (exit_), consistent with the causality/mixing guards
+                # above — self.t is not advanced to the step end until after the fixpoint loop.
+                if len(self.relayed.get(src, ())) < gate_g or exit_ + _EPS < gate_t:
                     continue
             out.append(bl)
         return out

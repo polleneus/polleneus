@@ -422,21 +422,27 @@ def anonymity_sweep(base_cfg, f_values, reps):
 
 
 _DEFENSE_ARMS = {
-    "baseline":    dict(mixing_lambda=0.0, originate_gate_relays=0),
-    "mixing":      dict(originate_gate_relays=0),                       # keep base_cfg.mixing_lambda
-    "gate":        dict(mixing_lambda=0.0),                            # keep base_cfg.originate_gate_relays
-    "both":        dict(),                                             # both as set on base_cfg
-    "timing_only": dict(originate_gate_relays=0, ttl=1e9),            # mixing at TTL=inf (drop-confound check)
+    "baseline":         dict(mixing_lambda=0.0, originate_gate_relays=0),
+    "mixing":           dict(originate_gate_relays=0),                  # keep base_cfg.mixing_lambda
+    "timing_only":      dict(originate_gate_relays=0, ttl=1e9),         # mixing at TTL=inf (drop-confound check)
+    "gate":             dict(mixing_lambda=0.0),                        # keep base_cfg.originate_gate_relays
+    "gate_timing_only": dict(mixing_lambda=0.0, ttl=1e9),              # gate at TTL=inf (drop-confound check)
 }
 
 
 def anonymity_defense_sweep(base_cfg, f, reps):
     """Measure mixing + receive-before-originate against the exposure baseline at coverage f.
     Per rep, all arms share one seed (identical cohort) so rank-1 is compared on the SAME-DETECTED-SET
-    intersection (survivorship removed); the TTL=inf timing-only arm isolates timing-scramble from
-    message-dropping. Every gain is an UPPER BOUND on the anonymity benefit; defense_gate credits a
-    gain only if real (attack works, material drop, survives TTL=inf, enough relays, big intersection)."""
-    mustloc = anonymity_sweep(base_cfg, [0.95], reps=1)["mustlocalize"]   # capability control (reuse PR-1)
+    intersection (survivorship removed). EACH defense has its own TTL=inf control arm (timing_only for
+    mixing, gate_timing_only for the gate) that isolates timing-scramble/structural hiding from mere
+    message-dropping: a finite-TTL origination that is held (gate) or delayed (mixing) can simply expire,
+    which looks like anonymity but is just a drop. Every gain is an UPPER BOUND on the anonymity benefit;
+    defense_gate credits a gain only if real (attack localizes the defenses-OFF baseline, material drop,
+    the drop SURVIVES that arm's TTL=inf control, enough relay density, big enough intersection)."""
+    # must-localize capability control: a defense "drop" is only meaningful if the attack could localize
+    # the BASELINE in the first place -> measure capability with defenses OFF, not on the defended source.
+    off = replace(base_cfg, mixing_lambda=0.0, originate_gate_relays=0, originate_gate_time=0.0)
+    mustloc = anonymity_sweep(off, [0.95], reps=1)["mustlocalize"]
     rows = []
     for rep in range(reps):
         seed = _seed_for(base_cfg.master_seed, 0, rep)
@@ -445,10 +451,13 @@ def anonymity_defense_sweep(base_cfg, f, reps):
             cfg = replace(base_cfg, master_seed=seed, **override)
             art = _run_one_anonymity(cfg)
             recv = place_receivers(cfg, f, "uniform", cfg.rng(4))
-            res, _u, _t = _score_arm(art, recv, cfg, cfg.rng(6), with_origin_vs_relay=(mode in ("gate", "both")))
+            ovr = mode in ("gate", "gate_timing_only")
+            res, _u, _t = _score_arm(art, recv, cfg, cfg.rng(6), with_origin_vs_relay=ovr)
             arms[mode] = {"rank0": {r["bid"]: (r["rank"] == 0) for r in res},
                           "detected": set(r["bid"] for r in res),
-                          "relay_density": float(np.mean(list(art["relayed"].values()))) if art["relayed"] else 0.0,
+                          # relay density per NODE (divide by n, not by relaying-node count) so a
+                          # relay-starved gate -- the artifact MIN_RELAY_DENSITY exists to reject -- is caught.
+                          "relay_density": sum(art["relayed"].values()) / max(1, art["n"]),
                           "delivery": art["delivery"], "t50": art["t50"]}
         rows.append(arms)
 
@@ -456,35 +465,38 @@ def anonymity_defense_sweep(base_cfg, f, reps):
         vals = [rows[r][arm_name]["rank0"][b] for r in range(reps) for b in S[r] if b in rows[r][arm_name]["rank0"]]
         return float(np.mean(vals)) if vals else 0.0
 
+    # same-detected-set: compare rank-1 only over messages detected in the baseline, the defended arm,
+    # AND its TTL=inf control -> removes survivorship and keeps the timing-only comparison on one cohort.
     S_mix = [rows[r]["baseline"]["detected"] & rows[r]["mixing"]["detected"] & rows[r]["timing_only"]["detected"]
              for r in range(reps)]
-    S_gate = [rows[r]["baseline"]["detected"] & rows[r]["gate"]["detected"] for r in range(reps)]
+    S_gate = [rows[r]["baseline"]["detected"] & rows[r]["gate"]["detected"] & rows[r]["gate_timing_only"]["detected"]
+              for r in range(reps)]
     inter_mix = float(np.mean([len(s) for s in S_mix]))
     inter_gate = float(np.mean([len(s) for s in S_gate]))
 
-    base_r1_m = _r1_on("baseline", S_mix)
-    mix_r1 = _r1_on("mixing", S_mix)
-    timing_r1 = _r1_on("timing_only", S_mix)
-    base_r1_g = _r1_on("baseline", S_gate)
-    gate_r1 = _r1_on("gate", S_gate)
+    base_r1_m, mix_r1, timing_r1 = _r1_on("baseline", S_mix), _r1_on("mixing", S_mix), _r1_on("timing_only", S_mix)
+    base_r1_g, gate_r1, gate_timing_r1 = _r1_on("baseline", S_gate), _r1_on("gate", S_gate), _r1_on("gate_timing_only", S_gate)
     gate_relay_density = float(np.mean([rows[r]["gate"]["relay_density"] for r in range(reps)]))
     from .anonymity import DEFENSE_MIN_DROP
-    timing_survives = timing_r1 <= base_r1_m * (1.0 - DEFENSE_MIN_DROP)   # gain persists at TTL=inf?
+    # gain persists at TTL=inf (where nothing can expire)? -> it's timing-scramble, not message-dropping.
+    timing_survives = timing_r1 <= base_r1_m * (1.0 - DEFENSE_MIN_DROP)
+    gate_timing_survives = gate_timing_r1 <= base_r1_g * (1.0 - DEFENSE_MIN_DROP)
 
     mixing_verdict = defense_gate(base_r1_m, mix_r1, mustloc["ok"], timing_survives, intersection_size=inter_mix)
-    gate_verdict = defense_gate(base_r1_g, gate_r1, mustloc["ok"], True,
+    gate_verdict = defense_gate(base_r1_g, gate_r1, mustloc["ok"], gate_timing_survives,
                                 relay_density_ok=(gate_relay_density >= MIN_RELAY_DENSITY), intersection_size=inter_gate)
 
-    def _cost(arm):
+    def _cost(arm):   # delivery + median latency; rank-1 is NOT reported here (survivorship, not comparable)
+        t50s = [rows[r][arm]["t50"] for r in range(reps) if rows[r][arm]["t50"] is not None]
         return {"delivery": float(np.mean([rows[r][arm]["delivery"] for r in range(reps)])),
-                "rank1": _r1_on(arm, [rows[r][arm]["detected"] for r in range(reps)])}
+                "t50": float(np.mean(t50s)) if t50s else float("nan")}   # nan = never reached 50% delivery
     return {
         "mustlocalize": mustloc,
         "mixing": {"baseline_rank1": base_r1_m, "defended_rank1": mix_r1, "timing_only_rank1": timing_r1,
                    "intersection": inter_mix, "verdict": mixing_verdict, "cost": _cost("mixing")},
-        "gate": {"baseline_rank1": base_r1_g, "defended_rank1": gate_r1, "relay_density": gate_relay_density,
+        "gate": {"baseline_rank1": base_r1_g, "defended_rank1": gate_r1, "timing_only_rank1": gate_timing_r1,
+                 "relay_density": gate_relay_density,
                  "intersection": inter_gate, "verdict": gate_verdict, "cost": _cost("gate")},
-        "both_cost": _cost("both"),
         "scope_tag": SCOPE_TAG, "defense_scope_tag": DEFENSE_SCOPE_TAG,
     }
 

@@ -17,9 +17,10 @@ import numpy as np
 from dataclasses import replace
 from soup_sim.config import Config
 from soup_sim.scenario import (static_delivery_sweep, midpoint_with_ci, airtime_sweep, anonymity_sweep,
-                               anonymity_defense_sweep)
+                               anonymity_defense_sweep, intersection_sweep)
 from soup_sim.report import (write_csv, plot, airtime_to_csv_string, airtime_plot,
-                             anonymity_to_csv_string, anonymity_plot, anonymity_defense_to_csv_string)
+                             anonymity_to_csv_string, anonymity_plot, anonymity_defense_to_csv_string,
+                             intersection_to_csv_string)
 from soup_sim.anonymity import exposure_gate, EXPOSURE_RANK1
 
 
@@ -169,10 +170,39 @@ def _run_anonymity_defenses(args) -> None:
         print("note: --plot is not supported for the anonymity-defenses preset (no plot written).")
 
 
+def intersection_cfg(seed: int) -> Config:
+    # Same venue as the anonymity headline (PR-1), long window so staggered originations + spread fit.
+    return replace(anonymity_cfg(seed), ttl=120.0, warmup=30.0, measure_window=120.0, drain=20.0,
+                   seen_margin=120.0, n_messages=120)
+
+
+def _run_anonymity_intersection(args) -> None:
+    cfg = intersection_cfg(args.seed)
+    reps = max(args.reps, 4)
+    out = intersection_sweep(cfg, k_values=[1, 2, 4, 8, 16], f=0.7, reps=reps, n_tracked=8, stride=2.0)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        f.write(intersection_to_csv_string(out, cfg.manifest()))
+    print(f"wrote {args.out} (K-sweep @ coverage f=0.7, reps={reps}, tracked=8)")
+    print(out["scope_tag"])
+    print(out["intersection_scope_tag"])
+    print(f"MUST-LOCALIZE control: {out['mustlocalize']['label']} (ok={out['mustlocalize']['ok']})")
+    for r in out["rows"]:
+        print(f"  K={r['k']:>2}: fused rank-1 borda {r['fused_rank1_borda']:.2f} "
+              f"(score-sum {r['fused_rank1_score_sum']:.2f}; decoy {r['decoy_rank1']:.2f}; "
+              f"rand {r['random_floor_fused']:.3f}; n={r['n_samples']})")
+    print(f"VERDICT @K={out['headline_k']} (credited = LOWER fusion rule): {out['verdict']['label']}")
+    print("note: every number is an UPPER BOUND on anonymity; device-linkage is ASSUMED given (PHY out")
+    print("      of scope); the decoy is the most-central innocent relay — if it pins too, it's centrality.")
+    if args.plot:
+        print("note: --plot is not supported for the anonymity-intersection preset (no plot written).")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--preset",
-                    choices=["static-cliff", "airtime-knee", "anonymity", "anonymity-defenses"],
+                    choices=["static-cliff", "airtime-knee", "anonymity", "anonymity-defenses",
+                             "anonymity-intersection"],
                     default="static-cliff")
     ap.add_argument("--out", default="out/cliff.csv")
     ap.add_argument("--plot", default=None)
@@ -185,6 +215,8 @@ def main() -> None:
         _run_anonymity(args)
     elif args.preset == "anonymity-defenses":
         _run_anonymity_defenses(args)
+    elif args.preset == "anonymity-intersection":
+        _run_anonymity_intersection(args)
     else:
         _run_static(args)
 

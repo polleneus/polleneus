@@ -87,6 +87,29 @@ def anonymity_defense_to_csv_string(out, manifest) -> str:
     return buf.getvalue()
 
 
+INTERSECTION_FIELDS = ["k", "fused_rank1_borda", "ci_lo", "ci_hi", "fused_rank1_score_sum",
+                       "decoy_rank1", "random_floor_fused", "delivery", "n_samples"]
+
+
+def intersection_to_csv_string(out, manifest) -> str:
+    """One row per K. Both fusion rules (borda headline + score_sum sensitivity), the decoy-centrality
+    control, the fused-random floor, and the credit verdict travel per row; both scope tags as columns
+    + comments (a comment alone is dropped by dataframe readers)."""
+    man = list(manifest.keys())
+    header = (INTERSECTION_FIELDS + ["credited", "label", "scope_tag", "intersection_scope_tag"]
+              + [f"param_{k}" for k in man])
+    buf = io.StringIO()
+    buf.write(f"# {out['scope_tag']}\n# {out['intersection_scope_tag']}\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    v = out["verdict"]
+    for r in out["rows"]:
+        row = [r.get(k) for k in INTERSECTION_FIELDS] + [v["credited"], v["label"],
+               out["scope_tag"], out["intersection_scope_tag"]] + [manifest[k] for k in man]
+        w.writerow(row)
+    return buf.getvalue()
+
+
 def anonymity_plot(out, path) -> bool:
     """rank-1 probability vs coverage f per placement arm; scope tag in the title."""
     try:

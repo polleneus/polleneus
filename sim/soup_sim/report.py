@@ -44,6 +44,48 @@ def airtime_to_csv_string(rows, manifest) -> str:
     return buf.getvalue()
 
 
+ANON_FIELDS = ["f", "arm", "realized_coverage", "rank1_prob", "ci_lo", "ci_hi",
+               "median_err_firsthear", "median_err_origin", "p90_err", "p95_err",
+               "anon_set_upper_bound", "unconditional_rank1", "undetected_fraction", "beats_random"]
+
+
+def anonymity_to_csv_string(rows, manifest, scope_tag) -> str:
+    """Anonymity CSV. The scope tag travels as a leading comment AND a column on every row
+    (a comment alone is dropped by dataframe readers — every number must stay tagged)."""
+    man = list(manifest.keys())
+    header = ANON_FIELDS + ["scope_tag"] + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    buf.write(f"# {scope_tag}\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for r in rows:
+        w.writerow([r.get(k) for k in ANON_FIELDS] + [scope_tag] + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
+def anonymity_plot(out, path) -> bool:
+    """rank-1 probability vs coverage f per placement arm; scope tag in the title."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return False
+    fig, ax = plt.subplots()
+    for arm in ("uniform", "chokepoint"):
+        pts = [(r["f"], r["rank1_prob"]) for r in out["rows"] if r["arm"] == arm]
+        if pts:
+            ax.plot([p[0] for p in pts], [p[1] for p in pts], marker="o", label=f"{arm}")
+    ax.axhline(0.5, ls="--", lw=0.8, color="grey", label="exposure threshold")
+    ax.set_xlabel("adversary coverage f")
+    ax.set_ylabel("rank-1 (exact-catch) probability — UPPER BOUND")
+    ax.set_title("polleneus source-exposure  " + out["scope_tag"])
+    ax.legend()
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return True
+
+
 def airtime_plot(out, path) -> bool:
     """Circulated-blobs/min vs density with the alpha=0 and cap/ttl control overlays + knee marker."""
     try:

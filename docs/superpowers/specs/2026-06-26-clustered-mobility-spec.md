@@ -1,6 +1,6 @@
 # Feature Spec — Clustered "Gathering" Mobility (Simulator Slice 4) — PR-1
 
-**Status:** Draft → CTO design-direction approved (static clusters + intra-cluster RWP, PR split) → **awaiting CTO spec sign-off**
+**Status:** Draft → CTO design-direction approved (static clusters + intra-cluster RWP, PR split) → **CTO SIGN-OFF (2026-06-26)** — authorizes the PR-1 implementation plan.
 **Date:** 2026-06-26
 **Parent design:** [polleneus v0.5](2026-06-25-polleneus-design.md) · **Builds on:** [soup-sim slice 1](2026-06-25-soup-sim-spec.md), [airtime slice 2](2026-06-25-airtime-sim-spec.md), [anonymity slice 3](2026-06-26-anonymity-sim-spec.md)
 **Roadmap:** every prior headline (delivery cliff, airtime knee, source-localization + intersection) was measured under **RWP open-field mobility**, which the bias tables flag as *optimistic*. Polleneus's real deployment is a **gathering** — a clustered crowd. This slice adds a clustered mobility model and asks the foundational robustness question first: **does a venue-scale crowd stay connected enough to deliver as it clusters?**

@@ -24,7 +24,7 @@ def test_collision_aggregate_turns_over_linear_plateaus():
     assert 0 < agg_c.argmax() < len(ns) - 1          # collision: interior maximum (turns over)
     assert agg_l.argmax() == len(ns) - 1             # linear: monotone up to plateau
     assert agg_c.max() > 1.5 * agg_c[-1]             # clear turn-over margin
-    assert abs(ns[agg_c.argmax()] - 3 / 0.08) < 5    # near analytic n* = n_channels/beta = 37.5
+    assert abs(ns[agg_c.argmax()] - 1 / 0.08) < 4    # near analytic n* = 1/beta = 12.5 (no /n_channels)
 
 
 def test_per_link_goodput_monotone_both_models():

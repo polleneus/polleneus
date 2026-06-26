@@ -45,7 +45,7 @@ class Config:
     master_seed: int
     # PR-2 airtime model (behavior-preserving defaults: linear, no collision, contention=connectivity)
     airtime_model: str = "linear"     # "linear" (optimistic sensitivity) | "collision" (ALOHA primary)
-    beta: float = 0.0                 # collision steepness; per-link p ~ exp(-beta*n/n_channels)
+    beta: float = 0.0                 # collision steepness; per-link goodput ~ exp(-beta*n) (no /n_channels)
     t_setup_slope: float = 0.0        # density-dependent setup: t_setup_at(n)=t_setup + slope*n
     n_channels: int = 3               # shared advertising channels
     cs_radius_mult: float = 1.0       # carrier-sense radius = cs_radius_mult * radius

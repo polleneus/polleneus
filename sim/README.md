@@ -54,7 +54,7 @@ utilization**, **delivery ratio**, and a **censoring-aware T50** vs density.
 
 - **Primary model = ALOHA collision:** per-link goodput `throughput·exp(−β·n/n_channels)` over
   `n_channels=3` shared advertising channels. Per-link goodput is monotone; the SYSTEM
-  aggregate `n·goodput` has an interior maximum at `n* = n_channels/β` contenders — so
+  aggregate `n·goodput` has an interior maximum at `n* = 1/β` contenders — so
   circulation **turns over under the collision model**. **β is an UNCALIBRATED free parameter**,
   so `n*` is set by the chosen β, not measured: this apparatus demonstrates that it can *detect*
   a knee when one exists, it does **not** assert real BLE saturates at a specific density. The old
@@ -84,7 +84,7 @@ utilization**, **delivery ratio**, and a **censoring-aware T50** vs density.
 | `throughput_ideal` (goodput) | **~100 kbps** headline (12.5 kB/s) | BLE 4.x connection, no Data-Length-Extension; ~1.4 Mbps (BLE 5 2M PHY + DLE) is the optimistic upper sensitivity | conservative headline; report both |
 | `t_setup` | 50 ms | BLE connection/handshake floor; short contacts move nothing | — |
 | `t_setup_slope` | density-dependent | discovery latency grows with advertiser count (scan-window contention) | optimistic if slope under-set |
-| `β` (collision steepness) | **uncalibrated free parameter** | predicted knee `n* = n_channels/β` reported up front; sweep is run across the band | report knee as a function of β |
+| `β` (collision steepness) | **uncalibrated free parameter** | predicted knee `n* = 1/β` reported up front (no `/n_channels`: BLE advertises on all 3 channels per event, so they don't triple capacity); sweep is run across the band | report knee as a function of β |
 | `blob_size` | 256 B | one sealed message (parent §6) | — |
 | contact-duration distribution | RWP, open-field | report the empirical distribution; its tail is **optimistic** vs clustered human-contact traces | optimistic |
 

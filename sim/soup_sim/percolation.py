@@ -3,8 +3,9 @@
 Used to validate the engine (delivered pairs must equal same-component pairs) and to
 locate the connectivity threshold via the susceptibility peak — the standard finite-size
 estimator for the continuum-percolation critical mean degree d_c ~= 4.51. NOTE: the
-threshold is GIANT-COMPONENT EMERGENCE, not delivery=0.5 (pairwise delivery ~ S^2 only
-reaches 0.5 well above threshold, ~d 6-7).
+threshold is GIANT-COMPONENT EMERGENCE, not delivery=0.5. Pairwise delivery ~ S^2 crosses
+0.5 JUST ABOVE the threshold (~d 4.5-4.7 at venue-scale N); ~d 6-7 is where it SATURATES
+(0.95-0.99 reach), not where it hits 0.5.
 """
 from __future__ import annotations
 import numpy as np

@@ -239,22 +239,27 @@ clustered venue stay connected enough to deliver?** (`--preset cluster-delivery`
   inter-cluster mover). `leak=0` → isolated islands; `leak=1` → uniform retargets ≈ **RWP** — a
   built-in correctness gate (the clustered delivery at `leak=1` must equal the RWP delivery).
 - **Headline sweep:** delivery (pairwise same-component) + giant-component fraction vs `cluster_leak`
-  at a fixed global mean-degree, time-averaged over the trajectory so a transit mover physically
-  bridges the clusters it passes through.
+  at a **fixed node count N** (the count for global degree 6 under a *uniform* layout — the realized
+  global degree is NOT fixed; clustering concentrates nodes, so it's higher at low leak), time-averaged
+  over the trajectory so a transit mover physically bridges the clusters it passes through. At a fixed
+  seed the cluster layout is the **same venue across the whole sweep** (only movement varies with leak),
+  so the curve isolates the leak effect.
 
-**Measured result** (`--preset cluster-delivery`, K=8, `cluster_sigma=6`, global degree 6, 6 reps):
-at full islands (`leak=0`) delivery is **0.62** (giant 0.72) — clustering costs ~0.3 vs the uniform
-promise even though *intra*-cluster degree is high (12.6) — and a modest **~10% leak recovers 0.85**,
-reaching the RWP value **0.91** by `leak≥0.2`; **`leak=1` recovers RWP (gate PASS)**. So the honest
-finding is **partial fragmentation, cheaply recovered**: a clustered crowd loses delivery, but only a
-small amount of inter-cluster movement restores it. (At tighter/smaller clusters the `leak=0` floor
-would drop toward the within-cluster `~1/K`; here the clusters are large and overlap, so the loss is
-milder — the *shape* (rising with leak, RWP-recovered) is the robust result.)
+**Measured result** (`--preset cluster-delivery`, K=8, `cluster_sigma=6`, N for uniform-degree 6, 6 reps):
+at full islands (`leak=0`) delivery is **0.62** (giant 0.72) **even though the realized global degree is
+20.0** (nodes pack into clusters — intra-degree 12.6) — i.e. **fragmentation despite double the local
+connectivity**: dense groups that don't talk to each other. A modest **~10% leak recovers 0.86** (and
+the realized degree falls to 11 as the crowd spreads), reaching the RWP value **0.91** by `leak≥0.2`;
+**`leak=1` recovers RWP (gate PASS)**. So the honest finding is **partial fragmentation, cheaply
+recovered**: a clustered crowd loses ~0.3 delivery vs the uniform promise, but only a little
+inter-cluster movement restores it. (At tighter/smaller clusters the `leak=0` floor would drop toward
+the within-cluster `~1/K`; here clusters are large and overlap, so the loss is milder — the *shape*
+(rising with leak, RWP-recovered, realized degree falling) is the robust result.)
 
 Additive and **default-inert**: the `clustered` mode is opt-in; static/rwp configs and every slice-1/2/3
 number are bit-identical. The cluster layout rides the mobility RNG substream, fixed by the seed and
-stable across the leak sweep. Delivery numbers remain an **UPPER BOUND** (clustering is an
-optimism-*removing* axis: real crowds gather, so clustered ≤ uniform at the same global degree).
+stable across the leak sweep (a per-rep venue). Delivery numbers remain an **UPPER BOUND** (clustering
+is an optimism-*removing* axis: real crowds gather, so clustered ≤ uniform at the same N).
 
 ## The gate (why you can trust the curve)
 `tests/test_integration_percolation.py`:
@@ -303,7 +308,6 @@ defense/intersection gates) · `report` (CSV + plot).
 | clustered: static clusters (no gather→disperse) | — | abstraction; a forming/dispersing crowd is transient (named follow-up) |
 | clustered: leak=1 recovers RWP | — | correctness sanity gate, not a bias |
 | crypto / tokens | §5/§9 | **not modeled** (deferred) |
-| clustered "gathering" mobility | — | RWP open-field only (clustered mobility is a named fast-follow) → **optimistic** |
 | delivery | — | arrival == delivery (ignores read-window / FS) → **upper bound** |
 
 ## Caveats (idealizations — all bias delivery UP)

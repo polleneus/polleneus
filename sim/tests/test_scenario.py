@@ -79,7 +79,8 @@ def test_cluster_leak_sweep_structure_and_determinism():
     assert a["rows"] == b["rows"]                              # deterministic
     assert "clustered" in a["regime_tag"]
     for r in a["rows"]:
-        assert {"leak", "n", "delivery_mean", "giant_mean", "intra_degree", "inter_degree"} <= set(r)
+        assert {"leak", "n", "delivery_mean", "giant_mean", "intra_degree", "inter_degree",
+                "realized_degree"} <= set(r)
     assert [r["leak"] for r in a["rows"]] == [0.0, 1.0]
 
 
@@ -89,4 +90,7 @@ def test_cluster_leak0_fragments_leak1_connects():
     rows = {r["leak"]: r for r in out["rows"]}
     assert rows[0.0]["delivery_mean"] < rows[1.0]["delivery_mean"]   # islands deliver less than well-mixed
     assert rows[0.0]["giant_mean"] < rows[1.0]["giant_mean"]         # smaller giant component under islands
-    assert out["rwp_recovered"] is True                             # leak=1 ~ RWP at the same degree
+    assert out["rwp_recovered"] is True                             # leak=1 ~ RWP at the same N
+    # honest framing: realized global degree is NOT fixed -- it is HIGHER at leak=0 (clustering
+    # concentrates nodes) even though delivery is LOWER (fragmentation despite dense local degree).
+    assert rows[0.0]["realized_degree"] > rows[1.0]["realized_degree"]

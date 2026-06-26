@@ -113,7 +113,7 @@ def intersection_to_csv_string(out, manifest) -> str:
 
 
 CLUSTER_FIELDS = ["leak", "n", "delivery_mean", "ci_lo", "ci_hi", "giant_mean",
-                  "intra_degree", "inter_degree"]
+                  "intra_degree", "inter_degree", "realized_degree"]
 
 
 def cluster_to_csv_string(out, manifest) -> str:

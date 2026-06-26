@@ -188,23 +188,30 @@ def _avg_snapshot_metrics(cfg, rng, n_snap=8):
 
 
 def cluster_leak_sweep(base_cfg, leak_values, degree, reps):
-    """Delivery + giant-component vs inter-cluster leak at a FIXED global mean-degree. Engine-free
-    (mobility snapshots). RWP recovered at leak=1 (correctness gate). Every number is an UPPER BOUND
-    on delivery and carries the clustered mobility-regime tag."""
+    """Delivery + giant-component vs inter-cluster leak at a FIXED NODE COUNT N (the count that yields
+    global degree `degree` under a UNIFORM layout). The REALIZED global degree is NOT fixed — clustering
+    concentrates nodes, so realized_degree is higher at low leak (reported per row). Engine-free
+    (mobility snapshots). RWP recovered at leak=1 (correctness gate). Every number is an UPPER BOUND on
+    delivery and carries the clustered mobility-regime tag."""
     n = max(2, density_to_n(degree, base_cfg.width, base_cfg.height, base_cfg.radius))
     rows = []
-    for li, leak in enumerate(leak_values):
+    for leak in leak_values:
         d, g, intra, inter = [], [], [], []
         for rep in range(reps):
+            # Seed depends ONLY on rep, NOT on the leak value -> the cluster layout (centers/homes/init,
+            # all drawn before any per-leg target) is the SAME venue across the whole leak sweep; only the
+            # per-retarget wander choices (drawn later in step()) vary with cluster_leak. So the curve
+            # isolates the leak effect instead of confounding it with random layout-to-layout variation.
             cfg = replace(base_cfg, n=n, mobility="clustered", cluster_leak=leak,
-                          master_seed=_seed_for(base_cfg.master_seed, li, rep))
+                          master_seed=_seed_for(base_cfg.master_seed, 0, rep))
             m = _avg_snapshot_metrics(cfg, cfg.rng(0))
             d.append(m["delivery"]); g.append(m["giant"])
             intra.append(m["intra_degree"]); inter.append(m["inter_degree"])
         mean, lo, hi = mean_ci(d)
+        intra_m, inter_m = float(np.mean(intra)), float(np.mean(inter))
         rows.append({"leak": leak, "n": n, "delivery_mean": mean, "ci_lo": lo, "ci_hi": hi,
-                     "giant_mean": float(np.mean(g)), "intra_degree": float(np.mean(intra)),
-                     "inter_degree": float(np.mean(inter))})
+                     "giant_mean": float(np.mean(g)), "intra_degree": intra_m, "inter_degree": inter_m,
+                     "realized_degree": intra_m + inter_m})   # NOT fixed: clustering concentrates nodes
     rwp = []
     for rep in range(reps):
         cfg = replace(base_cfg, n=n, mobility="rwp", master_seed=_seed_for(base_cfg.master_seed, 999, rep))

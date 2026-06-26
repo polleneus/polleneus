@@ -106,3 +106,26 @@ def test_static_rwp_have_no_cluster_attrs():
     cr = _ccfg(mobility="rwp")
     assert make_mobility(cs, cs.rng(0)).home is None
     assert make_mobility(cr, cr.rng(0)).home is None
+
+
+def test_cluster_layout_stable_across_leak_at_fixed_seed():
+    # The leak sweep's whole validity rests on this: at a fixed seed the VENUE (centers + homes) must be
+    # identical across leak values -- only movement varies -- else the leak effect is confounded with
+    # random layout-to-layout variation. (Centers/homes are drawn before any leak-dependent retarget.)
+    a = make_mobility(_ccfg(cluster_leak=0.0), _ccfg().rng(0))
+    b = make_mobility(_ccfg(cluster_leak=0.7), _ccfg().rng(0))
+    assert np.array_equal(a.centers, b.centers)              # same venue
+    assert np.array_equal(a.home, b.home)                    # same homing
+
+
+def test_leak1_retargets_uniform_independent_of_sigma():
+    # leak=1 => every retarget is a uniform-arena wander, so the steady-state mixing is independent of
+    # cluster_sigma (== RWP for any sigma). A regression that kept the home-Gaussian at leak=1 would
+    # make tight clusters (small sigma) stay clustered -> this would fail.
+    def same_home_frac(sigma):
+        c = _ccfg(cluster_leak=1.0, cluster_sigma=sigma)
+        return _same_home_frac(make_mobility(c, c.rng(0)), c)
+    tight, loose = same_home_frac(2.0), same_home_frac(20.0)
+    floor = 1.0 / _ccfg().n_clusters
+    assert abs(tight - loose) < 0.12                         # sigma doesn't matter at leak=1
+    assert tight < floor + 0.12 and loose < floor + 0.12     # both near the uniform 1/K floor

@@ -113,9 +113,9 @@ def test_cluster_csv_has_fields_and_regime_tag():
         "degree": 8.0, "rwp_delivery": 0.95, "rwp_recovered": True,
         "rows": [
             {"leak": 0.0, "n": 110, "delivery_mean": 0.16, "ci_lo": 0.1, "ci_hi": 0.2,
-             "giant_mean": 0.17, "intra_degree": 7.0, "inter_degree": 0.0},
+             "giant_mean": 0.17, "intra_degree": 7.0, "inter_degree": 0.0, "realized_degree": 7.0},
             {"leak": 1.0, "n": 110, "delivery_mean": 0.93, "ci_lo": 0.9, "ci_hi": 0.95,
-             "giant_mean": 0.97, "intra_degree": 1.2, "inter_degree": 6.0},
+             "giant_mean": 0.97, "intra_degree": 1.2, "inter_degree": 6.0, "realized_degree": 7.2},
         ],
     }
     s = cluster_to_csv_string(out, {"master_seed": 5})

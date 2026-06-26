@@ -219,11 +219,13 @@ def _run_cluster_delivery(args) -> None:
     print(out["regime_tag"])
     for r in out["rows"]:
         print(f"  leak={r['leak']:>4}: delivery {r['delivery_mean']:.2f} (giant {r['giant_mean']:.2f}; "
-              f"intra-deg {r['intra_degree']:.1f}, inter-deg {r['inter_degree']:.1f})")
-    print(f"RWP reference delivery (same degree): {out['rwp_delivery']:.2f}  ->  "
+              f"realized global degree {r['realized_degree']:.1f} "
+              f"[intra {r['intra_degree']:.1f}/inter {r['inter_degree']:.1f}])")
+    print(f"RWP reference delivery (same N): {out['rwp_delivery']:.2f}  ->  "
           f"leak=1 recovers RWP: {out['rwp_recovered']}")
-    print("note: every delivery number is an UPPER BOUND on real delivery; uniform/RWP is the optimistic")
-    print("      baseline -- clustering is the optimism-removing axis (real crowds gather).")
+    print("note: N is fixed (the count for global degree 6 under a UNIFORM layout); realized global degree")
+    print("      is HIGHER at low leak (clustering concentrates nodes). Every delivery number is an UPPER")
+    print("      BOUND on real delivery; uniform/RWP is the optimistic baseline (clustering removes optimism).")
 
 
 def main() -> None:

@@ -18,7 +18,9 @@ def place_receivers(cfg, f, mode, rng) -> np.ndarray:
     """Return (R,2) receiver locations covering ~fraction f of the arena. mode:
     "uniform" = jittered grid; "chokepoint" = clustered toward hotspots (a budget-matched
     smart adversary; uniform-only would over-state anonymity)."""
-    w, h, R_range = cfg.width, cfg.height, cfg.radius * max(cfg.adversary_range_mult, 1.0)
+    from .percolation import placement
+    w, h = cfg.width, cfg.height
+    R_range = cfg.radius * (cfg.adversary_range_mult if cfg.adversary_range_mult > 0 else 1.0)
     f = float(min(max(f, 1e-6), 1.0))
     s = R_range * np.sqrt(np.pi / f)                    # grid spacing for disk-coverage ~ f
     nx = max(1, int(round(w / s)))
@@ -26,13 +28,14 @@ def place_receivers(cfg, f, mode, rng) -> np.ndarray:
     xs = (np.arange(nx) + 0.5) * (w / nx)
     ys = (np.arange(ny) + 0.5) * (h / ny)
     grid = np.array([[x, y] for x in xs for y in ys], float)
+    R = len(grid)
     if mode == "chokepoint":
-        # same receiver budget, concentrated in gaussian clusters around a few hotspots
-        k = max(1, len(grid))
-        n_hot = max(1, int(np.ceil(np.sqrt(len(grid)))))
-        hot = rng.uniform([0.0, 0.0], [w, h], (n_hot, 2))
-        idx = rng.integers(0, n_hot, k)
-        pts = hot[idx] + rng.normal(0.0, R_range, (k, 2))
+        # budget-matched smart adversary: place the SAME receiver count near actual node positions
+        # (where traffic is). Under RWP (~uniform node density) this ~= uniform; it only beats uniform
+        # under clustered mobility (a named follow-up). NOT collapsed into blobs (that was strictly weaker).
+        nodes = placement(cfg.n, w, h, rng)
+        idx = rng.choice(len(nodes), size=min(R, len(nodes)), replace=False)
+        pts = nodes[idx] + rng.normal(0.0, R_range * 0.1, (len(idx), 2))
         return np.mod(pts, [w, h]) if cfg.boundary == "torus" else np.clip(pts, 0, [w, h])
     jit = rng.uniform(-0.25, 0.25, grid.shape) * np.array([w / nx, h / ny])
     pts = grid + jit

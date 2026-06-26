@@ -91,25 +91,42 @@ def anonymity_cfg(seed: int) -> Config:
     )
 
 
-def _run_anonymity(args) -> None:
-    cfg = anonymity_cfg(args.seed)
-    f_values = [0.1, 0.2, 0.35, 0.5, 0.7, 0.9]
-    out = anonymity_sweep(cfg, f_values, reps=max(args.reps, 6))
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    with open(args.out, "w", newline="", encoding="utf-8") as f:
-        f.write(anonymity_to_csv_string(out["rows"], cfg.manifest(), out["scope_tag"]))
+def anonymity_report_lines(out, cfg, reps) -> list:
+    """Build the CLI report lines. The exposure verdict is HARD-GATED on the must-localize
+    capability control (no exposure claim if the estimator failed it). Every line set carries
+    the scope tag. Extracted for testability."""
     head = [r for r in out["rows"] if r["arm"] == out["headline_arm"]]
     best = max(head, key=lambda r: r["rank1_prob"]) if head else {"rank1_prob": 0.0, "realized_coverage": 0.0}
     floor = 1.0 / cfg.n
-    gate = exposure_gate(best["rank1_prob"], floor, best.get("beats_random", False), cfg.n_messages, max(args.reps, 6))
-    print(out["scope_tag"])
-    print(f"wrote {args.out} ({len(out['rows'])} rows; headline arm = {out['headline_arm']})")
-    print(f"MUST-LOCALIZE control: {out['mustlocalize']['label']}  (ok={out['mustlocalize']['ok']})")
+    gate = exposure_gate(best["rank1_prob"], floor, best.get("beats_random", False), cfg.n_messages, reps)
+    lines = [out["scope_tag"],
+             f"headline arm = {out['headline_arm']}",
+             f"MUST-LOCALIZE control: {out['mustlocalize']['label']}  (ok={out['mustlocalize']['ok']})"]
     if not out["mustlocalize"]["ok"]:
-        print("  -> estimator did not pass the capability control; exposure numbers are INCONCLUSIVE (honest null).")
-    print(f"EXPOSURE: peak rank-1 {best['rank1_prob']:.2f} @ realized coverage {best['realized_coverage']:.2f}"
-          f"  ->  {gate['label']}")
-    print("note: every number is an UPPER BOUND on anonymity; intersection + insider adversaries NOT modeled.")
+        lines += [
+            "EXPOSURE: INCONCLUSIVE — estimator failed the capability control, so NO exposure claim is made",
+            f"  (for reference only, ungated: peak rank-1 {best['rank1_prob']:.2f} @ coverage {best['realized_coverage']:.2f})",
+            "  the modeled attack cannot localize even a slow source under full coverage, consistent with",
+            "  epidemic flooding erasing the spatial-origin signal — a stronger estimator may change it.",
+        ]
+    else:
+        lines.append(f"EXPOSURE: peak rank-1 {best['rank1_prob']:.2f} @ realized coverage "
+                     f"{best['realized_coverage']:.2f}  ->  {gate['label']}")
+    lines.append("note: every number is an UPPER BOUND on anonymity; intersection + insider NOT modeled.")
+    return lines
+
+
+def _run_anonymity(args) -> None:
+    cfg = anonymity_cfg(args.seed)
+    f_values = [0.1, 0.2, 0.35, 0.5, 0.7, 0.9]
+    reps = max(args.reps, 6)
+    out = anonymity_sweep(cfg, f_values, reps=reps)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        f.write(anonymity_to_csv_string(out["rows"], cfg.manifest(), out["scope_tag"]))
+    print(f"wrote {args.out} ({len(out['rows'])} rows)")
+    for line in anonymity_report_lines(out, cfg, reps):
+        print(line)
     if args.plot:
         ok = anonymity_plot(out, args.plot)
         print(f"plot -> {args.plot}" if ok else "matplotlib not installed; skipped plot")

@@ -45,7 +45,8 @@ def airtime_to_csv_string(rows, manifest) -> str:
 
 
 ANON_FIELDS = ["f", "arm", "realized_coverage", "rank1_prob", "ci_lo", "ci_hi",
-               "median_err_firsthear", "median_err_origin", "p90_err", "undetected_fraction", "beats_random"]
+               "median_err_firsthear", "median_err_origin", "p90_err", "p95_err",
+               "anon_set_upper_bound", "unconditional_rank1", "undetected_fraction", "beats_random"]
 
 
 def anonymity_to_csv_string(rows, manifest, scope_tag) -> str:

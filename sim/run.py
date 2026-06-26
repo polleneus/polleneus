@@ -163,6 +163,10 @@ def _run_anonymity_defenses(args) -> None:
               f"credited={v['credited']}")
     print("note: a credited defense means the rank-1 drop SURVIVED the TTL=inf control on THAT arm")
     print("      (i.e. it is timing-scramble/structural, not message-dropping). Un-credited != useless; see CSV.")
+    print("      (t50=nan means the cohort never reached 50% delivery in the window; gate arms are scored")
+    print("       against the stronger origin_vs_relay adversary -- the conservative direction.)")
+    if args.plot:
+        print("note: --plot is not supported for the anonymity-defenses preset (no plot written).")
 
 
 def main() -> None:

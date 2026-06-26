@@ -135,9 +135,9 @@ coverage (`--preset anonymity-defenses`, default f=0.7) and credited only when a
 **Why a naive "rank-1 dropped" claim is a trap, and how the gate avoids it:**
 - **Same-detected-set intersection** — a defense that merely *slows* the spread shrinks the
   detected set inside the finite window, and a smaller set looks more anonymous purely by
-  survivorship. So baseline vs defended rank-1 is compared **only on messages detected in BOTH
-  arms** (same seed → same cohort), with a `MIN_INTERSECTION_SIZE` floor below which the result is
-  "inconclusive", not "protected".
+  survivorship. So baseline vs defended rank-1 is compared **only on messages detected in the
+  baseline, the defended arm, AND that arm's TTL=∞ control** (same seed → same cohort), with a
+  `MIN_INTERSECTION_SIZE` floor below which the result is "inconclusive", not "protected".
 - **TTL=∞ control, per defense** — either defense could cut rank-1 just by dropping messages: a
   mixing-delayed blob can hit TTL expiry, and a gate-held origination can expire before it is ever
   forwarded. So **each** arm has its own parallel **TTL=∞ control** (`timing_only` for mixing,
@@ -149,8 +149,20 @@ coverage (`--preset anonymity-defenses`, default f=0.7) and credited only when a
   (not the defended source) and must pass first.
 - **Relay-density check** — the gate arm is only trustworthy if nodes actually relayed enough
   foreign traffic (`MIN_RELAY_DENSITY`); a starved gate is an artifact, not a defense.
-- **Cost is always reported** — every arm prints its delivery so a credited anonymity gain is read
-  against what it costs in reach/latency.
+- **Cost is always reported** — every arm prints its delivery **and** median-latency (`t50`, `nan` =
+  the cohort never reached 50% delivery) so a credited anonymity gain is read against what it costs in
+  reach/latency. The gate is scored against a *stronger* adversary than the baseline (the
+  `origin_vs_relay` estimator is added to the best-of for the gate arms) — the conservative direction,
+  making the gate **harder** to credit, never easier.
+
+**Measured result at the shipped defaults** (`mixing_lambda=0.05`, `G=3`, f=0.7): the must-localize
+control passes on the defenses-off baseline (the attack *can* localize it), the same-detected-set
+intersection clears the floor — and **neither defense is credited: defended rank-1 ≈ baseline, so at
+these parameters mixing and the gate do not materially cut the ~30% leak.** Mixing also costs delivery
+(~0.45) and latency; the gate is near-free but equally ineffective here. This apparatus is built to
+*detect* a real drop and refuse an imagined one — not to assert protection exists. A genuine
+defense (stronger λ, larger G, or a different mechanism) remains future work; the honest current
+finding is "no credited gain at the cheap defaults."
 
 Defaults ship **OFF** (`mixing_lambda=0`, `originate_gate_relays=0`): the baseline engine and every
 PR-1 number are bit-identical unless a defense is explicitly enabled.

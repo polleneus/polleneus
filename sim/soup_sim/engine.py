@@ -31,7 +31,8 @@ _INF = float("inf")
 
 
 class Engine:
-    def __init__(self, cfg, mob, buffers, budget, rng, on_deliver, one_hop=False, _pair_order=None):
+    def __init__(self, cfg, mob, buffers, budget, rng, on_deliver, one_hop=False, _pair_order=None,
+                 record_positions=False):
         self.cfg = cfg
         self.mob = mob
         self.buffers = buffers
@@ -56,6 +57,9 @@ class Engine:
         self.setup_starved_blobs = 0
         self.quantization_blobs = 0
         self.contention_blobs = 0
+        # slice-3 anonymity overlay: per-step position log (default off ⇒ bit-identical)
+        self.record_positions = record_positions
+        self.position_log: list = []
 
     def inject(self, blob, node_idx) -> None:
         self.origin.setdefault(blob.id, node_idx)
@@ -146,6 +150,8 @@ class Engine:
         for key in list(self.open):
             if key not in seen:
                 self._close(key)
+        if self.record_positions:                          # passive overlay recorder (anonymity slice)
+            self.position_log.append((t, p0.copy()))
         self.t = t + dt_step
 
     def _close(self, key) -> None:

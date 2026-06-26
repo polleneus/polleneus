@@ -49,6 +49,8 @@ class Config:
     t_setup_slope: float = 0.0        # density-dependent setup: t_setup_at(n)=t_setup + slope*n
     n_channels: int = 3               # shared advertising channels
     cs_radius_mult: float = 1.0       # carrier-sense radius = cs_radius_mult * radius
+    # Slice-3 anonymity: passive adversary sniffer range (0 ⇒ overlay off; bit-identical)
+    adversary_range_mult: float = 0.0  # adversary receiver range = adversary_range_mult * radius
 
     def validate(self) -> None:
         if self.boundary not in ("torus", "walls"):
@@ -89,6 +91,8 @@ class Config:
             raise ValueError("n_channels must be >= 1")
         if self.cs_radius_mult < 1.0:
             raise ValueError("cs_radius_mult must be >= 1 (carrier-sense >= connectivity range)")
+        if self.adversary_range_mult < 0.0:
+            raise ValueError("adversary_range_mult must be >= 0")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

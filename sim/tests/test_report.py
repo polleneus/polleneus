@@ -80,6 +80,32 @@ def test_defense_csv_carries_both_tags_as_columns():
     assert "credited" in s and "3.4" in s                              # verdict + gate relay-density present
 
 
+def test_intersection_csv_carries_tags_and_both_fusion_rules():
+    from soup_sim.report import intersection_to_csv_string, INTERSECTION_FIELDS
+    out = {
+        "scope_tag": "[UPPER BOUND on anonymity]",
+        "intersection_scope_tag": "[INTERSECTION; device-linkage ASSUMED given; UPPER BOUND on anonymity]",
+        "verdict": {"credited": True, "label": "intersection deanonymizes the sender"},
+        "rows": [
+            {"k": 1, "fused_rank1_borda": 0.30, "ci_lo_borda": 0.2, "ci_hi_borda": 0.4, "fused_rank1_score_sum": 0.31,
+             "decoy_rank1": 0.05, "random_floor_fused": 0.008, "delivery": 0.9, "n_samples": 40},
+            {"k": 16, "fused_rank1_borda": 0.80, "ci_lo_borda": 0.7, "ci_hi_borda": 0.9, "fused_rank1_score_sum": 0.78,
+             "decoy_rank1": 0.06, "random_floor_fused": 0.009, "delivery": 0.9, "n_samples": 40},
+        ],
+    }
+    s = intersection_to_csv_string(out, {"master_seed": 13})
+    lines = s.splitlines()
+    assert lines[0].startswith("#") and lines[1].startswith("#")          # both tags as comments
+    header = lines[2]
+    for fld in INTERSECTION_FIELDS:
+        assert fld in header
+    assert "intersection_scope_tag" in header and "per_message_scope_tag" in header
+    assert "param_master_seed" in header
+    assert "headline_credited" in header and "fused_rank1_score_sum" in header
+    assert len(lines) == 2 + 1 + 2                                        # 2 comments + header + 2 K rows
+    assert out["intersection_scope_tag"] in lines[3]                      # tag survives as a column value
+
+
 def test_static_curve_is_monotone_increasing():
     cfg = base()
     rows = static_delivery_sweep(cfg, list(np.linspace(2.0, 10.0, 9)), reps=4)

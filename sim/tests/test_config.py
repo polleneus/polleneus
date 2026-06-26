@@ -34,3 +34,13 @@ def test_rng_substreams_independent_and_deterministic():
     b = c.rng(2).integers(0, 1_000_000, 5)
     assert np.array_equal(a1, a2)
     assert not np.array_equal(a1, b)
+
+
+def test_rng_all_tags_disjoint_incl_intersection():
+    # every tag used across slices must yield a distinct stream — incl. PR-3 top-level tag 7, the PR-2
+    # child path (2,7) [background soup], and the airtime-bootstrap tag 777. (2,7) != top-level 7.
+    c = base()
+    paths = [(0,), (1,), (2,), (3, 0), (4,), (5,), (6,), (7,), (2, 7), (777,)]
+    firsts = [int(c.rng(*p).integers(0, 2**31)) for p in paths]
+    assert len(set(firsts)) == len(paths)        # all streams distinct
+    assert int(c.rng(7).integers(0, 2**31)) != int(c.rng(2, 7).integers(0, 2**31))

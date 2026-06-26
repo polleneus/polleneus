@@ -92,3 +92,54 @@ def test_hearing_respects_hold_lifetime():
     acquired = {(0, 9): 3.0}
     h = hearings(np.array([[58., 50.]]), 10.0, log, acquired, {9: 1e12}, c)
     assert h[(0, 9)] == 3.0
+
+
+# --- PR-3 Task 1: score fusion ------------------------------------------------
+def test_avg_rank_handles_ties():
+    from soup_sim.adversary import _avg_rank
+    r = _avg_rank(np.array([0.0, 0.0, 1.0]))   # two-way tie for best
+    assert r[0] == 0.5 and r[1] == 0.5 and r[2] == 2.0
+
+
+def test_fuse_borda_rewards_consistency():
+    from soup_sim.adversary import fuse_scores
+    from soup_sim.anonymity import rank_of
+    # 4 candidates, 3 messages. Candidate A (idx 1) is ALWAYS 2nd; B/C/D rotate through 1st/3rd/4th.
+    # consistent-2nd must beat the rotating extremes under Borda.
+    m1 = np.array([0.0, 1.0, 2.0, 3.0])   # B 1st, A 2nd, C 3rd, D 4th
+    m2 = np.array([3.0, 1.0, 0.0, 2.0])   # C 1st, A 2nd, D 3rd, B 4th
+    m3 = np.array([2.0, 1.0, 3.0, 0.0])   # D 1st, A 2nd, B 3rd, C 4th
+    fused = fuse_scores([m1, m2, m3], "borda")
+    assert int(np.argmin(fused)) == 1                       # A wins
+    assert rank_of(fused, 1) == 0                           # A is exact-catch
+
+
+def test_fuse_score_sum_big_scale_msg_does_not_dominate():
+    from soup_sim.adversary import fuse_scores
+    # The big-scale message DISAGREES with the consistent winner: without per-message normalization the
+    # huge message dominates and crowns candidate 2 ([300,403,6]); WITH normalization the consistently-
+    # low candidate 0 wins. (A tautology test where cand 0 is min in every message would pass either way.)
+    small = [np.array([0.0, 1.0, 2.0])] * 3
+    huge = np.array([300.0, 400.0, 0.0])
+    fused = fuse_scores(small + [huge], "score_sum")
+    assert int(np.argmin(fused)) == 0
+    # sanity: the UN-normalized sum would instead pick candidate 2 (the regression this guards against)
+    assert int(np.argmin(np.sum(small + [huge], axis=0))) == 2
+
+
+def test_borda_and_score_sum_can_disagree():
+    from soup_sim.adversary import fuse_scores
+    # the two fusion rules are genuinely different estimators (justifying reporting BOTH + crediting the
+    # lower): cand 0 is rank-0 in 2 of 3 (Borda crowns it) but cand 1 is a hair behind the min every
+    # message (tiny normalized score -> score_sum crowns it instead).
+    msgs = [np.array([0.0, 0.01, 5.0]), np.array([0.0, 0.01, 5.0]), np.array([5.0, 0.01, 0.0])]
+    borda = int(np.argmin(fuse_scores(msgs, "borda")))
+    ssum = int(np.argmin(fuse_scores(msgs, "score_sum")))
+    assert borda == 0 and ssum == 1 and borda != ssum      # the rules crown different candidates
+
+
+def test_fuse_empty_raises():
+    import pytest
+    from soup_sim.adversary import fuse_scores
+    with pytest.raises(ValueError):
+        fuse_scores([], "borda")

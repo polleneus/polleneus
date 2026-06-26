@@ -87,6 +87,31 @@ def anonymity_defense_to_csv_string(out, manifest) -> str:
     return buf.getvalue()
 
 
+INTERSECTION_FIELDS = ["k", "fused_rank1_borda", "ci_lo_borda", "ci_hi_borda", "fused_rank1_score_sum",
+                       "decoy_rank1", "random_floor_fused", "delivery", "n_samples"]
+
+
+def intersection_to_csv_string(out, manifest) -> str:
+    """One row per K. Both fusion rules (borda headline + score_sum sensitivity), the decoy-centrality
+    control, and the fused-random floor travel per row. `headline_credited`/`headline_label` are the
+    TABLE-level verdict (the headline-K decision), repeated on every row — NOT per-row. The generic tag
+    is the PER-MESSAGE estimator scope (it does not model intersection — the FUSION layer does, hence
+    intersection_scope_tag); both travel as columns + comments (a comment alone is dropped by readers)."""
+    man = list(manifest.keys())
+    header = (INTERSECTION_FIELDS + ["headline_credited", "headline_label",
+              "per_message_scope_tag", "intersection_scope_tag"] + [f"param_{k}" for k in man])
+    buf = io.StringIO()
+    buf.write(f"# per-message estimator scope: {out['scope_tag']}\n# fusion layer: {out['intersection_scope_tag']}\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    v = out["verdict"]
+    for r in out["rows"]:
+        row = [r.get(k) for k in INTERSECTION_FIELDS] + [v["credited"], v["label"],
+               out["scope_tag"], out["intersection_scope_tag"]] + [manifest[k] for k in man]
+        w.writerow(row)
+    return buf.getvalue()
+
+
 def anonymity_plot(out, path) -> bool:
     """rank-1 probability vs coverage f per placement arm; scope tag in the title."""
     try:

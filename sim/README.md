@@ -23,6 +23,7 @@ python -m venv .venv
 .venv/Scripts/python run.py --preset airtime-knee --out out/airtime.csv --plot out/airtime.png
 .venv/Scripts/python run.py --preset anonymity    --out out/anon.csv    --plot out/anon.png
 .venv/Scripts/python run.py --preset anonymity-defenses --out out/anon_defense.csv  # PR-2: mixing+gate vs baseline
+.venv/Scripts/python run.py --preset anonymity-intersection --out out/anon_intersection.csv  # PR-3: rank-1 vs K
 ```
 `run.py` sweeps mean degree and writes a CSV (with the **full parameter manifest** per row,
 so any point is reproducible from the file). `static-cliff` writes the delivery curve;
@@ -167,6 +168,65 @@ finding is "no credited gain at the cheap defaults."
 Defaults ship **OFF** (`mixing_lambda=0`, `originate_gate_relays=0`): the baseline engine and every
 PR-1 number are bit-identical unless a defense is explicitly enabled.
 
+## Anonymity intersection (slice 3 — PR-3)
+The dominant deferred threat PR-1/PR-2 named but did not model: a persistent device originates **K**
+messages and the adversary, **assuming it can link them to one device**, fuses its per-message
+rankings. A weak per-message signal sharpens as the true origin stays consistently plausible across
+all K while innocent relays are only coincidentally plausible in some. `--preset
+anonymity-intersection` sweeps K∈{1,2,4,8,16} at fixed coverage; one engine run per rep serves the
+whole sweep (fuse prefixes of a K-message plan). Messages are **staggered in origination time** (each
+is an independent geometric constraint), realized via future `created_at` + the engine's
+acquisition-time causality.
+
+- **Fusion — Borda (headline) + score-sum (sensitivity):** Borda sums per-message average-ranks
+  (scale-free, conservative); score-sum sums per-message normalized scores (≈ Bayesian intersection).
+  Both are reported; on divergence the **lower** (more anonymity-favorable) rank-1 is the credited
+  headline (never credit the adversary a fusion-rule coin-flip).
+
+> ⚠️ **Linkage is ASSUMED given** — PR-3 does NOT model *how* the K messages are linked (PHY device
+> fingerprinting is a separate slice). This is the worst case (parent §10 "assume the handset is
+> uniquely labeled"), so the credited number is an **UPPER BOUND on anonymity**. Still single-event-
+> per-message-style *external-passive* only; insider nodes and defenses-against-intersection (PR-4)
+> are deferred. The `intersection_scope_tag` saying so travels on every emitted row.
+
+**Honesty controls (credit only a real, originator-specific pin):**
+- **Fused-random floor** — fuse K random-guess vectors; its rank-1 must stay ~1/N (fusion itself
+  creates no signal). The credited gain is the climb above this floor.
+- **Decoy-centrality confound (make-or-break)** — fusion could pin whoever is most *central* in the
+  diffusion, not the originator. The decoy = the **highest distinct-foreign-relay innocent node**; the
+  same K-message fusion is run against it. Credit requires the originator's fused rank-1 to beat the
+  decoy's by `DECOY_MARGIN` — else the result is "confounded by centrality," discounted not credited.
+- **Must-localize (inherited)** — the per-message estimator must already be capable (PR-1 gate). Note
+  this capability control uses PR-1's *best-of* estimator, while fusion here is reachability-only — so
+  the capability bar is, if anything, easier to clear than the fused attack (the conservative direction).
+- **Decoy control under both rules** — the centrality check is run for Borda **and** score-sum and the
+  worst (higher) decoy rank-1 is used, so it is never weaker than the rule that produced the credited
+  (lower) headline.
+- **Powered** — ≥ `MIN_INTERSECTION_SAMPLES` (device×seed) fusion samples, else "underpowered."
+- **Control A is wired into the verdict** — the exposure threshold is taken over the *measured*
+  fused-random floor (`max(1/N, fused_random_floor)`), so if fusion ever manufactured a high floor the
+  bar rises with it; credit is the climb **above the floor fusion actually produced**.
+
+**Measured result at the shipped defaults** (`--preset anonymity-intersection`, seed 12345, f=0.7, 8
+tracked devices × 12 reps = 96 fusion samples, K∈{1,2,4,8,16}): must-localize passes, the fused-random
+floor stays ~1/N (≤0.01) and the central-decoy stays at **0.00 at every K** (centrality ruled out) — and
+the sender's fused rank-1 **climbs 0.09 → 0.16 → 0.22 → 0.45 → 0.72** as K goes 1→16, crossing the 0.5
+exposure threshold between K=8 and K=16. Borda and score-sum **coincide** at this powered default (the
+`min()` "credit the lower" rule then costs nothing; on smaller-sample seeds where they diverge it credits
+the more anonymity-favorable one). At K=16 the gate **CREDITS "intersection deanonymizes the sender"**
+(0.72 @ decoy 0.00). This is the headline finding of the slice: **multi-session intersection breaks
+sender anonymity *under assumed device-linkage* even where a single message (K=1, rank-1 0.09 ≈ the
+floor) does not** — exactly the dominant threat PR-1/PR-2 deferred. (Exact numbers are seed-specific; the
+*shape* — monotone climb crossing the threshold, decoy flat — is the robust result.)
+
+Additive and **default-inert**: `intersection_sweep` is a new entry point; `anonymity_sweep` /
+`anonymity_defense_sweep` and every prior number are bit-identical (no shared mutable path changed).
+Candidate set = all N nodes (cone deferred, as in PR-1); the fused anonymity-set size is not separately
+emitted (the headline is fused rank-1). The per-message estimator fused here is **reachability-only**
+(the principled diffusion-source estimator; it can't oracle-pick per message the way PR-1's reported
+best-of can), so K=1 is the single-event *reachability* rank-1 — **≤ PR-1's oracle-best-of headline**,
+i.e. the conservative (anonymity-favorable) direction.
+
 ## The gate (why you can trust the curve)
 `tests/test_integration_percolation.py`:
 1. **Oracle KAT** — in the static unbounded regime the engine's multi-hop fixpoint delivers
@@ -181,9 +241,9 @@ PR-1 number are bit-identical unless a defense is explicitly enabled.
 billing, static fixpoint) · `workload` + `metrics` (oracle, fair-chance denominator,
 utilization/circulation/T50) · `percolation` (union-find + interval-reachability ground truth) ·
 `knee` (saturation-knee estimator + binding publish-gate) · `scenario` (delivery sweep,
-airtime sweep + control arms, anonymity sweep + defense sweep, per-rep CIs) ·
-`anonymity` + `adversary` (source-localization estimators, must-localize/exposure/defense gates) ·
-`report` (CSV + plot).
+airtime sweep + control arms, anonymity sweep + defense sweep + intersection sweep, per-rep CIs) ·
+`anonymity` + `adversary` (source-localization estimators, score fusion, must-localize/exposure/
+defense/intersection gates) · `report` (CSV + plot).
 
 ## Fidelity to the parent design (and bias direction)
 | Modeled mechanic | Parent § | Abstraction → bias |
@@ -196,7 +256,7 @@ airtime sweep + control arms, anonymity sweep + defense sweep, per-rep CIs) ·
 | contention population | §11 | carrier-sense **max-of-pair, single-snapshot** degree (not the full co-channel union) → **optimistic** (under-counts contenders) |
 | decode failure (`p_fail`) | §8 | applied as a deterministic `(1−p_fail)` mean factor, not independent per-blob → removes tail/variance risk → **optimistic** |
 | anonymity (source-estimator) | §10 | slice-3 PR-1: receiver-grid source-localization, **UPPER BOUND on anonymity** |
-| anonymity: single-event only (no cross-message intersection) | §10 | **optimistic for privacy** — the dominant deferred threat |
+| anonymity (PR-1) single-event *per-message* estimator (no fusion) | §10 | **optimistic for privacy** for a persistent author — now **measured** by the PR-3 intersection slice below |
 | anonymity: external passive only (no insider/compromised) | §10 | **optimistic for privacy** (deferred) |
 | anonymity: uniform vs chokepoint placement | §10 | chokepoint reported as the adversary; uniform shown only as the weaker arm |
 | anonymity: candidate set = all nodes (cone deferred) | §10 | anon-set crowd inflated → **optimistic for privacy** |
@@ -206,6 +266,10 @@ airtime sweep + control arms, anonymity sweep + defense sweep, per-rep CIs) ·
 | defense credit: same-detected-set intersection | §10 | removes survivorship (slowed spread ≠ anonymity); below `MIN_INTERSECTION_SIZE` → inconclusive, not credited |
 | defense credit: per-arm TTL=∞ control | §10 | each defense has its own TTL=∞ control (mixing + gate); a gain that dies at TTL=∞ is **not** credited as anonymity (it was message-dropping) |
 | defense credit: must-localize (defenses-off) baseline + per-node relay-density | §10 | no credit if the attack couldn't localize the **defenses-off** baseline, or if the gate arm was relay-starved (per-node density, not per-relaying-node) |
+| anonymity intersection (multi-session) | §10 | slice-3 PR-3: fused rank-1 over K **linked** originations, **UPPER BOUND**; device-linkage ASSUMED given (PHY = separate slice) |
+| intersection: linkage assumed perfect | §10 | **worst-case upper bound** (real linkage is partial/noisy) — the safe direction for a privacy claim |
+| intersection credit: decoy-centrality + fused-random controls | §10 | credit only if the ORIGINATOR is pinned and the most-central innocent relay (decoy) is not; fusion itself creates no signal (random floor stays ~1/N) |
+| intersection: credited headline = lower of Borda/score-sum | §10 | **conservative** — never credit the adversary a fusion-rule coin-flip |
 | crypto / tokens | §5/§9 | **not modeled** (deferred) |
 | clustered "gathering" mobility | — | RWP open-field only (clustered mobility is a named fast-follow) → **optimistic** |
 | delivery | — | arrival == delivery (ignores read-window / FS) → **upper bound** |

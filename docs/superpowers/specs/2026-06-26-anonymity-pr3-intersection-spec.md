@@ -1,6 +1,6 @@
 # Feature Spec — Multi-Session Intersection Attack on Sender Anonymity (Slice 3, PR-3)
 
-**Status:** Draft → CTO design-direction approved (score-fusion, both fusion rules) → **awaiting CTO spec sign-off**
+**Status:** Draft → CTO design-direction approved (score-fusion, both fusion rules) → **CTO SIGN-OFF (2026-06-26)** — authorizes the PR-3 implementation plan.
 **Date:** 2026-06-26
 **Parent design:** [polleneus v0.5](2026-06-25-polleneus-design.md) · **Builds on:** [anonymity sim slice 3, PR-1/PR-2](2026-06-26-anonymity-sim-spec.md)
 **Roadmap:** measures **the dominant deferred threat** the prior slice named but did not model — *if the same device originates K messages and the adversary can link them, how fast does sender anonymity collapse, and at what K is the originator effectively pinned?* This is the honest number release-blocker #1 needs before any "anonymous" claim.

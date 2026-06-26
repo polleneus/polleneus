@@ -15,10 +15,10 @@ from .blob import Blob
 from .cell_list import neighbor_pairs
 from .percolation import same_component_pair_fraction, placement
 from .knee import find_knee, binding_decomposition, binding_gate
-from .adversary import place_receivers, realized_coverage, hearings, estimate
+from .adversary import place_receivers, realized_coverage, hearings, estimate, fuse_scores
 from .anonymity import (localization_error, rank_of, anonymity_set_size, quantiles,
-                        mustlocalize_gate, exposure_gate, defense_gate, SCOPE_TAG, DEFENSE_SCOPE_TAG,
-                        MIN_RELAY_DENSITY)
+                        mustlocalize_gate, exposure_gate, defense_gate, intersection_gate,
+                        SCOPE_TAG, DEFENSE_SCOPE_TAG, INTERSECTION_SCOPE_TAG, MIN_RELAY_DENSITY)
 from .geometry import dist2 as _dist2
 
 
@@ -550,6 +550,105 @@ def anonymity_defense_sweep(base_cfg, f, reps):
                  "intersection": inter_gate, "verdict": gate_verdict, "cost": _cost("gate")},
         "scope_tag": SCOPE_TAG, "defense_scope_tag": DEFENSE_SCOPE_TAG,
     }
+
+
+def _tracked_score_vectors(art, receivers, cfg, msg_ids, rng_est, hearings_by_blob, reach_cache):
+    """Per DETECTED tracked message (in msg_ids order): the reachability estimator's per-candidate
+    score vector (length n), seeded at that message's own origination time. Undetected messages
+    (heard by no receiver) are skipped — they carry no fusion evidence. `reach_cache` is keyed by
+    origination time t0: the forward-reach matrix depends only on (episodes, t0, receivers), so
+    messages sharing a t0 (same K-index across devices) reuse one matrix — a big speedup."""
+    log = art["position_log"]
+    adv_range = cfg.adversary_range_mult * cfg.radius
+    created = {bid: c for (bid, _s, c, _ttl) in art["cohort"]}
+    vectors, detected = [], []
+    for bid in msg_ids:
+        mh = hearings_by_blob.get(bid)
+        if not mh:
+            continue
+        fh = min(t for _li, t in mh)
+        cand_fh = _anon_pos_at(log, fh)
+        t0 = created[bid]
+        reach = reach_cache.get(t0)
+        if reach is None:
+            reach = _reach_capped(_forward_reach_matrix(art["episodes"], log, receivers, t0,
+                                                        art["n"], adv_range, cfg))
+            reach_cache[t0] = reach
+        est = estimate("reachability", mh, receivers, cand_fh, rng_est, reach=reach)
+        vectors.append(np.asarray(est["scores"], float))
+        detected.append(bid)
+    return vectors, detected
+
+
+def _hearings_by_blob(art, receivers, cfg):
+    """{blob_id: [(recv_idx, first_hear_time), ...]} for one receiver layout — computed once per rep
+    so every tracked device reuses it."""
+    adv_range = cfg.adversary_range_mult * cfg.radius
+    created = {bid: c for (bid, _s, c, _ttl) in art["cohort"]}
+    expiry = {bid: created[bid] + t for (bid, _s, _c, t) in art["cohort"]}
+    H = hearings(receivers, adv_range, art["position_log"], art["acquired"], expiry, cfg)
+    by_blob = {}
+    for (li, bid), t in H.items():
+        by_blob.setdefault(bid, []).append((li, t))
+    return by_blob
+
+
+def intersection_sweep(cfg, k_values, f, reps, n_tracked=3, stride=2.0):
+    """Fused sender-localization vs K linked originations at fixed coverage f. One engine run per rep
+    yields the whole K-sweep (fuse prefixes of each device's k_max plan). Borda (headline) + score-sum
+    (sensitivity); fused-random floor + decoy-centrality control. Every number an UPPER BOUND."""
+    k_max = max(k_values)
+    mustloc = anonymity_sweep(cfg, [0.95], reps=1)["mustlocalize"]   # capability control (reuse PR-1)
+    acc = {k: {"borda_o": [], "sum_o": [], "borda_d": [], "rand": [], "delivery": [], "inter": []}
+           for k in k_values}
+    for rep in range(reps):
+        c = replace(cfg, master_seed=_seed_for(cfg.master_seed, 0, rep))
+        art = _run_one_anonymity_tracked(c, k_max, n_tracked, stride)
+        recv = place_receivers(c, f, "uniform", c.rng(4))
+        rng_est = c.rng(6)                                          # ONE persistent estimator rng per rep
+        tracked_nodes = set(art["tracked"])
+        relayed = art["relayed"]
+        decoy = max((nd for nd in range(c.n) if nd not in tracked_nodes),
+                    key=lambda nd: relayed.get(nd, 0), default=None)
+        cand0 = _anon_pos_at(art["position_log"], c.warmup)
+        by_blob = _hearings_by_blob(art, recv, c)                   # once per rep (reused by all devices)
+        reach_cache = {}                                            # keyed by t0; shared across devices
+        for dev, ids in art["tracked"].items():
+            vecs, detected = _tracked_score_vectors(art, recv, c, ids, rng_est, by_blob, reach_cache)
+            rvecs = [estimate("random_guess", [(0, 0.0)], recv, cand0, rng_est)["scores"] for _ in detected]
+            for k in k_values:
+                if len(vecs) < k:
+                    continue
+                fb = fuse_scores(vecs[:k], "borda")
+                fs = fuse_scores(vecs[:k], "score_sum")
+                fr = fuse_scores(rvecs[:k], "borda")
+                acc[k]["borda_o"].append(rank_of(fb, dev) == 0)
+                acc[k]["sum_o"].append(rank_of(fs, dev) == 0)
+                acc[k]["rand"].append(rank_of(fr, dev) == 0)
+                if decoy is not None:
+                    acc[k]["borda_d"].append(rank_of(fb, decoy) == 0)
+                acc[k]["delivery"].append(art["delivery"])
+                acc[k]["inter"].append(len(detected))
+    rows = []
+    for k in k_values:
+        d = acc[k]
+        m, lo, hi = mean_ci(d["borda_o"])
+        rows.append({
+            "k": k, "fused_rank1_borda": m, "ci_lo": lo, "ci_hi": hi,
+            "fused_rank1_score_sum": float(np.mean(d["sum_o"])) if d["sum_o"] else 0.0,
+            "decoy_rank1": float(np.mean(d["borda_d"])) if d["borda_d"] else 0.0,
+            "random_floor_fused": float(np.mean(d["rand"])) if d["rand"] else 0.0,
+            "delivery": float(np.mean(d["delivery"])) if d["delivery"] else 0.0,
+            "n_samples": len(d["borda_o"]),
+        })
+    floor = 1.0 / cfg.n
+    hk = next(r for r in rows if r["k"] == k_max)
+    credited = min(hk["fused_rank1_borda"], hk["fused_rank1_score_sum"])   # honest: lower on divergence
+    verdict = intersection_gate(credited, hk["decoy_rank1"], floor, mustloc["ok"], hk["n_samples"])
+    return {"rows": rows, "mustlocalize": mustloc, "verdict": verdict, "headline_k": k_max,
+            "random_floor": floor,
+            "fusion_divergence": abs(hk["fused_rank1_borda"] - hk["fused_rank1_score_sum"]),
+            "scope_tag": SCOPE_TAG, "intersection_scope_tag": INTERSECTION_SCOPE_TAG}
 
 
 def crossing_0p5(densities, mean_ratios) -> float:

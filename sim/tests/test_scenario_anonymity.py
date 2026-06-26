@@ -116,6 +116,44 @@ def test_run_tracked_deterministic():
     assert a["acquired"] == b["acquired"] and a["tracked"] == b["tracked"]
 
 
+def test_intersection_sweep_structure_and_determinism():
+    from soup_sim.scenario import intersection_sweep
+    a = intersection_sweep(tiny(), k_values=[1, 2], f=0.7, reps=1, n_tracked=2, stride=2.0)
+    b = intersection_sweep(tiny(), k_values=[1, 2], f=0.7, reps=1, n_tracked=2, stride=2.0)
+    assert a["rows"] == b["rows"]                                   # deterministic
+    assert "UPPER BOUND" in a["intersection_scope_tag"] and "linkage" in a["intersection_scope_tag"].lower()
+    assert "credited" in a["verdict"]
+    for r in a["rows"]:
+        assert {"k", "fused_rank1_borda", "fused_rank1_score_sum", "decoy_rank1",
+                "random_floor_fused", "delivery", "n_samples"} <= set(r)
+    assert [r["k"] for r in a["rows"]] == [1, 2]
+
+
+def base_intersection_cfg():
+    return Config(n=120, width=120.0, height=120.0, radius=10.0, boundary="torus", mobility="rwp",
+                  speed_min=2.0, speed_max=2.0, dt=0.5, ttl=120.0, buffer_cap=200, throughput_ideal=1e9,
+                  alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=30.0, measure_window=120.0,
+                  drain=20.0, n_messages=120, seen_margin=120.0, master_seed=13, adversary_range_mult=1.0)
+
+
+@pytest.mark.slow
+def test_intersection_sharpens_with_k():
+    from soup_sim.scenario import intersection_sweep
+    cfg = base_intersection_cfg()
+    # n_tracked=8 x reps=4 => ~32 fusion samples (clears MIN_INTERSECTION_SAMPLES=24); raising n_tracked
+    # is nearly free thanks to the per-t0 reach cache (reach depends on K distinct t0s, not device count).
+    out = intersection_sweep(cfg, k_values=[1, 4, 16], f=0.7, reps=4, n_tracked=8, stride=2.0)
+    rows = {r["k"]: r for r in out["rows"]}
+    # intersection must NOT make the originator harder to find as K grows (monotone-ish up)
+    assert rows[16]["fused_rank1_borda"] >= rows[1]["fused_rank1_borda"] - 1e-9
+    # the fused-random floor stays near 1/N (fusion itself creates no signal)
+    assert rows[16]["random_floor_fused"] <= 5.0 / cfg.n
+    # K=1 borda ~ a single message's rank-1 (continuity); borda vs score-sum not wildly apart at K=1
+    assert abs(rows[1]["fused_rank1_borda"] - rows[1]["fused_rank1_score_sum"]) <= 0.5
+    # powered enough to reach a real verdict (not the underpowered early return)
+    assert "underpowered" not in out["verdict"]["label"].lower()
+
+
 def test_report_lines_hard_gate_and_scope_tag():
     from run import anonymity_report_lines
     cfg = tiny()

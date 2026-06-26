@@ -44,6 +44,32 @@ def test_receiver_hears_in_range_holder_only():
     assert h[(0, 7)] == 0.0 and (1, 7) not in h
 
 
+def test_first_spy_points_at_earliest_receiver():
+    from soup_sim.adversary import estimate
+    recv = np.array([[0., 0.], [100., 0.], [200., 0.]])
+    hear = [(0, 5.0), (1, 9.0), (2, 14.0)]
+    cands = np.array([[2., 0.], [150., 0.]])
+    out = estimate("first_spy", hear, recv, cands, np.random.default_rng(0))
+    assert np.allclose(out["point"], [0., 0.]) and out["scores"][0] < out["scores"][1]
+
+
+def test_reachability_ranks_true_source_top():
+    from soup_sim.adversary import estimate
+    recv = np.array([[0., 0.], [50., 0.], [100., 0.], [150., 0.]])
+    hear = [(0, 1.0), (1, 3.0), (2, 5.0), (3, 7.0)]          # gradient: source near x=0
+    cands = np.array([[1., 0.], [80., 0.], [149., 0.]])
+    # reach[c][r] ~ |cand_x - recv_x| (spread reaches nearer receivers sooner)
+    reach = np.array([[abs(cx - rx) for rx in (0., 50., 100., 150.)] for cx in (1., 80., 149.)])
+    out = estimate("reachability", hear, recv, cands, np.random.default_rng(0), reach=reach)
+    assert int(np.argmin(out["scores"])) == 0               # candidate nearest the source ranks top
+
+
+def test_random_guess_is_uniform_permutation():
+    from soup_sim.adversary import estimate
+    out = estimate("random_guess", [(0, 1.0)], np.array([[0., 0.]]), np.zeros((5, 2)), np.random.default_rng(1))
+    assert sorted(out["scores"].tolist()) == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
 def test_hearing_respects_hold_lifetime():
     # node acquires blob 9 only at t=3 -> not heard before then
     c = cfg(width=2000.0, height=200.0, boundary="walls")

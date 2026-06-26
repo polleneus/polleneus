@@ -51,6 +51,44 @@ def realized_coverage(receivers, adv_range, cfg, rng, n_mc=20000) -> float:
     return float(np.mean(covered))
 
 
+def estimate(method, msg_hearings, receivers, cand_pos, rng, reach=None) -> dict:
+    """Rank candidates by suspicion (LOWER score = more suspicious) + a point estimate.
+    msg_hearings = list[(recv_idx, first_hear_time)]; cand_pos = (C,2) candidate positions at
+    the reference time; reach = (C,R) predicted forward-reachability times (reachability only).
+
+    first_spy      — point = earliest-hearing receiver's location; score = candidate distance to it.
+    reachability   — diffusion-source: score = -correlation(predicted reach-times, observed hear-times)
+                     over the heard receivers (robust to the unknown origination offset/scale).
+    random_guess   — no-signal floor.
+    """
+    C = len(cand_pos)
+    if method == "random_guess":
+        return {"point": cand_pos[int(rng.integers(0, C))] if C else (0.0, 0.0),
+                "scores": rng.permutation(C).astype(float)}
+    if not msg_hearings:
+        return {"point": (0.0, 0.0), "scores": np.zeros(C)}
+    earliest_recv = min(msg_hearings, key=lambda rt: rt[1])[0]
+    point = np.asarray(receivers[earliest_recv], float)
+    if method == "first_spy":
+        return {"point": point, "scores": np.linalg.norm(np.asarray(cand_pos, float) - point, axis=1)}
+    if method == "reachability":
+        rec_idx = [r for (r, _t) in msg_hearings]
+        obs = np.array([t for (_r, t) in msg_hearings], float)
+        if reach is None or len(rec_idx) < 2 or np.allclose(obs, obs[0]):
+            # not enough gradient to correlate -> fall back to first-spy geometry
+            return {"point": point, "scores": np.linalg.norm(np.asarray(cand_pos, float) - point, axis=1)}
+        scores = np.zeros(C)
+        for c in range(C):
+            pred = np.asarray(reach[c], float)[rec_idx]
+            if np.allclose(pred, pred[0]):
+                scores[c] = 0.0                         # candidate predicts no gradient -> uninformative
+            else:
+                corr = np.corrcoef(pred, obs)[0, 1]
+                scores[c] = -corr if np.isfinite(corr) else 0.0
+        return {"point": np.asarray(cand_pos[int(np.argmin(scores))], float), "scores": scores}
+    raise ValueError(f"unknown estimator method {method!r}")
+
+
 def hearings(receivers, adv_range, position_log, acquired, blob_expiry, cfg) -> dict:
     """{(recv_idx, blob_id): first_hear_time} — earliest log step where a holder of the blob
     (held over [acquire, expiry]) is within adv_range of the receiver. Hold-until-expiry

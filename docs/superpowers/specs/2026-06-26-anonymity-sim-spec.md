@@ -1,6 +1,6 @@
 # Feature Spec — Anonymity & Source-Localization (Simulator Slice 3) — v2
 
-**Status:** Draft → **fan-out review round 1 (folded, v2)** → **CTO sign-off pending**.
+**Status:** Draft → fan-out review round 1 (folded, v2) → **CTO SIGN-OFF (2026-06-26)** — authorizes PR-1's plan first.
 **Date:** 2026-06-26
 **Parent design:** [polleneus v0.4](2026-06-25-polleneus-design.md) · **Builds on:** [soup-sim slice 1](2026-06-25-soup-sim-spec.md), [airtime slice 2](2026-06-25-airtime-sim-spec.md)
 **Roadmap:** measures a **lower-bound proxy for the existential security promise** — *for a single origination event, against an external passive receiver grid, can the adversary localize who originated a message?*

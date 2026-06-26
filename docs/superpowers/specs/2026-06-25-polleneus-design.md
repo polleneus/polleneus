@@ -26,7 +26,23 @@
 
 ## 0. Changelog
 
-- **v0.4 (this doc).** Third red-team: designed + selected the **link-local token source**, then attacked all
+- **v0.5 (this doc).** Honesty pass folding the `polleneus/research` adversarial-evidence findings (and the
+  measured simulator results). Corrections, all in the *conservative* direction: **deletion guarantee
+  de-inverted** — time-ratcheted crypto-shred of *your own copy* is **exact** (key destroyed ⇒ undecryptable
+  w.p. 1), not "≥1−p"; the optional Bloom-Filter-Encryption puncture's `p` is **collateral over-deletion**
+  (an *availability* cost: an unrelated kept blob may be lost), **not** a chance the deleted message survives —
+  the real limit is that deletion is **device-local** (can't reach a hostile retainer's ciphertext, screenshots,
+  backups, notifications). **Device-linkage empirics corrected**: PHY fingerprinting uniquely links **~40–50%**
+  of handsets in an open crowd (worst-case ~1.0 closed-set/lab), not "~100%"; we still *assume* ≈1.0 as the
+  conservative design posture. **"per-device cap" → "per-chain rate-friction"** (Douceur: no true offline
+  serverless quota; a device runs many chains, faster hash HW lowers latency). **ZK-spend deferred to post-v1**
+  — v1 uses a simpler *audited* spend primitive (blind-RSA / BBS show); bespoke Fiat-Shamir ZK ships only after
+  the §9.5 re-spec + a layered audit (88% of disclosed SNARK bugs break soundness). iOS reframed **accelerator,
+  not symmetric peer**. Measured anchors confirmed: connectivity floor d_c≈4.51 (delivery 0.5 just above it,
+  saturation ~d 6–7); airtime model corrected (no /n_channels; ~3× less optimistic); source-localization
+  measurably exposes the *originator* (~29% exact-catch at high passive-grid coverage) while receiver+content
+  stay hidden — motivating the §10 origination defenses.
+- **v0.4.** Third red-team: designed + selected the **link-local token source**, then attacked all
   four v0.3 primitives. Adopted the **"Reciprocity Hourglass"** token source (§9 — Witnessed-Relay-Reciprocity
   spine × hash-based sequential **PoSW** + zero-knowledge nullifier; *earn-by-relaying* or *sweat-mint*). Red-team
   fixes folded in: **token-anchored nullifier + gossiped seen-set** (rescues the relay-token rate-limit — the
@@ -69,7 +85,7 @@ That's the system. Everything below is the careful version.
 ### Goals (ranked)
 1. **Works with no internet** — full function in a total blackout.
 2. **Hide who talks to whom**, from everyone but the two ends — including *which blob is real*.
-3. **Ephemeral** — self-destruct on an absolute timer; unreadable-after-read (probabilistically) by default.
+3. **Ephemeral** — TTL-bounded; your own copy becomes unreadable at expiry (and optionally after read) by **exact on-device crypto-erase**. Device-local only — not durable erasure elsewhere (§7).
 
 ### Non-goals (v1)
 Group chat; media; multi-device sync; text > 255 chars; guaranteed/real-time delivery; metropolis-wide offline delivery; durable deletion against a hostile node that retains ciphertext; a true per-sender quota.
@@ -88,7 +104,7 @@ Group chat; media; multi-device sync; text > 255 chars; guaranteed/real-time del
 |---|---|---|
 | Curious relay | Carries opaque blobs | ✅ Learns nothing |
 | One-time co-located sniffer | RF logging, short window | ✅ Learns only "runs the app & emits blobs" |
-| **SDR / PHY-fingerprinting adversary** | CFO/IQ radiometrics → IDs a handset ~100% in <1 min, **survives MAC/payload rotation** | ⚠️ **Assume device-linkage ≈ 1.0.** Defense rests on *origination-event anonymity*, reported as a **measured source-estimator probability** (§10) — the only property that survives perfect device labeling |
+| **SDR / PHY-fingerprinting adversary** | CFO/IQ radiometrics, **survives MAC/payload rotation**. Empirically links **~40–50%** of distinct handsets uniquely in an open crowd (worst-case ~1.0 in closed-set/temperature-stable lab) — not "~100%" | ⚠️ **Design posture: assume device-linkage ≈ 1.0** (conservative — defend as if perfectly labeled). Defense rests on *origination-event anonymity*, reported as a **measured source-estimator probability** (§10) — the only property that survives device labeling |
 | **Multi-sensor mesh** (dozen Pi+BLE sniffers) | Triangulate each ID's *first sighting* → first-emergence provenance | ⚠️ Countered by the probabilistic origination license + manufactured cover + Poisson mixing (§10); realized anonymity is measured, not assumed |
 | Persistent wide-coverage adversary | Blanket sensors + long-term statistical disclosure | ❌ Not defeated, only made to cost O(crowd-size) hardware; K is per-session and decays across repeat attendance |
 | Network/internet observer | Logs bridge traffic | ⚠️ Defended only via Tor/mixnet bridge (§15) |
@@ -119,7 +135,7 @@ Group chat; media; multi-device sync; text > 255 chars; guaranteed/real-time del
 
 ### 5.2 Encryption (serverless, forward-secret, deniable)
 - **Forward secrecy by default — time-ratcheted, not puncture-on-read.** Fine-grained time **sub-epochs** inside the ≤7 d TTL; decryption keys for elapsed sub-epochs are deleted on a schedule driven by the §6 **gossip-median mesh clock — whether or not the message was read.** So a seizer cannot freeze the clock to recover unread mail (the *message-suppression* hole the old read-triggered design had), and the pre-read seizure window is bounded. Per-message **disappear-after-read** is an *optional extra* puncture on top, not the FS mechanism.
-- **Honest restatement (kills the v0.3 overclaim):** the guarantee is **probabilistic**, not absolute. The only buildable puncturable schemes (Bloom-Filter Encryption / SafetyPin-class) carry a false-positive *retention* probability and very large keys; time-ratcheting bounds key size to a small constant (sub-epochs remaining). State it as *"unreadable after read/expiry with probability ≥ 1 − p"* for a published p, and **surface p in the §13 UX.**
+- **Honest restatement (de-inverts the v0.4 "≥1−p" framing).** Deleting *your own copy* is **EXACT, not probabilistic**: the time-ratchet destroys the elapsed-sub-epoch key, so the blob is undecryptable **with probability 1** (a destroyed key cannot be un-destroyed). There is no "survives with probability p" for the time-ratchet path. The `p` only appears if you use the *optional* Bloom-Filter-Encryption puncture for per-message disappear-after-read — and there `p` is a **false-positive OVER-deletion**: with probability ~p an *unrelated, not-meant-to-be-deleted* blob is collaterally rendered unreadable. That is an **availability cost (you may lose mail you wanted to keep)**, NOT a chance the targeted message survives. Time-ratcheting (exact, small constant key size) is the default for exactly this reason; BFE puncture is opt-in with its availability `p` surfaced. **The real limit on "delete" is not `p` — it is that deletion is DEVICE-LOCAL** (see §7): it cannot reach ciphertext a hostile relay retains, screenshots, OS backups, or notification mirrors.
 - **Hardware-honored shred.** Key state is wrapped under a key held in **SE/TEE (StrongBox)**-backed Keystore (auth-bound, `setUnlockedDeviceRequired`); ratchet/puncture rewrites only the encrypted blob, and "shred"/panic-wipe = destroy the wrapping key (crypto-erase immune to wear-leveled NAND remnants). Surface in-app where SE/TEE is unavailable.
 - **Sealed-sender:** fresh ephemeral per message; sender identity + authenticator live **inside** the seal (anonymous to the world, authenticated to the friend).
 - **Deniable authentication:** a **designated-verifier / MAC-from-the-shared-secret** authenticator — the recipient is convinced of authorship, but it is **not transferable proof** under coercion.
@@ -159,9 +175,9 @@ Relay tokens (§9) also carry a **signed TTL (≤ 7 d)** so a pre-mined war-ches
 
 ## 7. Deletion Model
 
-- **Default = time-ratcheted crypto-shred (§5).** A read can optionally puncture the per-message key; regardless, sub-epoch keys are deleted on the clock, so a copy becomes unreadable (probability ≥ 1 − p) *to the recipient and any future seizer* with **zero wire signal.** Every other copy dies at the global TTL.
+- **Default = time-ratcheted crypto-shred (§5).** Sub-epoch keys are deleted on the clock, so your copy becomes unreadable **EXACTLY** (key destroyed ⇒ undecryptable w.p. 1) *to you and any future seizer of your device* with **zero wire signal.** A read can optionally puncture the per-message key sooner. Every other node's copy dies at the global TTL. (No "≥1−p" survival term — that was an inverted framing; see §5.2.)
 - **Optional global early-delete = decoupled, gated token, sender-fired, OFF by default, labeled "emits a detectable signal."** `delete-token = H(domain_delete‖secret)` is **decoupled from `message-ID`** (purge without proving the blob was real; mint decoy deletes for cover). Red-team hardening: (1) emitting a delete **costs the same anti-abuse spend as any wire action** (a relay-token, per §9) to stop an unauthenticated flush-DoS firehose; (2) a held blob is purged **only on an exact full-length match** to a per-blob delete-tag committed **inside the sealed transcript** (no loose/prefix match → no eviction of blobs the attacker didn't author); (3) real + decoy deletes ride the §10 **Poisson outbound queue** to decorrelate emission from read events; (4) honestly disclaim that seizing the secret retroactively links `delete-token → message-ID`.
-- **Honest framing:** "delete" means *unreadable (≤ p) + TTL death on honest nodes*, **not** durable erasure against a hostile relay that retains ciphertext.
+- **Honest framing:** "delete" means *your own copy is exactly crypto-erased + every honest node drops it at TTL* — it is **DEVICE-LOCAL, best-effort**, **not** durable erasure against a hostile relay that retains ciphertext, and it cannot reach screenshots, OS backups, or notification mirrors. (If the optional BFE puncture is used, its `p` is an availability cost — collateral over-deletion of unrelated blobs — not a chance this message survives.)
 
 ---
 
@@ -172,7 +188,7 @@ Relay tokens (§9) also carry a **signed TTL (≤ 7 d)** so a pre-mined war-ches
 - **Rateless set reconciliation (Erlay-style IBLT / minisketch).** Two neighbors exchange a compact **sketch** of their 256-bit ID *sets* and transfer only the **symmetric difference** (cost ∝ difference, not set size). Rateless ⇒ a 2-second brush still makes progress; a long sit fully reconciles. **Fixes airtime, trial-decrypt cost, and battery at once, and gives anti-abuse a hook** (a neighbor who "wants everything" / whose sketch never decodes is fast-droppable *without identity*). The sketch's wire framing must be fixed-size / non-fingerprintable to keep invariant 4. The same channel carries the gossiped seen-**nullifier** set (§9).
 - Fall back to Bloom have/want when the difference is huge; bound decode attempts per neighbor (poisoning).
 - **Connectionless first:** exchange the sketch + a proof-prefix over advertising/scan-response; open a connection only for the tiny difference transfer.
-- **Platform reality (must be specified, not assumed):** publish a **per-platform transport matrix**; **iOS background cannot emit a generic ID-free blob to Android** (overflow-bitmask advertising, throttled cadence) → iOS is foreground-favored and its emission gap is an explicit, surfaced limitation, not a silent invariant-3 violation.
+- **Platform reality (must be specified, not assumed):** publish a **per-platform transport matrix**; **iOS background cannot emit a generic ID-free blob to Android** (overflow-bitmask advertising — wire-fingerprintable as Apple — throttled cadence, no manufacturer-data carry; **iOS↔iOS-background is a dead zone**). So **iOS is an ACCELERATOR, not a symmetric always-on peer** — foreground-favored, with the background emission gap an explicit, surfaced limitation, not a silent invariant-3 violation.
 - **"Good crypto is not enough":** outer-frame MAC keyed by the blob's proof, parser fuzzing, **no pre-encryption compression**, constant ID-free advertisements (cf. Bluetooth Mesh Private Beacons).
 
 ---
@@ -182,7 +198,7 @@ Relay tokens (§9) also carry a **signed TTL (≤ 7 d)** so a pre-mined war-ches
 A true per-sender quota is **fundamentally incompatible** with invariants 3 & 4 (you can't meter an identity you refuse to carry). Build the **achievable shadow**: make sustained rate *physically expensive* and *locally bounded*. The honest result: flooding costs **O(rented sequential cores + K physical radios), not impossible** — a cost bound, labeled as such in-app, not a wall.
 
 ### 9.1 Mint-cost = hash-based sequential PoSW (not a VDF)
-Token cost is **N sequential hash-steps** (Cohen-Pietrzak Simple Proofs of Sequential Work, Poseidon/BLAKE-friendly), verify sub-ms. Sequential ⇒ a **per-device cap** (more cores/money don't parallelize one chain). Chosen over a class-group VDF because phones have hash hardware, **no trusted setup, no group of unknown order** — and it is the *single* mint primitive (the v0.3 per-blob VDF is gone; the contradiction is removed). Honest limit: caps per-**device** rate, never device **count**.
+Token cost is **N sequential hash-steps** (Cohen-Pietrzak Simple Proofs of Sequential Work, Poseidon/BLAKE-friendly), verify sub-ms. Sequential ⇒ **per-chain rate-friction** (more cores/money don't parallelize *one* chain). Chosen over a class-group VDF because phones have hash hardware, **no trusted setup, no group of unknown order** — and it is the *single* mint primitive (the v0.3 per-blob VDF is gone; the contradiction is removed). **Honest limit (corrected from "per-device cap"):** this is *per-chain* sequential friction, **not** a per-device quota — one device runs **many chains in parallel**, and faster hash hardware lowers each chain's wall-clock. Douceur: a true offline serverless per-identity quota is impossible. It caps the *latency* of any single chain, never device rate in aggregate and never device **count**.
 
 ### 9.2 The token source — "Reciprocity Hourglass"
 Rate-limit **relaying**, not identity. A token is a self-issued PoSW tuple `(s, …, proof)`; it is spent as a Fiat-Shamir **zero-knowledge nullifier inside the BLE handshake — never in the blob** (so the soup stays uniform). **Two ways to earn one token format:**
@@ -211,7 +227,7 @@ The dominant unresolved threat is funded-adversary **device count**, structurall
 
 ## 10. Anonymity Engineering — measured, not assumed
 
-**Reframed claim.** Per-blob uniformity is true but doesn't deliver what users imagine, and **device-linkage ≈ 1.0** (PHY fingerprinting). Report a **measured source-estimator probability** — run an adversarial spread-tree estimator (rumor-centrality; Pinto–Thiran–Vetterli sparse-observer MLE) on simulated + field first-sighting graphs and surface *"at this density your origination is identifiable with probability p"* as the headline in-app number, **not** the flattering cover-ratio K. K is **per-session and decays** across repeated venue attendance (model the multi-session intersection adversary).
+**Reframed claim.** Per-blob uniformity is true but doesn't deliver what users imagine, and we **assume device-linkage ≈ 1.0** as the conservative posture (PHY fingerprinting empirically links ~40–50% of handsets uniquely in an open crowd, ~1.0 worst-case). Report a **measured source-estimator probability** — run an adversarial spread-tree estimator (rumor-centrality; Pinto–Thiran–Vetterli sparse-observer MLE) on simulated + field first-sighting graphs and surface *"at this density your origination is identifiable with probability p"* as the headline in-app number, **not** the flattering cover-ratio K. K is **per-session and decays** across repeated venue attendance (model the multi-session intersection adversary).
 
 - **Probabilistic, time-bounded origination license (replaces the hard gate).** Origination probability rises with relayed/witnessed novelty but is **floored > 0 and ceiled at a max latency T** — it **never deadlocks.** (The v0.3 hard "relay ≥ k novel first" gate self-deadlocked exactly in the sparse/blackout venues invariant 1 promises — the percolation cliff biting the anonymity layer — and its "send anyway with a warning" fallback was itself a deanonymizing tell.)
 - **In sparse mode, manufacture cover — don't "send anyway."** Emit your own self-loops/dummies to populate the local first-sighting background *before* releasing the real blob, so a real origination always appears against a non-empty root-set. (Bends inv 3 slightly in sparse mode: more self-originated roots than relays — but every root is byte-uniform and real-vs-dummy stays hidden.)
@@ -233,12 +249,12 @@ Storage (≈1 KB/blob): a 1–2 GB buffer holds 1–2M live blobs. **But the bin
 ## 12. Honest Limitations
 
 1. **Percolation cliff has no clean answer.** Goal #1 (blackout) and the flooding mechanism physically collide below a critical mean degree — and it bites the anonymity layer too (the origination license + manufactured cover keep it from deadlocking, but can't conjure a crowd). Ferrying + LoRa/NAN (§14) buy **probability, not a guarantee.** The single biggest unsolved thing.
-2. **Persistent sensor-net + PHY fingerprinting is made expensive, not defeated.** Device-linkage ≈ 1.0; anonymity is reported as a **measured source-estimator probability** (§10), per-session and decaying.
+2. **Persistent sensor-net + PHY fingerprinting is made expensive, not defeated.** We assume device-linkage ≈ 1.0 (posture; ~40–50% measured in an open crowd, ~1.0 worst-case). Anonymity is reported as a **measured source-estimator probability** (§10), per-session and decaying. Simulation (slice 3) confirms naked flooding measurably exposes the *originator* (~29% exact-catch at high passive-grid coverage) while receiver + content stay hidden — the §10 origination defenses target exactly this.
 3. **No true per-sender quota** (incompatible with inv 3/4). The achievable shadow (§9) bounds flooding to **O(rented sequential cores + K physical radios)**; the dominant residual is funded-adversary **device count** (cloud sweat-minting + spread farm). Labeled in-app as a cost bound, not a wall.
-4. **Deletion is probabilistic, not durable.** Time-ratcheted crypto-shred makes a copy unreadable with probability ≥ 1 − p (published p) and protects against seizure on the *clock*, not on reading; it does **not** erase ciphertext on a hostile retainer. "Erase from the world now" is not claimed.
+4. **Deletion is device-local, not durable elsewhere.** Time-ratcheted crypto-shred makes *your own copy* unreadable **exactly** (key destroyed, w.p. 1) and protects against device seizure on the *clock*; it does **not** erase ciphertext on a hostile retainer, nor reach screenshots/backups/notifications. (The optional BFE puncture's `p` is collateral over-deletion — an availability cost — not message survival.) "Erase from the world now" is not claimed.
 5. **iOS background** is foreground-favored; a real, surfaced limit on both reach and uniformity.
 6. **Cold-start** is a go-to-market problem (planned gatherings, §16-P4), not solvable by physics.
-7. **The ZK-spend wrapper is the largest software-correctness risk** (a soundness bug forges/re-spends tokens with no compute) — bounded, not eliminated, by the §9.5 non-ZK fail-closed quota.
+7. **The ZK-spend wrapper is the largest software-correctness risk** (a soundness bug forges/re-spends tokens with no compute; ~88% of disclosed SNARK bugs break soundness, tooling catches ~70%) — bounded, not eliminated, by the §9.5 non-ZK fail-closed quota. **v1 decision: DEFER bespoke ZK to post-v1.** v1 ships a simpler *audited* spend primitive (blind-RSA / BBS show); the bespoke Fiat-Shamir ZK nullifier ships only after the §9.5 re-spec + a layered audit (Picus + fuzzing + human review).
 8. **False-confidence harm** is the deadliest failure mode; the entire §13 UX layer exists to prevent it.
 
 ---
@@ -248,7 +264,7 @@ Storage (≈1 KB/blob): a 1–2 GB buffer holds 1–2M live blobs. **But the bin
 Honesty in the *doc* is not honesty in the *running app* — the gap is where people get hurt. Cheap, high-impact, all-local:
 
 - **First-run "what this protects / does NOT protect" cards**, default on. Lead with the honest bottle metaphor; drop "leave no durable trace."
-- **Per-feature inline honesty** (TTL picker: *"the person you send to can keep it"*; shred: *"unreadable after read with ~p chance of lingering"*; origination: *"identifiable here with probability p"*).
+- **Per-feature inline honesty** (TTL picker: *"the person you send to can keep it"*; shred: *"erases it from THIS phone — can't reach copies on other phones, screenshots, or backups"* (avoid "self-destruct/disappears" — FTC/Snapchat deceptive-labeling precedent); origination: *"identifiable here with probability p"*).
 - **Honest send states:** *"Released to the soup"* / *"No peers nearby — holding"* / *"Expired before any peer saw it"* — **never a false "delivered."** (Private delivery confirmation only via the recipient's optional sealed ack.)
 - **Mutual-presence pairing** (§4) + persistent trust badges; reserve red strictly for `Key-changed!`.
 - **In-app "red-team reality" mode** stating the §12 limitations and the live anonymity/shred probabilities.
@@ -273,7 +289,7 @@ Tor onion-rendezvous or Loopix/Nym mixnet **only**; refuse rather than downgrade
 
 - **P0 — Re-scope & measure.** Ship the **airtime-budget table** (§11); reframe the public claims (airtime wall, measured-anonymity-probability, honest bottle promise + the "cost not a wall" flooding bound). Analysis + copywriting.
 - **P1 — Highest-ROI, zero-tradeoff wins.** Rateless set reconciliation (§8); mutual-presence pairing + truth-in-labeling UX + honest send/trust states (§13).
-- **P2 — Anti-flood + anonymity primitives.** Token source (**Reciprocity Hourglass**: hash-PoSW + ZK nullifier, **token-anchored + gossiped seen-set**, two mint paths, token TTL, re-priced discount, non-ZK fail-closed quota); Poisson mixing + **probabilistic origination license** + manufactured cover + self-loops (§9/§10).
+- **P2 — Anti-flood + anonymity primitives.** Token source (**Reciprocity Hourglass**: hash-PoSW + nullifier, **token-anchored + gossiped seen-set**, two mint paths, token TTL, re-priced discount, non-ZK fail-closed quota). **v1 spend = audited blind-RSA / BBS show; bespoke ZK nullifier DEFERRED to post-v1** (§12.7). Poisson mixing + **probabilistic origination license** + manufactured cover + self-loops (§9/§10).
 - **P3 — Lifetime/storage hardening.** Hop-energy + gossip-median clock (also drives the §5 time-ratchet); sliding-window seen-record + seen-nullifier set; youngest-by-real-age eviction; density-adaptive auto-knobs (§6/§9).
 - **P4 — Percolation + cold-start.** Blind ferrying; opportunistic NAN/LoRa; organizer "gathering kits", pair-to-activate (N=2), standby at N=0 (§14).
 - **P5 — Serverless key-management.** **Time-ratcheted forward-secure decryption** + SE/TEE-wrapped keys + gated/exact-match delete-token; X-Wing hybrid + key-committing AEAD; deniable authenticator (§5/§7). Deepest correctness lift — **benchmark ZK-spend verify + key-evolution cost on low-end Android as a release gate.**
@@ -296,7 +312,7 @@ Briar/Bramble (audited analog), Bridgefy ("good crypto is not enough"), Signal s
 ---
 
 ## 19. The Soul-Check (from the third red-team)
-The seven invariants are all the right calls, and the recommended fixes preserve every one — the token-anchored nullifier + gossiped set carry opaque hashes only (inv 2/3), token TTL reuses inv 5, time-ratcheted FS + SE-wrapped keys preserve inv 1/5/6, and manufactured-cover origination only bends inv 3 in sparse mode where every root stays byte-uniform. The **token source is dented, not broken**: the architecture is right, but it survives only *with* the four §9 fixes (chiefly the token-anchored nullifier) — without them the relay-token primitive provides almost no rate-limit. **The design's defining honesty is still its best feature**, but v0.4 had to apply that honesty to two overclaims the app would otherwise have lied about: *"never decryptable again"* → probabilistic (≤ p) + clock-driven ratchet; *"VDF age-floor backstops immortality"* → deleted (a floor can't expire anything; only the TTL does). The two truths to keep facing got **sharper**, not softer: the percolation cliff now visibly bites the anonymity layer (the gate's sparse-venue behavior), and device-linkage ≈ 1.0 means realized anonymity must be a **measured** source-estimator probability, not a flattering ratio. State all of it in the app, and the soul stays intact.
+The seven invariants are all the right calls, and the recommended fixes preserve every one — the token-anchored nullifier + gossiped set carry opaque hashes only (inv 2/3), token TTL reuses inv 5, time-ratcheted FS + SE-wrapped keys preserve inv 1/5/6, and manufactured-cover origination only bends inv 3 in sparse mode where every root stays byte-uniform. The **token source is dented, not broken**: the architecture is right, but it survives only *with* the four §9 fixes (chiefly the token-anchored nullifier) — without them the relay-token primitive provides almost no rate-limit. **The design's defining honesty is still its best feature**, but v0.4 had to apply that honesty to two overclaims the app would otherwise have lied about: *"never decryptable again"* → clock-driven ratchet (and v0.5 sharpened this further — deletion of *your own copy* is **exact**, not "≤ p"; the real limit is that it's **device-local**, §5.2/§7); *"VDF age-floor backstops immortality"* → deleted (a floor can't expire anything; only the TTL does). The two truths to keep facing got **sharper**, not softer: the percolation cliff now visibly bites the anonymity layer (the gate's sparse-venue behavior), and device-linkage ≈ 1.0 means realized anonymity must be a **measured** source-estimator probability, not a flattering ratio. State all of it in the app, and the soul stays intact.
 
 ---
 

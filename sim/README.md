@@ -104,10 +104,12 @@ privacy promise at the network layer (crypto hides content/addressing, not the p
   estimator is a **reachability-likelihood** (rank candidates by how well their origination
   position + the observed spread explain receiver hear-times); first-spy is the weak reference;
   random-guess is the no-signal floor. Reported = best per message.
-- **Capability gate (must-localize):** no exposure number publishes unless the reachability
-  estimator demonstrably localizes a **slow-mobility** source under near-total coverage (a
+- **Capability gate (must-localize):** no exposure number publishes unless the **best**
+  estimator demonstrably localizes a **slow-mobility** source under near-total coverage —
+  beating the 1/N random floor by ≥10× AND pinning the source to within ~one radio-range (a
   *static* source floods instantly with zero gradient — unlocalizable by anyone). This prevents
-  mistaking a weak attack for anonymity.
+  mistaking a weak attack for anonymity. (Empirically first-spy is the workhorse under dense
+  coverage; the forward-reachability estimator is the principled diffusion-source variant.)
 - **Exposure gate:** "flooding exposes the source" only if best detected rank-1 ≥ max(0.5,
   5×the 1/N random floor) with adequate sample size — a bare "beats random" is vacuous at 1/N.
 - **Honesty:** chokepoint placement is the reported (stronger) arm; metrics are conditional on

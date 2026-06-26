@@ -16,9 +16,10 @@ import numpy as np
 
 from dataclasses import replace
 from soup_sim.config import Config
-from soup_sim.scenario import static_delivery_sweep, midpoint_with_ci, airtime_sweep, anonymity_sweep
+from soup_sim.scenario import (static_delivery_sweep, midpoint_with_ci, airtime_sweep, anonymity_sweep,
+                               anonymity_defense_sweep)
 from soup_sim.report import (write_csv, plot, airtime_to_csv_string, airtime_plot,
-                             anonymity_to_csv_string, anonymity_plot)
+                             anonymity_to_csv_string, anonymity_plot, anonymity_defense_to_csv_string)
 from soup_sim.anonymity import exposure_gate, EXPOSURE_RANK1
 
 
@@ -133,9 +134,40 @@ def _run_anonymity(args) -> None:
         print(f"plot -> {args.plot}" if ok else "matplotlib not installed; skipped plot")
 
 
+def anonymity_defense_cfg(seed: int) -> Config:
+    # Same venue as the anonymity headline, with defenses ON (mixing + receive-before-originate
+    # gate). drain lets mixing-delayed blobs land inside the window. Defenses are an UPPER BOUND on
+    # protection: they are credited ONLY through defense_gate (must-localize baseline, TTL=inf
+    # timing-only confound, relay-density, same-detected-set intersection).
+    return replace(anonymity_cfg(seed), ttl=40.0, warmup=10.0, measure_window=40.0, drain=20.0,
+                   seen_margin=40.0, mixing_lambda=0.05, originate_gate_relays=3)
+
+
+def _run_anonymity_defenses(args) -> None:
+    cfg = anonymity_defense_cfg(args.seed)
+    reps = max(args.reps, 4)
+    out = anonymity_defense_sweep(cfg, f=0.7, reps=reps)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        f.write(anonymity_defense_to_csv_string(out, cfg.manifest()))
+    print(f"wrote {args.out} (2 defense arms @ coverage f=0.7, reps={reps})")
+    print(out["scope_tag"])
+    print(out["defense_scope_tag"])
+    for arm in ("mixing", "gate"):
+        a = out[arm]
+        v = a["verdict"]
+        print(f"{arm.upper():8s}: baseline rank-1 {a['baseline_rank1']:.2f} -> defended "
+              f"{a['defended_rank1']:.2f}  (same-detected-set n={a['intersection']})  ->  {v['label']}")
+        print(f"          cost: delivery {a['cost']['delivery']:.2f}  credited={v['credited']}")
+    print("note: a credited defense means the rank-1 drop SURVIVED the TTL=inf timing-only control")
+    print("      (i.e. it is timing-scramble, not message-dropping). Un-credited != useless; see CSV.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--preset", choices=["static-cliff", "airtime-knee", "anonymity"], default="static-cliff")
+    ap.add_argument("--preset",
+                    choices=["static-cliff", "airtime-knee", "anonymity", "anonymity-defenses"],
+                    default="static-cliff")
     ap.add_argument("--out", default="out/cliff.csv")
     ap.add_argument("--plot", default=None)
     ap.add_argument("--reps", type=int, default=12)
@@ -145,6 +177,8 @@ def main() -> None:
         _run_airtime_knee(args)
     elif args.preset == "anonymity":
         _run_anonymity(args)
+    elif args.preset == "anonymity-defenses":
+        _run_anonymity_defenses(args)
     else:
         _run_static(args)
 

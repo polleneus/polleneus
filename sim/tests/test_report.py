@@ -56,6 +56,30 @@ def test_anonymity_csv_scope_tag_is_a_column_not_just_comment():
     assert tag in lines[2]                                              # tag survives as a COLUMN value (row)
 
 
+def test_defense_csv_carries_both_tags_as_columns():
+    from soup_sim.report import anonymity_defense_to_csv_string, DEFENSE_FIELDS
+    out = {
+        "scope_tag": "[UPPER BOUND on anonymity]",
+        "defense_scope_tag": "[defense benefit NOT evaluated against intersection/insider]",
+        "mixing": {"baseline_rank1": 0.30, "defended_rank1": 0.12, "intersection": 80,
+                   "verdict": {"credited": True, "label": "credited: real timing-scramble gain"},
+                   "cost": {"delivery": 0.91}},
+        "gate": {"baseline_rank1": 0.30, "defended_rank1": 0.20, "intersection": 70, "relay_density": 3.4,
+                 "verdict": {"credited": False, "label": "no material drop"},
+                 "cost": {"delivery": 0.88}},
+    }
+    s = anonymity_defense_to_csv_string(out, {"master_seed": 5, "mixing_lambda": 0.05})
+    lines = s.splitlines()
+    assert lines[0].startswith("#") and lines[1].startswith("#")        # both tags as comments
+    header = lines[2]
+    for fld in DEFENSE_FIELDS:
+        assert fld in header
+    assert "scope_tag" in header and "defense_scope_tag" in header and "param_mixing_lambda" in header
+    assert len(lines) == 2 + 1 + 2                                      # 2 comments + header + 2 arms
+    assert out["scope_tag"] in lines[3] and out["defense_scope_tag"] in lines[3]   # tags survive as columns
+    assert "credited" in s and "3.4" in s                              # verdict + gate relay-density present
+
+
 def test_static_curve_is_monotone_increasing():
     cfg = base()
     rows = static_delivery_sweep(cfg, list(np.linspace(2.0, 10.0, 9)), reps=4)

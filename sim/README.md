@@ -22,6 +22,7 @@ python -m venv .venv
 .venv/Scripts/python run.py --preset static-cliff  --out out/cliff.csv   --plot out/cliff.png
 .venv/Scripts/python run.py --preset airtime-knee --out out/airtime.csv --plot out/airtime.png
 .venv/Scripts/python run.py --preset anonymity    --out out/anon.csv    --plot out/anon.png
+.venv/Scripts/python run.py --preset anonymity-defenses --out out/anon_defense.csv  # PR-2: mixing+gate vs baseline
 ```
 `run.py` sweeps mean degree and writes a CSV (with the **full parameter manifest** per row,
 so any point is reproducible from the file). `static-cliff` writes the delivery curve;
@@ -116,7 +117,40 @@ privacy promise at the network layer (crypto hides content/addressing, not the p
   detection with the undetected fraction reported (censoring); estimator-quality error is at the
   first-hear position, with the origination-time error + the gap (mobility-cloaking) separate;
   anonymity-set size is always labelled an **upper bound** (never "K-anonymity").
-- **PR-2 (next):** the receive-before-originate gate + Poisson mixing defenses and their cost.
+## Anonymity defenses (slice 3 — PR-2)
+Two network-layer defenses against the source-localization adversary above, measured at fixed
+coverage (`--preset anonymity-defenses`, default f=0.7) and credited only when a drop is *real*:
+
+- **Poisson mixing delay:** each holder waits `Exp(λ)` before it will *forward* a freshly-acquired
+  blob, scrambling the hear-time gradient the reachability estimator rides.
+- **Receive-before-originate gate:** a node's own origination is held back from forwarding until it
+  has relayed ≥G *distinct foreign* messages — so a first-mover origination can't be the spatial
+  seed of its own flood. Only the **measured** (gated) cohort is held; an un-gated background soup
+  circulates so the network can't deadlock.
+
+> ⚠️ **A defense's credited gain is an UPPER BOUND on its real protection** — it is measured against
+> the *same single-event external-passive* adversary, NOT against multi-session intersection or an
+> insider. The `defense_scope_tag` saying so travels on every emitted row.
+
+**Why a naive "rank-1 dropped" claim is a trap, and how the gate avoids it:**
+- **Same-detected-set intersection** — a defense that merely *slows* the spread shrinks the
+  detected set inside the finite window, and a smaller set looks more anonymous purely by
+  survivorship. So baseline vs defended rank-1 is compared **only on messages detected in BOTH
+  arms** (same seed → same cohort), with a `MIN_INTERSECTION_SIZE` floor below which the result is
+  "inconclusive", not "protected".
+- **TTL=∞ timing-only control** — mixing could cut rank-1 just by dropping messages (TTL expiry of
+  delayed blobs), not by scrambling timing. A parallel **TTL=∞ arm** keeps every blob alive; the
+  mixing gain is credited only if it **survives** there (real timing-scramble), else it's labelled
+  *message-dropping*, not anonymity.
+- **Must-localize baseline** — a drop is meaningless if the attack couldn't localize the baseline
+  in the first place; the PR-1 capability gate must pass first.
+- **Relay-density check** — the gate arm is only trustworthy if nodes actually relayed enough
+  foreign traffic (`MIN_RELAY_DENSITY`); a starved gate is an artifact, not a defense.
+- **Cost is always reported** — every arm prints its delivery so a credited anonymity gain is read
+  against what it costs in reach/latency.
+
+Defaults ship **OFF** (`mixing_lambda=0`, `originate_gate_relays=0`): the baseline engine and every
+PR-1 number are bit-identical unless a defense is explicitly enabled.
 
 ## The gate (why you can trust the curve)
 `tests/test_integration_percolation.py`:
@@ -132,7 +166,9 @@ privacy promise at the network layer (crypto hides content/addressing, not the p
 billing, static fixpoint) · `workload` + `metrics` (oracle, fair-chance denominator,
 utilization/circulation/T50) · `percolation` (union-find + interval-reachability ground truth) ·
 `knee` (saturation-knee estimator + binding publish-gate) · `scenario` (delivery sweep,
-airtime sweep + control arms, per-rep CIs) · `report` (CSV + plot).
+airtime sweep + control arms, anonymity sweep + defense sweep, per-rep CIs) ·
+`anonymity` + `adversary` (source-localization estimators, must-localize/exposure/defense gates) ·
+`report` (CSV + plot).
 
 ## Fidelity to the parent design (and bias direction)
 | Modeled mechanic | Parent § | Abstraction → bias |
@@ -151,6 +187,10 @@ airtime sweep + control arms, per-rep CIs) · `report` (CSV + plot).
 | anonymity: candidate set = all nodes (cone deferred) | §10 | anon-set crowd inflated → **optimistic for privacy** |
 | anonymity: adversary unit-disk reception | §10 | optimistic for the adversary's coverage (real RF messier) |
 | anonymity: worst-case auxiliary info (all trajectories) | §10 | **conservative** for exposure (safe direction) |
+| anonymity defenses (mixing + originate-gate) | §10 | slice-3 PR-2: credited gain is an **UPPER BOUND on protection** (single-event/external-passive only; intersection + insider NOT evaluated) |
+| defense credit: same-detected-set intersection | §10 | removes survivorship (slowed spread ≠ anonymity); below `MIN_INTERSECTION_SIZE` → inconclusive, not credited |
+| defense credit: TTL=∞ timing-only control | §10 | separates timing-scramble from message-dropping; a gain that dies at TTL=∞ is **not** credited as anonymity |
+| defense credit: must-localize baseline + relay-density | §10 | no credit if the attack couldn't localize the baseline, or if the gate arm was relay-starved (artifact) |
 | crypto / tokens | §5/§9 | **not modeled** (deferred) |
 | clustered "gathering" mobility | — | RWP open-field only (clustered mobility is a named fast-follow) → **optimistic** |
 | delivery | — | arrival == delivery (ignores read-window / FS) → **upper bound** |

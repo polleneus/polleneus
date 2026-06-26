@@ -87,9 +87,9 @@ def test_intersection_csv_carries_tags_and_both_fusion_rules():
         "intersection_scope_tag": "[INTERSECTION; device-linkage ASSUMED given; UPPER BOUND on anonymity]",
         "verdict": {"credited": True, "label": "intersection deanonymizes the sender"},
         "rows": [
-            {"k": 1, "fused_rank1_borda": 0.30, "ci_lo": 0.2, "ci_hi": 0.4, "fused_rank1_score_sum": 0.31,
+            {"k": 1, "fused_rank1_borda": 0.30, "ci_lo_borda": 0.2, "ci_hi_borda": 0.4, "fused_rank1_score_sum": 0.31,
              "decoy_rank1": 0.05, "random_floor_fused": 0.008, "delivery": 0.9, "n_samples": 40},
-            {"k": 16, "fused_rank1_borda": 0.80, "ci_lo": 0.7, "ci_hi": 0.9, "fused_rank1_score_sum": 0.78,
+            {"k": 16, "fused_rank1_borda": 0.80, "ci_lo_borda": 0.7, "ci_hi_borda": 0.9, "fused_rank1_score_sum": 0.78,
              "decoy_rank1": 0.06, "random_floor_fused": 0.009, "delivery": 0.9, "n_samples": 40},
         ],
     }

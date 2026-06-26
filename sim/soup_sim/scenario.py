@@ -608,7 +608,7 @@ def intersection_sweep(cfg, k_values, f, reps, n_tracked=3, stride=2.0):
     (sensitivity); fused-random floor + decoy-centrality control. Every number an UPPER BOUND."""
     k_max = max(k_values)
     mustloc = anonymity_sweep(cfg, [0.95], reps=1)["mustlocalize"]   # capability control (reuse PR-1)
-    acc = {k: {"borda_o": [], "sum_o": [], "borda_d": [], "rand": [], "delivery": []}
+    acc = {k: {"borda_o": [], "sum_o": [], "borda_d": [], "sum_d": [], "rand": [], "delivery": []}
            for k in k_values}
     for rep in range(reps):
         c = replace(cfg, master_seed=_seed_for(cfg.master_seed, 0, rep))
@@ -633,15 +633,20 @@ def intersection_sweep(cfg, k_values, f, reps, n_tracked=3, stride=2.0):
                 acc[k]["rand"].append(rank_of(fr, dev) == 0)
                 if decoy is not None:
                     acc[k]["borda_d"].append(rank_of(fb, decoy) == 0)
+                    acc[k]["sum_d"].append(rank_of(fs, decoy) == 0)
                 acc[k]["delivery"].append(art["delivery"])
     rows = []
     for k in k_values:
         d = acc[k]
-        m, lo, hi = mean_ci(d["borda_o"])
+        m, lo, hi = mean_ci(d["borda_o"])     # CI is for the BORDA arm (the headline rank-1 series)
+        # decoy control under BOTH fusion rules; report the WORST (max) so the centrality check is
+        # never weaker than the rule that produced the credited (lower) headline.
+        decoy_b = float(np.mean(d["borda_d"])) if d["borda_d"] else 0.0
+        decoy_s = float(np.mean(d["sum_d"])) if d["sum_d"] else 0.0
         rows.append({
-            "k": k, "fused_rank1_borda": m, "ci_lo": lo, "ci_hi": hi,
+            "k": k, "fused_rank1_borda": m, "ci_lo_borda": lo, "ci_hi_borda": hi,
             "fused_rank1_score_sum": float(np.mean(d["sum_o"])) if d["sum_o"] else 0.0,
-            "decoy_rank1": float(np.mean(d["borda_d"])) if d["borda_d"] else 0.0,
+            "decoy_rank1": max(decoy_b, decoy_s),
             "random_floor_fused": float(np.mean(d["rand"])) if d["rand"] else 0.0,
             "delivery": float(np.mean(d["delivery"])) if d["delivery"] else 0.0,
             "n_samples": len(d["borda_o"]),

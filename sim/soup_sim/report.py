@@ -87,7 +87,7 @@ def anonymity_defense_to_csv_string(out, manifest) -> str:
     return buf.getvalue()
 
 
-INTERSECTION_FIELDS = ["k", "fused_rank1_borda", "ci_lo", "ci_hi", "fused_rank1_score_sum",
+INTERSECTION_FIELDS = ["k", "fused_rank1_borda", "ci_lo_borda", "ci_hi_borda", "fused_rank1_score_sum",
                        "decoy_rank1", "random_floor_fused", "delivery", "n_samples"]
 
 

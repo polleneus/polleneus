@@ -196,21 +196,28 @@ acquisition-time causality.
   diffusion, not the originator. The decoy = the **highest distinct-foreign-relay innocent node**; the
   same K-message fusion is run against it. Credit requires the originator's fused rank-1 to beat the
   decoy's by `DECOY_MARGIN` — else the result is "confounded by centrality," discounted not credited.
-- **Must-localize (inherited)** — the per-message estimator must already be capable (PR-1 gate).
+- **Must-localize (inherited)** — the per-message estimator must already be capable (PR-1 gate). Note
+  this capability control uses PR-1's *best-of* estimator, while fusion here is reachability-only — so
+  the capability bar is, if anything, easier to clear than the fused attack (the conservative direction).
+- **Decoy control under both rules** — the centrality check is run for Borda **and** score-sum and the
+  worst (higher) decoy rank-1 is used, so it is never weaker than the rule that produced the credited
+  (lower) headline.
 - **Powered** — ≥ `MIN_INTERSECTION_SAMPLES` (device×seed) fusion samples, else "underpowered."
 - **Control A is wired into the verdict** — the exposure threshold is taken over the *measured*
   fused-random floor (`max(1/N, fused_random_floor)`), so if fusion ever manufactured a high floor the
   bar rises with it; credit is the climb **above the floor fusion actually produced**.
 
-**Measured result at the shipped defaults** (f=0.7, 8 tracked devices × 4 reps, K∈{1,2,4,8,16}):
-must-localize passes, the fused-random floor stays ~1/N (≤0.03) and the central-decoy stays at **0.00**
-(centrality ruled out) — and the sender's fused rank-1 **climbs 0.06 → 0.16 → 0.25 → 0.47 → 0.72
-(Borda)** as K goes 1→16. Borda and score-sum diverge at K=16 (0.72 vs 0.62), so the credited headline
-is the lower, **0.62 — which crosses the 0.5 exposure threshold: at K=16 the gate CREDITS
-"intersection deanonymizes the sender."** This is the headline finding of the slice: **multi-session
-intersection breaks sender anonymity even where a single message (K=1, rank-1 0.06 ≈ the floor) does
-not** — exactly the dominant threat PR-1/PR-2 deferred. (Numbers are seed-specific; the *shape* —
-monotone climb crossing the threshold, decoy flat — is the robust result.)
+**Measured result at the shipped defaults** (`--preset anonymity-intersection`, seed 12345, f=0.7, 8
+tracked devices × 12 reps = 96 fusion samples, K∈{1,2,4,8,16}): must-localize passes, the fused-random
+floor stays ~1/N (≤0.01) and the central-decoy stays at **0.00 at every K** (centrality ruled out) — and
+the sender's fused rank-1 **climbs 0.09 → 0.16 → 0.22 → 0.45 → 0.72** as K goes 1→16, crossing the 0.5
+exposure threshold between K=8 and K=16. Borda and score-sum **coincide** at this powered default (the
+`min()` "credit the lower" rule then costs nothing; on smaller-sample seeds where they diverge it credits
+the more anonymity-favorable one). At K=16 the gate **CREDITS "intersection deanonymizes the sender"**
+(0.72 @ decoy 0.00). This is the headline finding of the slice: **multi-session intersection breaks
+sender anonymity *under assumed device-linkage* even where a single message (K=1, rank-1 0.09 ≈ the
+floor) does not** — exactly the dominant threat PR-1/PR-2 deferred. (Exact numbers are seed-specific; the
+*shape* — monotone climb crossing the threshold, decoy flat — is the robust result.)
 
 Additive and **default-inert**: `intersection_sweep` is a new entry point; `anonymity_sweep` /
 `anonymity_defense_sweep` and every prior number are bit-identical (no shared mutable path changed).

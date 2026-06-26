@@ -168,7 +168,7 @@ def test_receiver_hears_in_range_holder_only():
 ## Task 6: Gates — must-localize (per-estimator + monotone), exposure (margin), no-signal
 
 **Files:** Modify `anonymity.py`; Test `tests/test_anonymity.py`.
-**Interfaces:** `mustlocalize_gate(per_estimator_results, coverage_curve) -> {"ok","label"}` — passes iff the **reachability** estimator (not best-of) reaches `rank1≥MUSTLOC_RANK1` AND `median_err≤MUSTLOC_ERR_RADII·radius` on the static+dense control **AND** best-estimator median error is monotone-non-increasing (within CI) as coverage→1. `exposure_gate(best_rank1_detected, random_floor, beats_random, n_messages, n_reps) -> {"exposed","label"}` — refuses ("underpowered") if messages<MIN or reps<MIN; else exposed iff `best_rank1_detected ≥ max(EXPOSURE_RANK1, EXPOSURE_MARGIN_K·random_floor)`.
+**Interfaces:** `mustlocalize_gate(per_estimator_results, coverage_curve) -> {"ok","label"}` — passes iff the **reachability** estimator (not best-of) reaches `rank1≥MUSTLOC_RANK1` AND `median_err≤MUSTLOC_ERR_RADII·radius` on the **slow-mobility + dense** control (NOT static — a static fully-connected arena floods in one fixpoint step → zero gradient → unlocalizable by any estimator) **AND** best-estimator median error is monotone-non-increasing (within CI) as coverage→1. `exposure_gate(best_rank1_detected, random_floor, beats_random, n_messages, n_reps) -> {"exposed","label"}` — refuses ("underpowered") if messages<MIN or reps<MIN; else exposed iff `best_rank1_detected ≥ max(EXPOSURE_RANK1, EXPOSURE_MARGIN_K·random_floor)`.
 
 - [ ] **Step 1: failing test** — must-localize fails if reachability is weak even when first_spy is strong; fails if non-monotone; exposure refuses when underpowered; exposure margin bites when random_floor high. 
 - [ ] **Step 2: run → FAIL.**
@@ -204,7 +204,7 @@ def test_anonymity_sweep_structure_and_determinism():
                 "undetected_fraction","beats_random"} <= set(r)
 ```
 - [ ] **Step 2: run → FAIL.**
-- [ ] **Step 3:** implement `_run_one_anonymity(cfg)` (engine with `record_positions`, `adversary_range=cfg.adversary_range_mult*cfg.radius`) + `anonymity_sweep` (both arms from one log; reachability reach-times from the episode log; `cfg.rng(4)`/`cfg.rng(6)`; `_seed_for`; must-localize control = `replace(base_cfg, mobility="static", speed_min=0, speed_max=0)` + f≈0.99). Undetected = cohort messages with no hearing; metrics conditional on detection.
+- [ ] **Step 3:** implement `_run_one_anonymity(cfg)` (engine with `record_positions`, `adversary_range=cfg.adversary_range_mult*cfg.radius`) + `anonymity_sweep` (both arms from one log; reachability reach-times from the episode log; `cfg.rng(4)`/`cfg.rng(6)`; `_seed_for`; must-localize control = `replace(base_cfg, speed_min=0.5, speed_max=0.5)` [slow RWP, NOT static — a static flood has no gradient] + f≈0.99 coverage). Undetected = cohort messages with no hearing; metrics conditional on detection.
 - [ ] **Step 4: run → PASS** (+ `tests/test_scenario.py` green).
 - [ ] **Step 5: commit** `feat(sim): anonymity_sweep over coverage f (both arms->stronger headline) + must-localize control`
 

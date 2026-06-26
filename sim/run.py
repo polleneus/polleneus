@@ -4,7 +4,8 @@
 
 static-cliff: the headline STATIC delivery-vs-density curve (component reachability over a
 Poisson torus ensemble — the validated quantity behind the percolation gate). Its 0.5
-crossing sits well above the connectivity threshold d_c~4.51 because pairwise delivery ~ S^2.
+crossing sits JUST above the connectivity threshold d_c~4.51 (pairwise delivery ~ S^2 crosses
+0.5 near threshold, ~d 4.5-4.7 at venue-scale N; ~d 6-7 is delivery SATURATION 0.95-0.99).
 
 Every number is an UPPER BOUND on real-world delivery (see README).
 """
@@ -33,14 +34,14 @@ def base_cfg(seed: int) -> Config:
 
 def airtime_cfg(seed: int) -> Config:
     # Conservative goodput ~100 kbps (12.5 kB/s); blobs ~256 B; provenance in README. beta is an
-    # UNCALIBRATED free parameter (0.3 here) chosen in the regime where the collision turn-over is
+    # UNCALIBRATED free parameter (0.1 here) chosen in the regime where the collision turn-over is
     # observable; the headline reports the knee as a function of it alongside the linear band.
     return Config(
         n=0, width=120.0, height=120.0, radius=10.0, boundary="torus", mobility="rwp",
         speed_min=2.0, speed_max=2.0, dt=0.5, ttl=120.0, buffer_cap=200, throughput_ideal=12_500.0,
         alpha=1.0, t_setup=0.05, p_fail=0.0, blob_size=256.0, warmup=30.0, measure_window=120.0,
         drain=0.0, n_messages=80, seen_margin=60.0, master_seed=seed,
-        airtime_model="collision", beta=0.3, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0,
+        airtime_model="collision", beta=0.1, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0,
     )
 
 
@@ -70,7 +71,7 @@ def _run_airtime_knee(args) -> None:
     with open(args.out, "w", newline="", encoding="utf-8") as f:
         f.write(airtime_to_csv_string(coll["rows"], cfg.manifest()))
     print(f"wrote {args.out} ({len(densities)} density points, reps={args.reps})")
-    print(f"predicted knee ~= {coll['predicted_knee_contenders']} CONTENDERS (n_channels/beta); "
+    print(f"predicted knee ~= {coll['predicted_knee_contenders']} CONTENDERS (1/beta); "
           "density-space knee is found empirically below.")
     print(f"COLLISION (primary): knee {coll['knee']['status']} "
           f"{('@d='+format(coll['knee']['knee'],'.2f')+' CI '+str(tuple(round(x,2) for x in coll['knee']['ci']))) if coll['knee']['status']=='knee' else ''}")

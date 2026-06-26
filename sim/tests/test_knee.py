@@ -56,12 +56,19 @@ def test_find_knee_saturating_plateau_returns_no_knee():
 
 
 # --- Task 8: binding publish gate --------------------------------------------
-def test_binding_gate():
+def test_binding_gate_truth_table():
+    # binding_gate(knee_result, binding_at_knee, alpha0_turns_over, buffer_ttl_turns_over)
+    # PUBLISH requires: a knee, contention>=threshold, alpha0 does NOT turn over, AND the turn-down
+    # PERSISTS under cap=inf/ttl=inf (buffer_ttl_turns_over=True = it's not buffer/TTL).
     knee = {"status": "knee", "knee": 9.0, "ci": (8.0, 10.0)}
-    assert binding_gate(knee, {"contention_bound": 0.7}, False, False)["publish"] is True
-    g = binding_gate(knee, {"contention_bound": 0.7}, True, False)
+    assert binding_gate(knee, {"contention_bound": 0.7}, False, True)["publish"] is True   # airtime confirmed
+    # alpha=0 control also turns over -> not airtime
+    g = binding_gate(knee, {"contention_bound": 0.7}, True, True)
     assert g["publish"] is False and "connectivity" in g["label"].lower()
-    g = binding_gate(knee, {"contention_bound": 0.7}, False, True)
+    # turn-down VANISHES with infinite buffer/TTL -> it was buffer/TTL, not airtime
+    g = binding_gate(knee, {"contention_bound": 0.7}, False, False)
     assert g["publish"] is False and ("buffer" in g["label"].lower() or "ttl" in g["label"].lower())
-    assert binding_gate(knee, {"contention_bound": 0.2}, False, False)["publish"] is False
-    assert binding_gate({"status": "no_knee_in_range"}, {"contention_bound": 0.9}, False, False)["publish"] is False
+    # contention below threshold -> not airtime-bound
+    assert binding_gate(knee, {"contention_bound": 0.2}, False, True)["publish"] is False
+    # no knee -> no publish
+    assert binding_gate({"status": "no_knee_in_range"}, {"contention_bound": 0.9}, False, True)["publish"] is False

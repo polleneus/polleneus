@@ -23,11 +23,11 @@ def base():
                   speed_min=2.0, speed_max=2.0, dt=0.5, ttl=40.0, buffer_cap=200, throughput_ideal=8e3,
                   alpha=1.0, t_setup=0.05, p_fail=0.0, blob_size=200.0, warmup=10.0, measure_window=30.0,
                   drain=0.0, n_messages=40, seen_margin=20.0, master_seed=7,
-                  airtime_model="collision", beta=0.3, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0)
+                  airtime_model="collision", beta=0.1, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0)
 
 
 def replace_model(cfg, model):
-    return replace(cfg, airtime_model=model, alpha=1.0, beta=0.15)
+    return replace(cfg, airtime_model=model, alpha=1.0, beta=0.1)
 
 
 def test_airtime_sweep_smoke_structure_and_determinism():

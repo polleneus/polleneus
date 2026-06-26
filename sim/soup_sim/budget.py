@@ -30,12 +30,18 @@ class AirtimeBudget:
     def effective_goodput(self, n_contenders: int) -> float:
         """PER-LINK goodput (bytes/time), MONOTONE DECREASING for both models (the system
         turn-over lives in n*goodput, not here):
-        linear:    throughput/(1+alpha*n)             (~1/n; system n*goodput -> plateau)
-        collision: throughput*exp(-beta*n/n_channels) (ALOHA; system n*goodput interior max at n_channels/beta)."""
+        linear:    throughput/(1+alpha*n)   (~1/n; system n*goodput -> plateau)
+        collision: throughput*exp(-beta*n)  (ALOHA; system n*goodput interior max at 1/beta)
+
+        NOTE: no /n_channels divisor. BLE advertises the SAME packet on all 3 advertising
+        channels per event (redundant, not frequency-division capacity), so the 3 channels do
+        NOT triple collision capacity — dividing the load by n_channels was ~3x too optimistic
+        and is removed. beta is the per-contender collision rate (UNCALIBRATED; a duty-cycle
+        calibration is follow-up). n_channels is retained in config but no longer scales collision."""
         n = max(0, n_contenders)
         loss = 1.0 - self.p_fail
         if self.model == "collision":
-            return self.throughput_ideal * math.exp(-self.beta * n / self.n_channels) * loss
+            return self.throughput_ideal * math.exp(-self.beta * n) * loss
         return self.throughput_ideal / (1.0 + self.alpha * n) * loss
 
     def charged_airtime(self, served_blobs: int, n_contenders: int) -> float:

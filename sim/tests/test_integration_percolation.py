@@ -3,7 +3,8 @@
       engine's multi-hop fixpoint EXACTLY equal union-find same-component pairs.
   (2) Threshold: over a Poisson torus ensemble, the susceptibility peaks near the
       continuum-percolation critical mean degree d_c ~= 4.51, and the giant component
-      emerges (subcritical small, supercritical large). NOT delivery=0.5 (~d 6-7).
+      emerges (subcritical small, supercritical large). NOT delivery=0.5 (which crosses just
+      above d_c, ~d 4.5-4.7; ~d 6-7 is delivery saturation 0.95-0.99).
 """
 import numpy as np
 from soup_sim.config import Config

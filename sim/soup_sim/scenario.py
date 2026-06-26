@@ -134,7 +134,8 @@ def sweep(base_cfg, densities, reps: int) -> list[dict]:
 def static_delivery_sweep(base_cfg, degrees, reps: int) -> list[dict]:
     """Headline STATIC curve: component-reachability delivery vs mean degree over a
     Poisson torus ensemble. Exact and engine-free; the validated quantity behind the
-    percolation gate. Its 0.5 crossing sits well ABOVE d_c (delivery ~ S^2), ~d 6-7.
+    percolation gate. Its 0.5 crossing sits JUST ABOVE d_c (~d 4.5-4.7 at venue-scale N;
+    delivery ~ S^2); ~d 6-7 is where delivery SATURATES (0.95-0.99), not the 0.5 crossing.
     """
     w, h, r = base_cfg.width, base_cfg.height, base_cfg.radius
     lam_to_n = w * h / (np.pi * r * r)
@@ -205,7 +206,7 @@ def airtime_sweep(base_cfg, densities, reps):
         ki = int(np.argmax([r["circulated_per_min_mean"] for r in rows]))
     gate = binding_gate(knee, rows[ki]["binding"], a0_over, ct_over)
     return {"rows": rows, "alpha0_rows": a0_rows, "capttl_rows": ct_rows, "knee": knee, "gate": gate,
-            "predicted_knee_contenders": base_cfg.n_channels / base_cfg.beta if base_cfg.beta else None}
+            "predicted_knee_contenders": 1.0 / base_cfg.beta if base_cfg.beta else None}
 
 
 def _anon_pos_at(log, t):

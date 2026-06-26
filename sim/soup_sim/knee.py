@@ -73,8 +73,11 @@ def binding_gate(knee_result, binding_at_knee, alpha0_turns_over, buffer_ttl_tur
     if knee_result.get("status") != "knee":
         return {"publish": False, "label": "no knee in range"}
     if alpha0_turns_over:
+        # effect persists with NO airtime contention -> not airtime (connectivity/buffer/TTL/demand)
         return {"publish": False, "label": "connectivity-limited (alpha=0 control also turns over)"}
-    if buffer_ttl_turns_over:
+    if not buffer_ttl_turns_over:
+        # turn-down VANISHES once buffer/TTL are infinite -> it was buffer/TTL, not airtime.
+        # (Persisting under cap=inf/ttl=inf, i.e. buffer_ttl_turns_over=True, is evidence FOR airtime.)
         return {"publish": False, "label": "buffer/TTL-limited (cap=inf/ttl=inf control removes the turn-down)"}
     if binding_at_knee.get("contention_bound", 0.0) < BINDING_THRESHOLD:
         return {"publish": False, "label": "not airtime-bound (contention below threshold)"}

@@ -111,6 +111,45 @@ def estimate(method, msg_hearings, receivers, cand_pos, rng, reach=None, upstrea
     raise ValueError(f"unknown estimator method {method!r}")
 
 
+def _avg_rank(scores) -> np.ndarray:
+    """Average ranks (0 = best/lowest score). Ties share the mean of their positions — robust to
+    the many exact ties the reachability estimator produces when there is no time gradient."""
+    s = np.asarray(scores, float)
+    n = len(s)
+    order = np.argsort(s, kind="mergesort")
+    sorted_s = s[order]
+    ranks = np.empty(n, float)
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and sorted_s[j + 1] - sorted_s[i] <= 1e-12:
+            j += 1
+        ranks[order[i:j + 1]] = (i + j) / 2.0
+        i = j + 1
+    return ranks
+
+
+def fuse_scores(score_vectors, method="borda") -> np.ndarray:
+    """Fuse K per-candidate score vectors (lower = more suspicious) into one fused vector.
+    borda     — sum of per-message average-ranks (scale-free; conservative; the credited headline).
+    score_sum — sum of per-message (min-subtracted, std-normalized) scores (~ sum of NLLs / Bayesian
+                intersection); a scale-sensitivity arm. Each message normalized so no single message
+                with a large score scale dominates the sum."""
+    mats = [np.asarray(v, float) for v in score_vectors]
+    if not mats:
+        raise ValueError("fuse_scores: empty score_vectors")
+    if method == "borda":
+        return np.sum([_avg_rank(v) for v in mats], axis=0)
+    if method == "score_sum":
+        acc = np.zeros(len(mats[0]), float)
+        for v in mats:
+            vv = v - v.min()
+            sd = float(vv.std())
+            acc += vv / sd if sd > 1e-12 else vv
+        return acc
+    raise ValueError(f"unknown fusion method {method!r}")
+
+
 def hearings(receivers, adv_range, position_log, acquired, blob_expiry, cfg) -> dict:
     """{(recv_idx, blob_id): first_hear_time} — earliest log step where a holder of the blob
     (held over [acquire, expiry]) is within adv_range of the receiver. Hold-until-expiry

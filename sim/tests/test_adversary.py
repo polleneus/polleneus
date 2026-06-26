@@ -92,3 +92,40 @@ def test_hearing_respects_hold_lifetime():
     acquired = {(0, 9): 3.0}
     h = hearings(np.array([[58., 50.]]), 10.0, log, acquired, {9: 1e12}, c)
     assert h[(0, 9)] == 3.0
+
+
+# --- PR-3 Task 1: score fusion ------------------------------------------------
+def test_avg_rank_handles_ties():
+    from soup_sim.adversary import _avg_rank
+    r = _avg_rank(np.array([0.0, 0.0, 1.0]))   # two-way tie for best
+    assert r[0] == 0.5 and r[1] == 0.5 and r[2] == 2.0
+
+
+def test_fuse_borda_rewards_consistency():
+    from soup_sim.adversary import fuse_scores
+    from soup_sim.anonymity import rank_of
+    # 4 candidates, 3 messages. Candidate A (idx 1) is ALWAYS 2nd; B/C/D rotate through 1st/3rd/4th.
+    # consistent-2nd must beat the rotating extremes under Borda.
+    m1 = np.array([0.0, 1.0, 2.0, 3.0])   # B 1st, A 2nd, C 3rd, D 4th
+    m2 = np.array([3.0, 1.0, 0.0, 2.0])   # C 1st, A 2nd, D 3rd, B 4th
+    m3 = np.array([2.0, 1.0, 3.0, 0.0])   # D 1st, A 2nd, B 3rd, C 4th
+    fused = fuse_scores([m1, m2, m3], "borda")
+    assert int(np.argmin(fused)) == 1                       # A wins
+    assert rank_of(fused, 1) == 0                           # A is exact-catch
+
+
+def test_fuse_score_sum_normalizes_per_message():
+    from soup_sim.adversary import fuse_scores
+    # message 2 has a huge scale; without per-message normalization it would dominate. With it,
+    # the consistently-low candidate (idx 0) wins.
+    m1 = np.array([0.0, 1.0, 2.0])
+    m2 = np.array([0.0, 100.0, 200.0])
+    fused = fuse_scores([m1, m2], "score_sum")
+    assert int(np.argmin(fused)) == 0
+
+
+def test_fuse_empty_raises():
+    import pytest
+    from soup_sim.adversary import fuse_scores
+    with pytest.raises(ValueError):
+        fuse_scores([], "borda")

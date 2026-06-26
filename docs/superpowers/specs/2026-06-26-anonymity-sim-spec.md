@@ -32,11 +32,13 @@
 - All reported **jointly with delivery ratio + censoring-aware T50** of the same run.
 
 ## 3. Adversary estimators (model a CAPABLE attacker; validated for power)
-Reported adversary success = **best across estimators per message**:
-- **First-spy** — candidate nearest the earliest-hearing receiver (weak; carried as a lower-power reference).
-- **Time-gradient / MLE** — uses the **full** first-hear-time vector + known propagation + known trajectories to compute, per candidate, the likelihood of the observed arrival-time pattern; rank by posterior. This is the strong estimator the upper-bound claim rests on.
-- **Origin-vs-relay estimator (for the gate, §5):** exploits the position oracle to down-weight candidates whose first-emission was preceded by an in-range upstream emitter of the same id (a true relayer) — so the originate-gate is tested against an adversary that actually tries to defeat it (else the gate gets unfair credit, since an omniscient adversary can geometrically separate origin from relay).
+**IMPORTANT — the spread is EPIDEMIC, not radial.** This engine floods a blob to an entire connected component in one step; it then spreads further only as **mobile holders carry it into new components**. There is no `distance/c` radio wavefront — a receiver's first-hear time is *when a holder of the message first wanders into its range*. So source-localization here is **diffusion/epidemic source estimation** (infer where the spread *started*), not radio triangulation. Estimators must be defined against the recorded **hold log + trajectories**, not a propagation speed. Reported adversary success = **best across estimators per message**:
+- **First-spy** — candidate nearest (in position-at-first-hear) the earliest-hearing receiver (a lower-power reference).
+- **Reachability-likelihood (the strong estimator the upper-bound claim rests on)** — per candidate c with origination position p_c(t0): score how well "spread starting at p_c at t0" explains the observed `(receiver, first_hear_time)` vector, using the known trajectories + per-step reachability (forward-reachability from c: when would the flood, seeded at c, first bring a holder within range of each receiver?). Rank candidates by this likelihood/residual. Replaces the mis-specified "radial MLE."
+- **Origin-vs-relay estimator (for the gate, PR-2 §5):** exploits the position oracle to down-weight candidates whose first-hold of the id was preceded by an in-range upstream holder (a true relayer) — so the originate-gate is tested against an adversary that actually tries to defeat it.
 - **random-guess** — uniform over the candidate set; the no-signal floor.
+
+> If even the reachability-likelihood estimator cannot localize a STATIC source under near-total coverage (the must-localize control, §4), that is itself a **publishable finding** ("source-localization is hard in epidemic flooding"), not a number to force. The capability gate enforces this honestly.
 
 ## 4. Two controls + the publish gates (the honesty guards)
 The trap (mirror of slice-2): **claiming anonymity when the attack is merely weak.** Guards (both must be wired and surfaced like slice-2's `binding_gate`):

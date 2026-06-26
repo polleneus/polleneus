@@ -1,46 +1,48 @@
-# Anonymity Slice 3 · PR-1 — Adversary infrastructure + baseline exposure Implementation Plan
+# Anonymity Slice 3 · PR-1 — Adversary infrastructure + baseline exposure Implementation Plan — v2
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Build the passive receiver-grid adversary as a **non-participating overlay** on the trusted engine, plus the estimators and the baseline **source-exposure** measurement, gated by a **must-localize capability control** — so that *before* any defense is ever credited (PR-2), we have proven the attack actually localizes the naked originator.
+> **v2 (folds plan-review round 1):** estimator reframed to **diffusion/epidemic source-localization** (the engine floods epidemically — no `distance/c`); **post-hoc overlay** (engine adds only a position log; the overlay computes hearings for ANY receiver layout from `acquired` + positions + blob TTL — one sim run feeds all placements/coverage, both arms cheap); **chokepoint placement is the reported headline** (uniform shown only as the weaker arm); statistics pinned (`MIN_MESSAGES_PER_RUN`, `MIN_REPS`, CI over seeds, rank-1 refused below the floor); exposure gate uses a **margin** (beats_random is vacuous at 1/N); must-localize gate is **per-estimator + monotone-power**, not best-of-on-the-easy-case; metrics **conditional on detection** + undetected censoring; estimator-quality error measured at **first-hear position** (origin-time error + the gap = mobility-cloaking, reported separately); P90/P95 tail added; scope tag travels as a **CSV column + manifest field + enforced by a test**; adversary range wired from config; RNG disjointness test extended.
 
-**Architecture:** Adversary receivers are a static position list the engine checks **inline** during the real sim (they never enter `neighbor_pairs`/contention/exchange, so they cannot perturb delivery; default-empty ⇒ bit-identical to the merged engine). The engine records, behind a default-OFF flag, (a) per-(receiver, message) **first-hear time** and (b) a per-step **position log** (for candidate/originator positions over time). `adversary.py` places receivers + runs estimators; `anonymity.py` scores localization + runs the capability/exposure gates; `scenario.py` sweeps coverage f.
+**Goal:** Build the passive receiver-grid adversary as a **post-hoc overlay** on the trusted engine, plus a *strong* diffusion-source estimator and the baseline **source-exposure** measurement, gated by a **must-localize capability control** — so that before any defense is credited (PR-2), we have proven (or honestly failed to prove) that the attack localizes the naked originator.
+
+**Architecture:** The engine, behind a default-OFF flag, records a per-step **position log** (it already records per-(node,blob) acquire times in `acquired`). The overlay (`adversary.py`) places receivers and computes, for any layout, `first_hear[L,m]` = earliest step a holder of m (held over `[acquire, created+ttl]`) is within adversary-range of L — from the log alone, **no re-simulation, no engine nodes added** ⇒ contention/delivery untouched, bit-identical when off. `anonymity.py` scores localization + runs the capability/exposure gates; `scenario.py` sweeps coverage f and reports the stronger placement arm.
 
 **Tech Stack:** Python 3, numpy, pytest (`pythonpath=["."]`), matplotlib (optional). Determinism via `cfg.rng(*path)`.
 
 ## Global Constraints
 - **Every anonymity number is an UPPER BOUND on anonymity** (a stronger adversary localizes better); **never** a floor/guarantee.
-- **Scope tag travels with every emitted number** (CLI/CSV/manifest): `[SINGLE-EVENT, EXTERNAL-PASSIVE; intersection+insider NOT modeled; UPPER BOUND on anonymity]`. A test asserts no anonymity CSV/print lacks it.
-- **Non-regression:** adversary recording defaults OFF ⇒ engine bit-identical (slices 1–2 gates green: `test_engine_fidelity.py`, `test_integration_percolation.py`, `test_engine_airtime.py`).
-- **Determinism:** receiver placement = `cfg.rng(4)`; estimator tie-breaks/random-guess = `cfg.rng(6)` (disjoint from mobility=0/engine=1/cohort=2/buffers=(3,i); mixing=5 reserved for PR-2). Replication unit = SEED; per-message metrics estimated within a run, CI over seeds.
-- **No `sender`/`recipient` tokens in engine-layer files** (lint). Adversary/estimator code lives in new non-engine modules.
-- **Pre-registered constants** (named, in `anonymity.py`): `EXPOSURE_RANK1 = 0.5` (flooding "exposes" if best-estimator rank-1 prob ≥ this at realistic f); `MUSTLOC_RANK1 = 0.9`, `MUSTLOC_ERR_RADII = 0.5` (capability control: static source + near-total coverage must reach these); `ANON_SET_EPS` (anonymity-set tie band). `adversary_range = radius` (sniffer ≈ node radio range; bias noted).
-- Candidate set for PR-1 = **all real nodes** (cone-restriction is a documented refinement; it only tightens the random floor, and the headline rank-1 / exact-catch metric is unaffected by set size).
+- **Scope tag travels with every emitted number as a real carrier** (not a strippable comment): a `scope_tag` **CSV column on every row** + a manifest field + present in CLI stdout and plot title. A test asserts every anonymity emitter (CSV, plot title, `--preset anonymity` stdout via capsys) contains `SCOPE_TAG`.
+- **Non-regression:** position-log recording defaults OFF ⇒ engine bit-identical (slices 1–2 gates green).
+- **Determinism:** placement=`cfg.rng(4)`, estimator/Monte-Carlo=`cfg.rng(6)` (disjoint from 0/1/2/(3,i); 5 reserved for PR-2 mixing). Extend the RNG-disjointness test to cover 4 and 6. Replication unit = SEED.
+- **Statistics (pinned):** `MIN_MESSAGES_PER_RUN = 150`, `MIN_REPS = 6`; per-message metrics estimated within a run, **CI over seeds** via `mean_ci`; the exposure path **refuses to emit rank-1** if messages<MIN or reps<MIN (returns "inconclusive — underpowered").
+- **No `sender`/`recipient` in engine-layer files** (lint). Adversary/estimator code lives in new modules.
+- **Pre-registered constants** (named in `anonymity.py`): `EXPOSURE_RANK1 = 0.5`, `EXPOSURE_MARGIN_K = 5` (exposed iff best detected-conditional rank-1 ≥ max(EXPOSURE_RANK1, K·random_floor)); `MUSTLOC_RANK1 = 0.9`, `MUSTLOC_ERR_RADII = 0.5`; `ANON_SET_EPS`. `adversary_range = cfg.adversary_range_mult * cfg.radius`.
+- **Falsifiable prediction (stated up front):** *we predict the reachability estimator's detected-conditional rank-1 ≥ 0.5 at chokepoint coverage f ≥ ~0.4; if it never crosses 0.5, naked flooding does NOT cleanly expose the source on this axis (a publishable null).* 
+- **Metrics conditional on detection:** rank-1 / localization error are computed over messages heard by ≥1 receiver; `undetected_fraction` reported separately (censoring); an `unconditional_rank1 = rank1 · (1−undetected_fraction)` is also reported. Estimator-quality error is measured against the originator's **first-hear-time** position; the **origination-time** error and the gap (mobility-cloaking) are reported separately.
+- Candidate set (PR-1) = all real nodes; anonymity-set always labelled an UPPER BOUND (cone deferred — noted optimistic in the bias table).
 
 ## File Structure
-- `sim/soup_sim/config.py` — MODIFY: `adversary_range_mult: float = 0.0` (0 ⇒ recording off / no receivers) + validation.
-- `sim/soup_sim/engine.py` — MODIFY: optional `adversary_pos`; inline first-hear + position-log recorders (default off).
-- `sim/soup_sim/adversary.py` — CREATE: receiver placement (uniform + chokepoint), realized coverage, estimators (first_spy, time_gradient, random_guess).
-- `sim/soup_sim/anonymity.py` — CREATE: localization metrics, gates, pre-registered constants, scope tag.
+- `sim/soup_sim/config.py` — MODIFY: `adversary_range_mult: float = 0.0` + validation.
+- `sim/soup_sim/engine.py` — MODIFY: default-OFF per-step position log (`record_positions` flag).
+- `sim/soup_sim/adversary.py` — CREATE: placement (uniform+chokepoint), realized coverage, overhearing-from-log, estimators (first_spy, reachability, random_guess).
+- `sim/soup_sim/anonymity.py` — CREATE: metrics, gates, constants, SCOPE_TAG.
 - `sim/soup_sim/scenario.py` — MODIFY: `anonymity_sweep`.
-- `sim/soup_sim/report.py` — MODIFY: anonymity CSV (+ scope tag) + plot.
+- `sim/soup_sim/report.py` — MODIFY: anonymity CSV (scope_tag column) + plot.
 - `sim/run.py` — MODIFY: `--preset anonymity`.
 - `sim/README.md` — MODIFY: slice-3 section + bias rows.
-- Tests: `test_adversary.py`, `test_anonymity.py`, `test_scenario_anonymity.py` (CREATE); `test_config.py`, `test_report.py` (MODIFY).
+- Tests: `test_engine_anonymity.py`, `test_adversary.py`, `test_anonymity.py`, `test_scenario_anonymity.py` (CREATE); `test_config.py`, `test_report.py` (MODIFY).
 
 ---
 
-## Task 1: Engine adversary-overhearing + position recorders (default-OFF, bit-identical)
+## Task 1: Engine per-step position log (default-OFF, bit-identical)
 
-**Files:** Modify `sim/soup_sim/config.py`, `sim/soup_sim/engine.py`; Test `sim/tests/test_engine_anonymity.py` (CREATE).
+**Files:** Modify `config.py`, `engine.py`; Test `tests/test_engine_anonymity.py` (CREATE).
+**Interfaces:** `Config.adversary_range_mult: float = 0.0`; `Engine(..., record_positions=False)`. When True, `self.position_log: list[(t, positions_copy)]` is appended per step (and the origin's position at inject is recoverable from it). When False (default) ⇒ untouched ⇒ bit-identical. `acquired` (already present) is the hold-start oracle; hold end = blob `created_at + ttl`.
 
-**Interfaces:**
-- Produces: `Config.adversary_range_mult: float = 0.0`; `Engine(..., adversary_pos=None)` (an `(R,2)` array of receiver locations or None). When `adversary_pos` is set, the engine populates `self.hearings: dict[(recv_idx, blob_id) -> first_hear_time]` and `self.position_log: list[(t, positions_copy)]`. When None (default) neither is touched ⇒ bit-identical.
-
-- [ ] **Step 1: Write the failing test**
-
+- [ ] **Step 1: failing test**
 ```python
-# sim/tests/test_engine_anonymity.py (CREATE)
+# tests/test_engine_anonymity.py (CREATE)
 import numpy as np
 from soup_sim.config import Config
 from soup_sim.mobility import Mobility
@@ -55,86 +57,39 @@ def cfg(**kw):
              alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=0.0, measure_window=1.0,
              drain=0.0, n_messages=0, seen_margin=1e12, master_seed=0)
     d.update(kw); return Config(**d)
-def _eng(c, pos, adversary_pos=None):
+def _eng(c, pos, record=False):
     mob = Mobility("static", np.array(pos, float), np.zeros((len(pos), 2)), c.width, c.height, 0.0, 0.0)
     bufs = [NodeBuffer(BIG, 1e12, c.rng(3, i)) for i in range(len(pos))]
-    return Engine(c, mob, bufs, AirtimeBudget(1e12, 0, 0, 0, 1.0), c.rng(1),
-                  on_deliver=lambda *_: None, adversary_pos=adversary_pos)
-
-def test_receiver_hears_in_range_holder_not_out_of_range():
-    c = cfg()
-    recv = np.array([[60., 50.], [900., 50.]])   # R0 near node0(50,50); R1 far
-    eng = _eng(c, [[50., 50.], [55., 50.]], adversary_pos=recv)
-    eng.adversary_range = 10.0                     # sniffer range
-    eng.inject(Blob(7, 0.0, 1e12, 1.0), 0)
-    eng.run_until(3.0); eng.finalize()
-    assert (0, 7) in eng.hearings                  # R0 (dist 10 from node0) hears blob 7
-    assert (1, 7) not in eng.hearings              # R1 (far) never hears it
-    assert len(eng.position_log) >= 1
-
-def test_adversary_off_is_bit_identical():
-    def run(adv):
-        c = cfg(n=2)
-        eng = _eng(c, [[50., 50.], [55., 50.]], adversary_pos=adv)
+    return Engine(c, mob, bufs, AirtimeBudget(1e12, 0, 0, 0, 1.0), c.rng(1), on_deliver=lambda *_: None,
+                  record_positions=record)
+def test_position_log_recorded_when_on():
+    c = cfg(); eng = _eng(c, [[50., 50.], [55., 50.]], record=True)
+    eng.inject(Blob(7, 0.0, 1e12, 1.0), 0); eng.run_until(3.0); eng.finalize()
+    assert len(eng.position_log) >= 3
+    t0, p0 = eng.position_log[0]
+    assert p0.shape == (2, 2) and (0, 7) in eng.acquired   # acquire-time oracle present
+def test_record_off_is_bit_identical():
+    def run(rec):
+        c = cfg(n=2); eng = _eng(c, [[50., 50.], [55., 50.]], record=rec)
         eng.inject(Blob(0, 0.0, 1e12, 1.0), 0); eng.run_until(5.0); eng.finalize()
         return eng.transmissions, list(eng.episodes)
-    assert run(None) == run(None)
-    # with receivers present, the REAL sim outcome is unchanged (receivers don't participate)
-    base = run(None)
-    c = cfg(n=2); eng = _eng(c, [[50., 50.], [55., 50.]], adversary_pos=np.array([[60., 50.]]))
-    eng.adversary_range = 10.0
-    eng.inject(Blob(0, 0.0, 1e12, 1.0), 0); eng.run_until(5.0); eng.finalize()
-    assert (eng.transmissions, list(eng.episodes)) == base   # non-perturbing
+    assert run(False) == run(True)    # recording is passive: outcome identical
 ```
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `cd "C:/Users/rob/Documents/meldingx/sim" && .venv/Scripts/python.exe -m pytest tests/test_engine_anonymity.py -q`
-Expected: FAIL (`Engine() got unexpected keyword 'adversary_pos'`).
-
-- [ ] **Step 3: Implement**
-
-`config.py`: add `adversary_range_mult: float = 0.0` after the PR-2 fields; validate `>= 0`.
-
-`engine.py.__init__`: add param `adversary_pos=None`; store `self.adversary_pos = adversary_pos`, `self.adversary_range = 0.0`, `self.hearings = {}`, `self.position_log = []`.
-
-In `_process_step`, at the END (after `self.t = t + dt_step`), if `self.adversary_pos is not None`:
-```python
-        if self.adversary_pos is not None:
-            self.position_log.append((t, p0.copy()))
-            r2 = self.adversary_range * self.adversary_range
-            for li, L in enumerate(self.adversary_pos):
-                for k in range(len(p0)):
-                    if (p0[k][0]-L[0])**2 + (p0[k][1]-L[1])**2 <= r2:   # walls metric; receivers static
-                        for bid in self.buffers[k].ids():
-                            self.hearings.setdefault((li, bid), t)
-```
-(Receivers are NOT added to `neighbor_pairs`/`_degrees`/`active`, so contention/exchange/airtime are untouched.)
-
-- [ ] **Step 4: Run to verify it passes (+ non-regression)**
-
-Run: `cd "C:/Users/rob/Documents/meldingx/sim" && .venv/Scripts/python.exe -m pytest tests/test_engine_anonymity.py tests/test_engine_fidelity.py tests/test_engine_airtime.py -q`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-```bash
-git add sim/soup_sim/config.py sim/soup_sim/engine.py sim/tests/test_engine_anonymity.py
-git commit -m "feat(sim): engine adversary-overhearing + position recorders (default-OFF, non-perturbing)"
-```
+- [ ] **Step 2: run → FAIL** (`record_positions` unknown).
+- [ ] **Step 3:** `config.py`: add `adversary_range_mult: float = 0.0` (validate ≥0). `engine.__init__`: `record_positions=False` param; `self.record_positions = record_positions; self.position_log = []`. In `_process_step`, after `self.t = t + dt_step`: `if self.record_positions: self.position_log.append((t, p0.copy()))`.
+- [ ] **Step 4: run → PASS** + `pytest tests/test_engine_fidelity.py tests/test_engine_airtime.py -q` green.
+- [ ] **Step 5: commit** `feat(sim): engine per-step position log (default-OFF, bit-identical) for anonymity overlay`
 
 ---
 
-## Task 2: Receiver placement + realized coverage
+## Task 2: Receiver placement (uniform + chokepoint) + realized coverage
 
-**Files:** Create `sim/soup_sim/adversary.py`; Test `sim/tests/test_adversary.py` (CREATE).
+**Files:** Create `adversary.py`; Test `tests/test_adversary.py`.
+**Interfaces:** `place_receivers(cfg, f, mode, rng) -> (R,2)` (`mode∈{"uniform","chokepoint"}`; chokepoint clusters toward a node-position sample); `realized_coverage(receivers, adv_range, cfg, rng, n_mc=20000) -> float`.
 
-**Interfaces:**
-- Produces: `place_receivers(cfg, f, mode, rng) -> np.ndarray` (`(R,2)`), `mode in {"uniform","chokepoint"}` (chokepoint biases toward a node-position sample); `realized_coverage(receivers, adv_range, cfg, rng, n_mc=20000) -> float` (Monte-Carlo fraction of arena within `adv_range` of any receiver).
-
-- [ ] **Step 1: Write the failing test**
-
+- [ ] **Step 1: failing test** — coverage rises with f; placement deterministic; chokepoint differs from uniform. (see spec §1)
 ```python
-# sim/tests/test_adversary.py (CREATE)
+# tests/test_adversary.py (CREATE)
 import numpy as np
 from soup_sim.config import Config
 from soup_sim.adversary import place_receivers, realized_coverage
@@ -142,245 +97,133 @@ def cfg(**kw):
     d = dict(n=50, width=120.0, height=120.0, radius=10.0, boundary="torus", mobility="rwp",
              speed_min=2.0, speed_max=2.0, dt=0.5, ttl=60.0, buffer_cap=50, throughput_ideal=1e4,
              alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=0.0, measure_window=1.0,
-             drain=0.0, n_messages=0, seen_margin=60.0, master_seed=3)
-    d.update(kw); return Config(**d)
+             drain=0.0, n_messages=0, seen_margin=60.0, master_seed=3); d.update(kw); return Config(**d)
 def test_realized_coverage_increases_with_f():
-    c = cfg(); adv_range = c.radius
-    covs = []
-    for f in (0.1, 0.4, 0.8):
-        recv = place_receivers(c, f, "uniform", c.rng(4))
-        covs.append(realized_coverage(recv, adv_range, c, c.rng(4)))
-    assert covs[0] < covs[1] < covs[2]
-    assert 0.0 <= covs[0] and covs[2] <= 1.0
+    c = cfg(); rng = c.rng(4)
+    covs = [realized_coverage(place_receivers(c, f, "uniform", c.rng(4)), c.radius, c, c.rng(4))
+            for f in (0.1, 0.4, 0.8)]
+    assert covs[0] < covs[1] < covs[2] and 0 <= covs[0] and covs[2] <= 1.0
 def test_placement_deterministic():
     c = cfg()
-    a = place_receivers(c, 0.5, "uniform", c.rng(4))
-    b = place_receivers(c, 0.5, "uniform", c.rng(4))
-    assert np.array_equal(a, b)
+    assert np.array_equal(place_receivers(c, 0.5, "uniform", c.rng(4)), place_receivers(c, 0.5, "uniform", c.rng(4)))
 ```
-
-- [ ] **Step 2: Run to verify it fails** — `pytest tests/test_adversary.py -q` → ImportError.
-
-- [ ] **Step 3: Implement** `adversary.py`: `place_receivers` lays a grid whose spacing makes disk-coverage ≈ f (spacing `s` s.t. `π·adv_range² / s² ≈ f`, clamped), jitters each point by `rng`; "chokepoint" draws receiver centers from a sample of node start positions (`placement`-like) to cluster them. `realized_coverage` samples `n_mc` uniform arena points, fraction within `adv_range` of any receiver (torus-aware via min-image).
-
-- [ ] **Step 4: Run to verify it passes** — `pytest tests/test_adversary.py -q` → PASS.
-
-- [ ] **Step 5: Commit**
-```bash
-git add sim/soup_sim/adversary.py sim/tests/test_adversary.py
-git commit -m "feat(sim): adversary receiver placement (uniform+chokepoint) + realized coverage"
-```
+- [ ] **Step 2: run → FAIL.**
+- [ ] **Step 3:** implement (uniform: grid spacing s with π·range²/s²≈f, jittered; chokepoint: centers drawn from a node-position sample so receivers cluster; `realized_coverage`: torus-aware Monte-Carlo fraction within range of any receiver).
+- [ ] **Step 4: run → PASS.**
+- [ ] **Step 5: commit** `feat(sim): adversary receiver placement (uniform+chokepoint) + realized coverage`
 
 ---
 
-## Task 3: Estimators — first-spy, time-gradient, random-guess
+## Task 3: Overhearing from the log (post-hoc, any layout)
 
-**Files:** Modify `sim/soup_sim/adversary.py`; Test `sim/tests/test_adversary.py`.
+**Files:** Modify `adversary.py`; Test `tests/test_adversary.py`.
+**Interfaces:** `hearings(receivers, adv_range, position_log, acquired, blob_ttl, cfg) -> dict[(recv_idx, blob_id) -> first_hear_time]` — for each receiver L and message m, earliest `t` in the log where some holder k of m (held over `[acquired[(k,m)], created_m + ttl]`) is within `adv_range` of L (torus-aware). Computed from the log, for any receiver set, no re-sim. (Hold assumed until TTL expiry — eviction ignored ⇒ adversary hears at least as much ⇒ conservative for the anonymity upper bound; noted.)
 
-**Interfaces:**
-- Produces: `estimate(method, hearings_for_msg, receivers, candidates_pos, rng) -> {"point": (x,y), "scores": np.ndarray}` where `method in {"first_spy","time_gradient","random_guess"}`, `hearings_for_msg = list[(recv_idx, first_hear_time)]`, `candidates_pos = (C,2)` positions at the reference time, returns a per-candidate suspicion score (lower = more suspicious) and a point estimate. `first_spy`: point = earliest receiver's location; scores = distance to it. `time_gradient`: scores = residual of candidate explaining the arrival-order (a candidate closer to early receivers / farther from late ones scores lower). `random_guess`: scores = `rng.permutation`.
-
-- [ ] **Step 1: Write the failing test (estimators localize a known source)**
-
+- [ ] **Step 1: failing test**
 ```python
-# sim/tests/test_adversary.py (append)
-from soup_sim.adversary import estimate
-def test_first_spy_points_at_earliest_receiver():
-    recv = np.array([[0., 0.], [100., 0.], [200., 0.]])
-    hearings = [(0, 5.0), (1, 9.0), (2, 14.0)]          # R0 earliest
-    cands = np.array([[2., 0.], [150., 0.]])            # cand0 near R0
-    out = estimate("first_spy", hearings, recv, cands, np.random.default_rng(0))
-    assert np.allclose(out["point"], [0., 0.])
-    assert out["scores"][0] < out["scores"][1]          # cand0 (near R0) more suspicious
-def test_time_gradient_localizes_better_than_random_on_a_gradient():
-    recv = np.array([[0., 0.], [50., 0.], [100., 0.], [150., 0.]])
-    # source near x=0: arrival times increase with x
-    hearings = [(0, 1.0), (1, 3.0), (2, 5.0), (3, 7.0)]
-    cands = np.array([[1., 0.], [80., 0.], [149., 0.]])
-    tg = estimate("time_gradient", hearings, recv, cands, np.random.default_rng(0))
-    assert int(np.argmin(tg["scores"])) == 0            # candidate nearest the source ranks top
+# tests/test_adversary.py (append)
+from soup_sim.adversary import hearings
+def test_receiver_hears_in_range_holder_only():
+    # holder of blob 7 sits at (50,50) for the whole log; R0 near, R1 far
+    log = [(float(t), np.array([[50., 50.], [55., 50.]])) for t in range(5)]
+    acquired = {(0, 7): 0.0}                  # node0 holds blob 7 from t=0
+    recv = np.array([[58., 50.], [900., 50.]])
+    c = cfg(width=2000.0, height=200.0, boundary="walls")
+    h = hearings(recv, 10.0, log, acquired, {7: 1e12}, c)
+    assert h[(0, 7)] == 0.0 and (1, 7) not in h
 ```
-
-- [ ] **Step 2: Run to verify it fails** — ImportError `estimate`.
-
-- [ ] **Step 3: Implement** the three methods in `adversary.py` per the interface.
-
-- [ ] **Step 4: Run to verify it passes** — `pytest tests/test_adversary.py -q` → PASS.
-
-- [ ] **Step 5: Commit**
-```bash
-git add sim/soup_sim/adversary.py sim/tests/test_adversary.py
-git commit -m "feat(sim): adversary estimators (first-spy, time-gradient, random-guess)"
-```
+- [ ] **Step 2: run → FAIL.**
+- [ ] **Step 3:** implement `hearings` (loop layout × log steps × holders; torus min-image; record first time in-range while held).
+- [ ] **Step 4: run → PASS.**
+- [ ] **Step 5: commit** `feat(sim): post-hoc overhearing from the position log (any receiver layout, no re-sim)`
 
 ---
 
-## Task 4: Anonymity metrics + scope tag
+## Task 4: Estimators — first-spy, reachability-likelihood, random-guess
 
-**Files:** Create `sim/soup_sim/anonymity.py`; Test `sim/tests/test_anonymity.py` (CREATE).
+**Files:** Modify `adversary.py`; Test `tests/test_adversary.py`.
+**Interfaces:** `estimate(method, msg_hearings, receivers, cand_idx, cand_pos_at_hear, origin_reach, rng) -> {"point","scores"}` (lower score = more suspicious). `first_spy`: point = earliest receiver loc; scores = candidate distance to it. `reachability`: per candidate, residual between observed `(receiver, first_hear)` and the candidate's **forward time-respecting reachability time** to each receiver (`origin_reach[cand]` = precomputed earliest-reach times to each receiver from that candidate via the contact/log graph); the candidate whose predicted reach-order/time best matches observation scores lowest. `random_guess`: `rng.permutation`.
 
-**Interfaces:**
-- Produces: `SCOPE_TAG` (str); `localization_error(point, true_pos, cfg) -> float` (torus-aware); `rank_of(scores, true_idx) -> int`; `rank1` helper; `anonymity_set_size(scores, ANON_SET_EPS) -> int`; pre-registered constants `EXPOSURE_RANK1, MUSTLOC_RANK1, MUSTLOC_ERR_RADII, ANON_SET_EPS`.
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# sim/tests/test_anonymity.py (CREATE)
-import numpy as np
-from soup_sim.anonymity import localization_error, rank_of, anonymity_set_size, SCOPE_TAG
-from soup_sim.config import Config
-def cfg(**kw):
-    d = dict(n=2, width=100.0, height=100.0, radius=10.0, boundary="torus", mobility="static",
-             speed_min=0.0, speed_max=0.0, dt=1.0, ttl=1e9, buffer_cap=10**9, throughput_ideal=1e9,
-             alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=0.0, measure_window=1.0,
-             drain=0.0, n_messages=0, seen_margin=1e9, master_seed=0)
-    d.update(kw); return Config(**d)
-def test_localization_error_torus():
-    c = cfg()
-    assert abs(localization_error((1., 1.), (99., 99.), c) - np.hypot(2., 2.)) < 1e-9  # wraps
-def test_rank_and_anon_set():
-    scores = np.array([0.1, 0.2, 0.2, 5.0])
-    assert rank_of(scores, 0) == 0                       # best score -> rank 0 (exact catch)
-    assert rank_of(scores, 3) == 3
-    assert anonymity_set_size(scores, eps=0.15) == 3     # 0.1,0.2,0.2 within eps band of best
-def test_scope_tag_present():
-    assert "UPPER BOUND" in SCOPE_TAG and "intersection" in SCOPE_TAG.lower()
-```
-
-- [ ] **Step 2: Run to verify it fails** — ImportError.
-
-- [ ] **Step 3: Implement** `anonymity.py` (torus-aware distance via min-image; `rank_of` = count of strictly-better scores; `anonymity_set_size` = count within `eps` of the best; constants; `SCOPE_TAG = "[SINGLE-EVENT, EXTERNAL-PASSIVE; intersection+insider NOT modeled; UPPER BOUND on anonymity]"`).
-
-- [ ] **Step 4: Run to verify it passes** — PASS.
-
-- [ ] **Step 5: Commit**
-```bash
-git add sim/soup_sim/anonymity.py sim/tests/test_anonymity.py
-git commit -m "feat(sim): anonymity metrics (loc error, rank, anon-set upper bound) + scope tag"
-```
+- [ ] **Step 1: failing test** — first_spy points at earliest receiver; reachability ranks the true source top on a constructed spread; reachability ≤ first_spy error on that case (stronger).
+- [ ] **Step 2: run → FAIL.**
+- [ ] **Step 3:** implement. `reachability` consumes precomputed per-candidate reach-times (the sweep computes them from the episode log + receiver proximity); score = sum of squared residuals (or Spearman) vs observed first-hears over the receivers that heard the message.
+- [ ] **Step 4: run → PASS.**
+- [ ] **Step 5: commit** `feat(sim): diffusion-source estimators (first-spy, reachability-likelihood, random-guess)`
 
 ---
 
-## Task 5: Capability (must-localize) + exposure gates
+## Task 5: Anonymity metrics + constants + scope tag
 
-**Files:** Modify `sim/soup_sim/anonymity.py`; Test `sim/tests/test_anonymity.py`.
+**Files:** Create `anonymity.py`; Test `tests/test_anonymity.py`.
+**Interfaces:** `SCOPE_TAG`; constants (`EXPOSURE_RANK1, EXPOSURE_MARGIN_K, MUSTLOC_RANK1, MUSTLOC_ERR_RADII, ANON_SET_EPS, MIN_MESSAGES_PER_RUN, MIN_REPS`); `localization_error(point, true_pos, cfg)` (torus); `rank_of(scores, true_idx)` (strict-better count + tie midrank); `anonymity_set_size(scores, eps)`; `quantiles(errs) -> (median, p90, p95)`.
 
-**Interfaces:**
-- Produces: `mustlocalize_gate(static_dense_result) -> {"ok": bool, "label": str}` (best-estimator on a static source + near-total coverage must reach `rank1 >= MUSTLOC_RANK1` AND `median_err <= MUSTLOC_ERR_RADII * radius`); `exposure_gate(best_rank1, beats_random) -> {"exposed": bool, "label": str}` (exposed iff `best_rank1 >= EXPOSURE_RANK1` AND beats_random).
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# sim/tests/test_anonymity.py (append)
-from soup_sim.anonymity import mustlocalize_gate, exposure_gate
-def test_mustlocalize_gate():
-    assert mustlocalize_gate({"rank1": 0.95, "median_err_radii": 0.2})["ok"] is True
-    assert mustlocalize_gate({"rank1": 0.3, "median_err_radii": 0.2})["ok"] is False   # too weak
-def test_exposure_gate():
-    assert exposure_gate(best_rank1=0.7, beats_random=True)["exposed"] is True
-    assert exposure_gate(best_rank1=0.7, beats_random=False)["exposed"] is False        # no signal
-    assert exposure_gate(best_rank1=0.1, beats_random=True)["exposed"] is False          # below threshold
-```
-
-- [ ] **Step 2: Run to verify it fails** — ImportError.
-
-- [ ] **Step 3: Implement** both gates against the pre-registered constants.
-
-- [ ] **Step 4: Run to verify it passes** — PASS.
-
-- [ ] **Step 5: Commit**
-```bash
-git add sim/soup_sim/anonymity.py sim/tests/test_anonymity.py
-git commit -m "feat(sim): must-localize capability gate + exposure gate (pre-registered thresholds)"
-```
+- [ ] **Step 1: failing test** — torus error wraps; rank/anon-set on hand cases; SCOPE_TAG contains "UPPER BOUND" + "intersection"; constants present.
+- [ ] **Step 2: run → FAIL.**
+- [ ] **Step 3:** implement (`SCOPE_TAG = "[SINGLE-EVENT, EXTERNAL-PASSIVE; intersection+insider NOT modeled; UPPER BOUND on anonymity]"`).
+- [ ] **Step 4: run → PASS.**
+- [ ] **Step 5: commit** `feat(sim): anonymity metrics (error/rank/anon-set/quantiles) + pre-registered constants + scope tag`
 
 ---
 
-## Task 6: Anonymity sweep over coverage f (+ must-localize control wired)
+## Task 6: Gates — must-localize (per-estimator + monotone), exposure (margin), no-signal
 
-**Files:** Modify `sim/soup_sim/scenario.py`; Test `sim/tests/test_scenario_anonymity.py` (CREATE).
+**Files:** Modify `anonymity.py`; Test `tests/test_anonymity.py`.
+**Interfaces:** `mustlocalize_gate(per_estimator_results, coverage_curve) -> {"ok","label"}` — passes iff the **reachability** estimator (not best-of) reaches `rank1≥MUSTLOC_RANK1` AND `median_err≤MUSTLOC_ERR_RADII·radius` on the static+dense control **AND** best-estimator median error is monotone-non-increasing (within CI) as coverage→1. `exposure_gate(best_rank1_detected, random_floor, beats_random, n_messages, n_reps) -> {"exposed","label"}` — refuses ("underpowered") if messages<MIN or reps<MIN; else exposed iff `best_rank1_detected ≥ max(EXPOSURE_RANK1, EXPOSURE_MARGIN_K·random_floor)`.
 
-**Interfaces:**
-- Produces: `anonymity_sweep(base_cfg, f_values, reps, placement="uniform") -> {"rows", "mustlocalize", "scope_tag"}`. Each run: place receivers (coverage f), run the engine with `adversary_pos`, for every originated cohort message compute the best-estimator (over first_spy/time_gradient) localization error (origination-time + first-hear-time), rank, rank-1, anonymity-set, and undetected fraction; aggregate per f with CI over seeds. Plus a separate **must-localize control** run (static source, f≈1) feeding `mustlocalize_gate`, and the random-guess floor. Deterministic by seed.
+- [ ] **Step 1: failing test** — must-localize fails if reachability is weak even when first_spy is strong; fails if non-monotone; exposure refuses when underpowered; exposure margin bites when random_floor high. 
+- [ ] **Step 2: run → FAIL.**
+- [ ] **Step 3:** implement both gates against the constants.
+- [ ] **Step 4: run → PASS.**
+- [ ] **Step 5: commit** `feat(sim): must-localize (per-estimator+monotone) + margin exposure gate (underpower-refusing)`
 
-- [ ] **Step 1: Write the failing test (fast/tiny)**
+---
 
+## Task 7: anonymity_sweep over coverage f (both arms → headline = stronger)
+
+**Files:** Modify `scenario.py`; Test `tests/test_scenario_anonymity.py`.
+**Interfaces:** `anonymity_sweep(base_cfg, f_values, reps) -> {"rows","mustlocalize","scope_tag","headline_arm"}`. One engine run per (seed) with `record_positions=True`; from its `position_log`+`acquired` compute hearings for BOTH placement arms across all f; per arm/f and per detected cohort message compute best-estimator error (first-hear-time = estimator quality; origination-time + gap reported), rank, rank-1, anon-set, P90/P95, undetected fraction; **headline = the stronger (higher rank-1 / lower error) arm**; CI over seeds (reps≥MIN_REPS); plus a **must-localize control** (static mobility + f≈0.99) feeding `mustlocalize_gate`. Deterministic. `n` is set explicitly in `base_cfg` (coverage f is the axis, not density).
+
+- [ ] **Step 1: failing test (tiny but valid n>0)** — structure (per-row keys incl. `rank1_prob, median_err_firsthear, median_err_origin, p90_err, undetected_fraction, beats_random, arm`), determinism, scope_tag present, `headline_arm` chosen, `mustlocalize` computed; assert ≥1 message heard at the top f (non-vacuous). Mark the realistic-power sweep `@pytest.mark.slow`.
 ```python
-# sim/tests/test_scenario_anonymity.py (CREATE)
+# tests/test_scenario_anonymity.py (CREATE)
 import pytest
 from soup_sim.config import Config
 from soup_sim.scenario import anonymity_sweep
-def tiny():
-    return Config(n=0, width=40.0, height=40.0, radius=8.0, boundary="torus", mobility="rwp",
+def tiny():   # n>0; smoke only — NOT a power config (rank-1 not trusted here)
+    return Config(n=12, width=40.0, height=40.0, radius=8.0, boundary="torus", mobility="rwp",
                   speed_min=1.5, speed_max=1.5, dt=1.0, ttl=20.0, buffer_cap=40, throughput_ideal=1e9,
                   alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=4.0, measure_window=10.0,
-                  drain=0.0, n_messages=12, seen_margin=20.0, master_seed=5)
+                  drain=0.0, n_messages=10, seen_margin=20.0, master_seed=5, adversary_range_mult=1.0)
 def test_anonymity_sweep_structure_and_determinism():
-    out1 = anonymity_sweep(tiny(), [0.3, 0.7], reps=1)
-    out2 = anonymity_sweep(tiny(), [0.3, 0.7], reps=1)
-    assert out1["rows"] == out2["rows"]                          # deterministic
-    assert "UPPER BOUND" in out1["scope_tag"]
-    assert "ok" in out1["mustlocalize"]
-    for r in out1["rows"]:
-        assert {"f", "realized_coverage", "rank1_prob", "median_err_origin",
-                "undetected_fraction", "beats_random"} <= set(r)
+    a = anonymity_sweep(tiny(), [0.3, 0.7], reps=2); b = anonymity_sweep(tiny(), [0.3, 0.7], reps=2)
+    assert a["rows"] == b["rows"] and "UPPER BOUND" in a["scope_tag"]
+    assert a["headline_arm"] in ("uniform", "chokepoint") and "ok" in a["mustlocalize"]
+    assert any(r["undetected_fraction"] < 1.0 for r in a["rows"])   # non-vacuous: something heard
+    for r in a["rows"]:
+        assert {"f","arm","rank1_prob","median_err_firsthear","median_err_origin","p90_err",
+                "undetected_fraction","beats_random"} <= set(r)
 ```
-
-- [ ] **Step 2: Run to verify it fails** — ImportError.
-
-- [ ] **Step 3: Implement** `anonymity_sweep` (and a `_run_one_anonymity(cfg, receivers)` helper that calls the engine with `adversary_pos` + `adversary_range`, then scores via `adversary.estimate` + `anonymity.*`). Use `cfg.rng(4)` for placement, `cfg.rng(6)` for estimator randomness, `_seed_for` per (f-index, rep). Undetected = cohort messages with no `(recv, mid)` hearing. Reuse `mean_ci` for the per-seed CIs.
-
-- [ ] **Step 4: Run to verify it passes** — `pytest tests/test_scenario_anonymity.py tests/test_scenario.py -q` → PASS.
-
-- [ ] **Step 5: Commit**
-```bash
-git add sim/soup_sim/scenario.py sim/tests/test_scenario_anonymity.py
-git commit -m "feat(sim): anonymity_sweep over coverage f + must-localize control"
-```
+- [ ] **Step 2: run → FAIL.**
+- [ ] **Step 3:** implement `_run_one_anonymity(cfg)` (engine with `record_positions`, `adversary_range=cfg.adversary_range_mult*cfg.radius`) + `anonymity_sweep` (both arms from one log; reachability reach-times from the episode log; `cfg.rng(4)`/`cfg.rng(6)`; `_seed_for`; must-localize control = `replace(base_cfg, mobility="static", speed_min=0, speed_max=0)` + f≈0.99). Undetected = cohort messages with no hearing; metrics conditional on detection.
+- [ ] **Step 4: run → PASS** (+ `tests/test_scenario.py` green).
+- [ ] **Step 5: commit** `feat(sim): anonymity_sweep over coverage f (both arms->stronger headline) + must-localize control`
 
 ---
 
-## Task 7: Report + CLI preset + docs (scope tag travels)
+## Task 8: Report + CLI preset + docs (scope tag enforced everywhere)
 
-**Files:** Modify `sim/soup_sim/report.py`, `sim/run.py`, `sim/README.md`; Test `sim/tests/test_report.py`.
+**Files:** Modify `report.py`, `run.py`, `README.md`; Test `tests/test_report.py`.
+**Interfaces:** `anonymity_to_csv_string(rows, manifest, scope_tag)` (a `scope_tag` **column** on every row + a `#`-comment + manifest `param_*`); `anonymity_plot` (rank-1 / error vs f, random floor overlaid, both arms, scope tag in title); `run.py --preset anonymity` (registered in `choices`; prints exposure verdict + must-localize verdict + scope tag); README slice-3 section + bias rows.
 
-**Interfaces:**
-- Produces: `anonymity_to_csv_string(rows, manifest, scope_tag) -> str` (a leading `# <scope_tag>` comment line + columns f, realized_coverage, rank1_prob, median_err_origin, median_err_firsthear, anon_set_mean, undetected_fraction, beats_random + `param_*`); `run.py --preset anonymity` prints the exposure-gate verdict, the must-localize verdict, and the scope tag; README slice-3 section + bias rows.
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# sim/tests/test_report.py (append)
-def test_anonymity_csv_carries_scope_tag():
-    from soup_sim.report import anonymity_to_csv_string
-    rows = [{"f": 0.5, "realized_coverage": 0.48, "rank1_prob": 0.3, "median_err_origin": 22.0,
-             "median_err_firsthear": 18.0, "anon_set_mean": 6.0, "undetected_fraction": 0.1,
-             "beats_random": True}]
-    s = anonymity_to_csv_string(rows, {"master_seed": 5}, "[UPPER BOUND on anonymity ...]")
-    assert s.splitlines()[0].startswith("#") and "UPPER BOUND" in s.splitlines()[0]
-    assert "rank1_prob" in s and "param_master_seed" in s
-```
-
-- [ ] **Step 2: Run to verify it fails** — ImportError.
-
-- [ ] **Step 3: Implement** `anonymity_to_csv_string` (scope-tag comment line first), optional `anonymity_plot` (rank-1 / median-error vs f with the random-guess floor overlaid + the scope tag in the title), `run.py --preset anonymity` (uses `anonymity_sweep`; prints scope tag + both gate verdicts), README slice-3 section + bias rows (single-event optimistic; uniform-placement optimistic if chokepoint not run; adversary unit-disk optimistic; worst-case aux conservative-for-exposure).
-
-- [ ] **Step 4: Run to verify it passes + FULL default suite green**
-
-Run: `cd "C:/Users/rob/Documents/meldingx/sim" && .venv/Scripts/python.exe -m pytest -q && .venv/Scripts/python.exe run.py --preset anonymity --out out/anon.csv`
-Expected: PASS; CLI prints exposure + must-localize verdicts + scope tag.
-
-- [ ] **Step 5: Commit**
-```bash
-git add sim/soup_sim/report.py sim/run.py sim/README.md sim/tests/test_report.py
-git commit -m "feat(sim): anonymity CSV/plot (scope-tag-carrying) + anonymity preset + slice-3 docs"
-```
+- [ ] **Step 1: failing test** — CSV has `scope_tag` as a **column value** (not just comment) + `rank1_prob` + `param_master_seed`; an enforcement test captures `--preset anonymity` stdout (capsys via `run.main` or a thin function) and the plot title, asserting `SCOPE_TAG` in each.
+- [ ] **Step 2: run → FAIL.**
+- [ ] **Step 3:** implement; **write the actual README rows** (append to the existing bias table): single-event ⇒ optimistic (dominant deferred risk); external-passive-only ⇒ optimistic; uniform shown only as the weaker arm, chokepoint is the headline; adversary unit-disk ⇒ optimistic; candidate-set=all-nodes ⇒ optimistic (anon-set crowd inflated, cone deferred); worst-case-aux ⇒ conservative-for-exposure. README slice-3 prose carries "UPPER BOUND on anonymity, never a floor" + the falsifiable prediction + "anonymity-set (UPPER BOUND)" (never "K-anonymity").
+- [ ] **Step 4: run → PASS + FULL default suite** `pytest -q` green; `run.py --preset anonymity --out out/anon.csv` prints both verdicts + scope tag.
+- [ ] **Step 5: commit** `feat(sim): anonymity CSV/plot (scope-tag column) + anonymity preset + slice-3 docs`
 
 ---
 
 ## Self-Review
-**1. Spec coverage (PR-1 scope):** overlay adversary (Task 1, non-perturbing inline recorder — spec §7); receiver placement uniform+chokepoint + realized coverage (Task 2 — §1); estimators incl. a strong time-gradient + random-guess floor (Task 3 — §3); pinned metrics incl. both reference times + anonymity-set upper bound + undetected fraction (Tasks 4,6 — §2); **must-localize capability control + exposure gate** (Task 5 — §4 Control A/B + exposure); scope tag travels with every emitted number (Tasks 4,6,7 — honesty banner); sweep over f (Task 6 — §1); non-regression by default-off (Task 1). Defenses + defense-power gate + confound controls are **PR-2** (not here).
-**2. Deferred to PR-2 (correctly):** mixing, originate-gate, origin-vs-relay estimator, TTL=∞/relay-density confound controls, defense-scope disclaimer.
-**3. Determinism/non-regression:** new config field defaults to off; placement=rng(4), estimator=rng(6) disjoint; Task 1 re-runs the slices 1–2 gates; CI over seeds.
-**4. Type consistency:** `estimate(...)->{"point","scores"}` consumed by `anonymity.*` and `anonymity_sweep`; gates consume `{"rank1","median_err_radii"}` / `(best_rank1, beats_random)`; sweep returns `{"rows","mustlocalize","scope_tag"}` consumed by report/CLI.
-**5. Execution judgment:** the MLE/diffusion estimator (spec §3) is approximated here by `time_gradient`; if Control A (must-localize) fails to reach `MUSTLOC_RANK1` under static+dense coverage, the estimator is too weak and the build must strengthen `time_gradient` (toward a true arrival-time MLE) before any exposure number publishes — the capability gate enforces this.
+**Spec coverage (PR-1):** post-hoc overlay (Tasks 1,3 — spec §7); uniform+chokepoint placement, chokepoint = headline (Tasks 2,7 — §1); diffusion-source estimators incl. a strong reachability-likelihood + random floor (Task 4 — §3); pinned metrics incl. both reference times, conditional-on-detection + undetected censoring, P90/P95, anon-set upper bound (Tasks 5,7 — §2); must-localize (per-estimator + monotone) + margin exposure gate + underpower refusal (Task 6 — §4); scope tag as column+manifest+CLI+title, test-enforced (Tasks 5,7,8 — banner); statistics MIN_MESSAGES/MIN_REPS + CI over seeds (Task 6,7 — §7); non-regression default-off (Task 1). **Deferred to PR-2 (correctly):** mixing, originate-gate, origin-vs-relay estimator, TTL=∞/relay-density confound controls, defense-scope disclaimer.
+**Folded round-1 findings:** estimator physics (epidemic, not radial) → reachability estimator; inline→post-hoc overlay; chokepoint headline; statistics floor + underpower refusal; margin exposure gate; per-estimator+monotone must-localize; conditional-on-detection + undetected; mobility-cloaking separated (first-hear vs origin-time error); P90/P95; scope-tag carrier (column) + enforcement test; range wired from config; RNG disjointness test; tasks 6/7/8 split out.
+**Execution judgment:** the reachability estimator's strength is enforced by the per-estimator must-localize gate + the monotone-power check; if it fails on a static source at f≈1, the build must strengthen it (toward a fuller forward-reachability likelihood) before any exposure number publishes — and if it still can't, that null ("source-localization is hard under epidemic flooding") is the honest reported result (spec §3).

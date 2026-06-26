@@ -13,7 +13,7 @@ from .metrics import Metrics
 from .workload import make_cohort
 from .blob import Blob
 from .cell_list import neighbor_pairs
-from .percolation import same_component_pair_fraction, placement
+from .percolation import same_component_pair_fraction, placement, largest_component_fraction
 from .knee import find_knee, binding_decomposition, binding_gate
 from .adversary import place_receivers, realized_coverage, hearings, estimate, fuse_scores
 from .anonymity import (localization_error, rank_of, anonymity_set_size, quantiles,
@@ -157,6 +157,71 @@ def static_delivery_sweep(base_cfg, degrees, reps: int) -> list[dict]:
             "overhead_mean": float("nan"), "stationary_ok": True, "per_rep_ratios": ratios,
         })
     return rows
+
+
+CLUSTER_REGIME_TAG = "[MOBILITY REGIME = clustered gathering; uniform/RWP is the optimistic baseline]"
+
+
+def _avg_snapshot_metrics(cfg, rng, n_snap=8):
+    """Mobility-only (engine-free): build the mobility, then sample positions over the window and
+    average same-component delivery + giant-component fraction (+ intra/inter-cluster degree). Captures
+    transit-node bridging (a leaking mover physically connects clusters it passes through)."""
+    mob = make_mobility(cfg, rng)
+    r, w, h, b = cfg.radius, cfg.width, cfg.height, cfg.boundary
+    steps = max(1, int(cfg.measure_window / max(n_snap, 1) / cfg.dt))
+    deliv, giant, intra, inter = [], [], [], []
+    home = mob.home
+    for _ in range(n_snap):
+        for _ in range(steps):
+            mob.step(cfg.dt)
+        pos = mob.positions
+        deliv.append(same_component_pair_fraction(pos, r, w, h, b))
+        giant.append(largest_component_fraction(pos, r, w, h, b))
+        if home is not None:
+            pairs = neighbor_pairs(pos, r, w, h, b)
+            same = sum(1 for (i, j) in pairs if home[i] == home[j])
+            intra.append(2.0 * same / cfg.n)
+            inter.append(2.0 * (len(pairs) - same) / cfg.n)
+    return {"delivery": float(np.mean(deliv)), "giant": float(np.mean(giant)),
+            "intra_degree": float(np.mean(intra)) if intra else float("nan"),
+            "inter_degree": float(np.mean(inter)) if inter else float("nan")}
+
+
+def cluster_leak_sweep(base_cfg, leak_values, degree, reps):
+    """Delivery + giant-component vs inter-cluster leak at a FIXED NODE COUNT N (the count that yields
+    global degree `degree` under a UNIFORM layout). The REALIZED global degree is NOT fixed — clustering
+    concentrates nodes, so realized_degree is higher at low leak (reported per row). Engine-free
+    (mobility snapshots). RWP recovered at leak=1 (correctness gate). Every number is an UPPER BOUND on
+    delivery and carries the clustered mobility-regime tag."""
+    n = max(2, density_to_n(degree, base_cfg.width, base_cfg.height, base_cfg.radius))
+    rows = []
+    for leak in leak_values:
+        d, g, intra, inter = [], [], [], []
+        for rep in range(reps):
+            # Seed depends ONLY on rep, NOT on the leak value -> the cluster layout (centers/homes/init,
+            # all drawn before any per-leg target) is the SAME venue across the whole leak sweep; only the
+            # per-retarget wander choices (drawn later in step()) vary with cluster_leak. So the curve
+            # isolates the leak effect instead of confounding it with random layout-to-layout variation.
+            cfg = replace(base_cfg, n=n, mobility="clustered", cluster_leak=leak,
+                          master_seed=_seed_for(base_cfg.master_seed, 0, rep))
+            m = _avg_snapshot_metrics(cfg, cfg.rng(0))
+            d.append(m["delivery"]); g.append(m["giant"])
+            intra.append(m["intra_degree"]); inter.append(m["inter_degree"])
+        mean, lo, hi = mean_ci(d)
+        intra_m, inter_m = float(np.mean(intra)), float(np.mean(inter))
+        rows.append({"leak": leak, "n": n, "delivery_mean": mean, "ci_lo": lo, "ci_hi": hi,
+                     "giant_mean": float(np.mean(g)), "intra_degree": intra_m, "inter_degree": inter_m,
+                     "realized_degree": intra_m + inter_m})   # NOT fixed: clustering concentrates nodes
+    rwp = []
+    for rep in range(reps):
+        cfg = replace(base_cfg, n=n, mobility="rwp", master_seed=_seed_for(base_cfg.master_seed, 999, rep))
+        rwp.append(_avg_snapshot_metrics(cfg, cfg.rng(0))["delivery"])
+    rwp_delivery = float(np.mean(rwp))
+    leak1 = next((r for r in rows if r["leak"] == 1.0), None)
+    recovered = bool(leak1 is not None
+                     and abs(leak1["delivery_mean"] - rwp_delivery) <= max(0.1, leak1["ci_hi"] - leak1["ci_lo"]))
+    return {"rows": rows, "degree": degree, "rwp_delivery": rwp_delivery,
+            "rwp_recovered": recovered, "regime_tag": CLUSTER_REGIME_TAG}
 
 
 def _airtime_arm(base_cfg, densities, reps):

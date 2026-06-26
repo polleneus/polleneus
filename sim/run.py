@@ -17,10 +17,10 @@ import numpy as np
 from dataclasses import replace
 from soup_sim.config import Config
 from soup_sim.scenario import (static_delivery_sweep, midpoint_with_ci, airtime_sweep, anonymity_sweep,
-                               anonymity_defense_sweep, intersection_sweep)
+                               anonymity_defense_sweep, intersection_sweep, cluster_leak_sweep)
 from soup_sim.report import (write_csv, plot, airtime_to_csv_string, airtime_plot,
                              anonymity_to_csv_string, anonymity_plot, anonymity_defense_to_csv_string,
-                             intersection_to_csv_string)
+                             intersection_to_csv_string, cluster_to_csv_string)
 from soup_sim.anonymity import exposure_gate, EXPOSURE_RANK1
 
 
@@ -198,11 +198,41 @@ def _run_anonymity_intersection(args) -> None:
         print("note: --plot is not supported for the anonymity-intersection preset (no plot written).")
 
 
+def cluster_cfg(seed: int) -> Config:
+    return Config(
+        n=0, width=120.0, height=120.0, radius=10.0, boundary="torus", mobility="clustered",
+        speed_min=2.0, speed_max=2.0, dt=0.5, ttl=60.0, buffer_cap=200, throughput_ideal=1e9,
+        alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=0.0, measure_window=60.0,
+        drain=0.0, n_messages=0, seen_margin=60.0, master_seed=seed,
+        n_clusters=8, cluster_sigma=6.0, cluster_leak=0.0,
+    )
+
+
+def _run_cluster_delivery(args) -> None:
+    cfg = cluster_cfg(args.seed)
+    reps = max(args.reps, 6)
+    out = cluster_leak_sweep(cfg, leak_values=[0.0, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0], degree=6.0, reps=reps)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        f.write(cluster_to_csv_string(out, cfg.manifest()))
+    print(f"wrote {args.out} (leak sweep @ global degree {out['degree']}, K={cfg.n_clusters}, reps={reps})")
+    print(out["regime_tag"])
+    for r in out["rows"]:
+        print(f"  leak={r['leak']:>4}: delivery {r['delivery_mean']:.2f} (giant {r['giant_mean']:.2f}; "
+              f"realized global degree {r['realized_degree']:.1f} "
+              f"[intra {r['intra_degree']:.1f}/inter {r['inter_degree']:.1f}])")
+    print(f"RWP reference delivery (same N): {out['rwp_delivery']:.2f}  ->  "
+          f"leak=1 recovers RWP: {out['rwp_recovered']}")
+    print("note: N is fixed (the count for global degree 6 under a UNIFORM layout); realized global degree")
+    print("      is HIGHER at low leak (clustering concentrates nodes). Every delivery number is an UPPER")
+    print("      BOUND on real delivery; uniform/RWP is the optimistic baseline (clustering removes optimism).")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--preset",
                     choices=["static-cliff", "airtime-knee", "anonymity", "anonymity-defenses",
-                             "anonymity-intersection"],
+                             "anonymity-intersection", "cluster-delivery"],
                     default="static-cliff")
     ap.add_argument("--out", default="out/cliff.csv")
     ap.add_argument("--plot", default=None)
@@ -217,6 +247,8 @@ def main() -> None:
         _run_anonymity_defenses(args)
     elif args.preset == "anonymity-intersection":
         _run_anonymity_intersection(args)
+    elif args.preset == "cluster-delivery":
+        _run_cluster_delivery(args)
     else:
         _run_static(args)
 

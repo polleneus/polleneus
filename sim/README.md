@@ -24,6 +24,7 @@ python -m venv .venv
 .venv/Scripts/python run.py --preset anonymity    --out out/anon.csv    --plot out/anon.png
 .venv/Scripts/python run.py --preset anonymity-defenses --out out/anon_defense.csv  # PR-2: mixing+gate vs baseline
 .venv/Scripts/python run.py --preset anonymity-intersection --out out/anon_intersection.csv  # PR-3: rank-1 vs K
+.venv/Scripts/python run.py --preset cluster-delivery --out out/cluster.csv  # slice-4: delivery vs clustering
 ```
 `run.py` sweeps mean degree and writes a CSV (with the **full parameter manifest** per row,
 so any point is reproducible from the file). `static-cliff` writes the delivery curve;
@@ -227,6 +228,39 @@ emitted (the headline is fused rank-1). The per-message estimator fused here is 
 best-of can), so K=1 is the single-event *reachability* rank-1 — **≤ PR-1's oracle-best-of headline**,
 i.e. the conservative (anonymity-favorable) direction.
 
+## Clustered "gathering" mobility (slice 4 — PR-1)
+Every prior headline (delivery cliff, airtime knee, anonymity) was measured under **RWP open-field**
+mobility, flagged *optimistic* — but polleneus's real deployment is a **gathering** (a clustered
+crowd). This slice adds a clustered mobility model and asks the foundational question: **does a
+clustered venue stay connected enough to deliver?** (`--preset cluster-delivery`.)
+
+- **Model:** K cluster centers; each node does RWP toward targets near its **home** cluster (Gaussian
+  `cluster_sigma`), except a `cluster_leak` fraction of retargets send it **wandering uniformly** (an
+  inter-cluster mover). `leak=0` → isolated islands; `leak=1` → uniform retargets ≈ **RWP** — a
+  built-in correctness gate (the clustered delivery at `leak=1` must equal the RWP delivery).
+- **Headline sweep:** delivery (pairwise same-component) + giant-component fraction vs `cluster_leak`
+  at a **fixed node count N** (the count for global degree 6 under a *uniform* layout — the realized
+  global degree is NOT fixed; clustering concentrates nodes, so it's higher at low leak), time-averaged
+  over the trajectory so a transit mover physically bridges the clusters it passes through. At a fixed
+  seed the cluster layout is the **same venue across the whole sweep** (only movement varies with leak),
+  so the curve isolates the leak effect.
+
+**Measured result** (`--preset cluster-delivery`, K=8, `cluster_sigma=6`, N for uniform-degree 6, 6 reps):
+at full islands (`leak=0`) delivery is **0.62** (giant 0.72) **even though the realized global degree is
+20.0** (nodes pack into clusters — intra-degree 12.6) — i.e. **fragmentation despite double the local
+connectivity**: dense groups that don't talk to each other. A modest **~10% leak recovers 0.86** (and
+the realized degree falls to 11 as the crowd spreads), reaching the RWP value **0.91** by `leak≥0.2`;
+**`leak=1` recovers RWP (gate PASS)**. So the honest finding is **partial fragmentation, cheaply
+recovered**: a clustered crowd loses ~0.3 delivery vs the uniform promise, but only a little
+inter-cluster movement restores it. (At tighter/smaller clusters the `leak=0` floor would drop toward
+the within-cluster `~1/K`; here clusters are large and overlap, so the loss is milder — the *shape*
+(rising with leak, RWP-recovered, realized degree falling) is the robust result.)
+
+Additive and **default-inert**: the `clustered` mode is opt-in; static/rwp configs and every slice-1/2/3
+number are bit-identical. The cluster layout rides the mobility RNG substream, fixed by the seed and
+stable across the leak sweep (a per-rep venue). Delivery numbers remain an **UPPER BOUND** (clustering
+is an optimism-*removing* axis: real crowds gather, so clustered ≤ uniform at the same N).
+
 ## The gate (why you can trust the curve)
 `tests/test_integration_percolation.py`:
 1. **Oracle KAT** — in the static unbounded regime the engine's multi-hop fixpoint delivers
@@ -235,13 +269,13 @@ i.e. the conservative (anonymity-favorable) direction.
 
 ## Module map
 `config` (params + CFL + RNG) · `geometry` (torus/walls + analytic contact timing) ·
-`cell_list` (O(N) neighbours) · `mobility` (static / RWP / linear) · `blob` + `buffer`
+`cell_list` (O(N) neighbours) · `mobility` (static / RWP / linear / clustered gathering) · `blob` + `buffer`
 (eviction + seen-record) · `budget` (density-aware airtime) · `policies` (flood offer-select) ·
 `engine` (per-step fixpoint propagation, acquisition-time causality, per-episode airtime
 billing, static fixpoint) · `workload` + `metrics` (oracle, fair-chance denominator,
 utilization/circulation/T50) · `percolation` (union-find + interval-reachability ground truth) ·
 `knee` (saturation-knee estimator + binding publish-gate) · `scenario` (delivery sweep,
-airtime sweep + control arms, anonymity sweep + defense sweep + intersection sweep, per-rep CIs) ·
+airtime sweep + control arms, anonymity sweep + defense sweep + intersection sweep, cluster leak sweep, per-rep CIs) ·
 `anonymity` + `adversary` (source-localization estimators, score fusion, must-localize/exposure/
 defense/intersection gates) · `report` (CSV + plot).
 
@@ -270,8 +304,10 @@ defense/intersection gates) · `report` (CSV + plot).
 | intersection: linkage assumed perfect | §10 | **worst-case upper bound** (real linkage is partial/noisy) — the safe direction for a privacy claim |
 | intersection credit: decoy-centrality + fused-random controls | §10 | credit only if the ORIGINATOR is pinned and the most-central innocent relay (decoy) is not; fusion itself creates no signal (random floor stays ~1/N) |
 | intersection: credited headline = lower of Borda/score-sum | §10 | **conservative** — never credit the adversary a fusion-rule coin-flip |
+| clustered "gathering" mobility (vs RWP open-field) | — | slice-4: **optimism-REMOVING** — real crowds cluster; clustered delivery ≤ RWP at the same node count N (clustering raises the realized degree) |
+| clustered: static clusters (no gather→disperse) | — | abstraction; a forming/dispersing crowd is transient (named follow-up) |
+| clustered: leak=1 recovers RWP | — | correctness sanity gate, not a bias |
 | crypto / tokens | §5/§9 | **not modeled** (deferred) |
-| clustered "gathering" mobility | — | RWP open-field only (clustered mobility is a named fast-follow) → **optimistic** |
 | delivery | — | arrival == delivery (ignores read-window / FS) → **upper bound** |
 
 ## Caveats (idealizations — all bias delivery UP)

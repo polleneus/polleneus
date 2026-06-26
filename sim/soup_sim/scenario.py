@@ -11,12 +11,14 @@ from .budget import AirtimeBudget
 from .engine import Engine
 from .metrics import Metrics
 from .workload import make_cohort
+from .blob import Blob
 from .cell_list import neighbor_pairs
 from .percolation import same_component_pair_fraction, placement
 from .knee import find_knee, binding_decomposition, binding_gate
 from .adversary import place_receivers, realized_coverage, hearings, estimate
 from .anonymity import (localization_error, rank_of, anonymity_set_size, quantiles,
-                        mustlocalize_gate, exposure_gate, SCOPE_TAG)
+                        mustlocalize_gate, exposure_gate, defense_gate, SCOPE_TAG, DEFENSE_SCOPE_TAG,
+                        MIN_RELAY_DENSITY)
 from .geometry import dist2 as _dist2
 
 
@@ -226,15 +228,23 @@ def _run_one_anonymity(cfg):
                            t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
     eng = Engine(cfg, mob, buffers, budget, cfg.rng(1), on_deliver=metrics.on_deliver, record_positions=True)
     eng.run_until(cfg.warmup)
+    gated = cfg.originate_gate_relays > 0 or cfg.originate_gate_time > 0
+    if gated:
+        # un-gated background soup so a gated originator has foreign ids to relay (else total deadlock)
+        rng_bg = cfg.rng(2, 7)
+        for m in range(cfg.n_messages):
+            src = int(rng_bg.integers(0, cfg.n))
+            eng.inject(Blob(id=10_000_000 + m, created_at=cfg.warmup, ttl=cfg.ttl, size=cfg.blob_size), src)
     cohort = []
     for blob, src, dst in make_cohort(cfg, inject_time=cfg.warmup, rng=cfg.rng(2)):
         metrics.register(blob, src, dst)
-        eng.inject(blob, src)
+        eng.inject(blob, src, gated=gated)               # measured originations gated under the gate arm
         cohort.append((blob.id, src, blob.created_at, blob.ttl))
     eng.run_until(cfg.warmup + cfg.measure_window + cfg.drain)
     eng.finalize()
     return {"position_log": eng.position_log, "acquired": dict(eng.acquired), "cohort": cohort,
-            "episodes": list(eng.episodes), "n": cfg.n}
+            "episodes": list(eng.episodes), "n": cfg.n, "relayed": {k: len(v) for k, v in eng.relayed.items()},
+            "delivery": metrics.delivery_ratio(), "t50": metrics.t50()}
 
 
 def _forward_infection(episodes, source, t0, n):
@@ -295,9 +305,11 @@ def _reach_capped(reach):
     return out
 
 
-def _score_arm(art, receivers, cfg, rng_est):
+def _score_arm(art, receivers, cfg, rng_est, with_origin_vs_relay=False):
     """Score the adversary on one receiver layout: per detected cohort message, best-estimator
-    rank/error (first-hear-time = estimator quality; origination-time = headline) + random floor."""
+    rank/error (first-hear-time = estimator quality; origination-time = headline) + random floor.
+    Returns (per-message records incl. the detected blob id, undetected, total). When
+    with_origin_vs_relay (the GATE arm), adds the origin-vs-relay estimator to the best-of."""
     log, acquired, cohort = art["position_log"], art["acquired"], art["cohort"]
     adv_range = cfg.adversary_range_mult * cfg.radius
     expiry = {bid: created + ttl for (bid, _src, created, ttl) in cohort}
@@ -306,9 +318,10 @@ def _score_arm(art, receivers, cfg, rng_est):
     for (li, bid), t in H.items():
         by_blob.setdefault(bid, []).append((li, t))
     origin_t = cfg.warmup
-    cand_origin = _anon_pos_at(log, origin_t)                       # (n,2) candidate positions at origination
+    cand_origin = _anon_pos_at(log, origin_t)
     reach = _reach_capped(_forward_reach_matrix(art["episodes"], log, receivers, origin_t,
                                                 art["n"], adv_range, cfg))
+    methods = ["first_spy", "reachability"] + (["origin_vs_relay"] if with_origin_vs_relay else [])
     res, undetected = [], 0
     for (bid, src, _created, _ttl) in cohort:
         mh = by_blob.get(bid)
@@ -317,12 +330,19 @@ def _score_arm(art, receivers, cfg, rng_est):
             continue
         fh = min(t for _li, t in mh)
         cand_fh = _anon_pos_at(log, fh)
+        # upstream proxy (position oracle): a candidate is "preceded" (likely relayer) unless it is
+        # the most-upstream — i.e. has the earliest forward-reach to the earliest-hearing receiver.
+        upstream = None
+        if with_origin_vs_relay:
+            er = min(mh, key=lambda rt: rt[1])[0]
+            col = reach[:, er]
+            upstream = col > (col.min() + 1e-9)
         best = None
-        for method in ("first_spy", "reachability"):
-            est = estimate(method, mh, receivers, cand_fh, rng_est, reach=reach)
+        for method in methods:
+            est = estimate(method, mh, receivers, cand_fh, rng_est, reach=reach, upstream=upstream)
             rk = rank_of(est["scores"], src)
             if best is None or rk < best["rank"]:
-                best = {"rank": rk,
+                best = {"rank": rk, "bid": bid,
                         "err_fh": localization_error(est["point"], cand_fh[src], cfg),
                         "err_orig": localization_error(est["point"], cand_origin[src], cfg),
                         "anon": anonymity_set_size(est["scores"])}
@@ -399,6 +419,74 @@ def anonymity_sweep(base_cfg, f_values, reps):
             best_res = {"rank1": float(np.mean(ranks)) if ranks else 0.0, "median_err_radii": med_radii}
     mustlocalize = mustlocalize_gate(best_res, 1.0 / base_cfg.n, curve)
     return {"rows": rows, "mustlocalize": mustlocalize, "scope_tag": SCOPE_TAG, "headline_arm": headline_arm}
+
+
+_DEFENSE_ARMS = {
+    "baseline":    dict(mixing_lambda=0.0, originate_gate_relays=0),
+    "mixing":      dict(originate_gate_relays=0),                       # keep base_cfg.mixing_lambda
+    "gate":        dict(mixing_lambda=0.0),                            # keep base_cfg.originate_gate_relays
+    "both":        dict(),                                             # both as set on base_cfg
+    "timing_only": dict(originate_gate_relays=0, ttl=1e9),            # mixing at TTL=inf (drop-confound check)
+}
+
+
+def anonymity_defense_sweep(base_cfg, f, reps):
+    """Measure mixing + receive-before-originate against the exposure baseline at coverage f.
+    Per rep, all arms share one seed (identical cohort) so rank-1 is compared on the SAME-DETECTED-SET
+    intersection (survivorship removed); the TTL=inf timing-only arm isolates timing-scramble from
+    message-dropping. Every gain is an UPPER BOUND on the anonymity benefit; defense_gate credits a
+    gain only if real (attack works, material drop, survives TTL=inf, enough relays, big intersection)."""
+    mustloc = anonymity_sweep(base_cfg, [0.95], reps=1)["mustlocalize"]   # capability control (reuse PR-1)
+    rows = []
+    for rep in range(reps):
+        seed = _seed_for(base_cfg.master_seed, 0, rep)
+        arms = {}
+        for mode, override in _DEFENSE_ARMS.items():
+            cfg = replace(base_cfg, master_seed=seed, **override)
+            art = _run_one_anonymity(cfg)
+            recv = place_receivers(cfg, f, "uniform", cfg.rng(4))
+            res, _u, _t = _score_arm(art, recv, cfg, cfg.rng(6), with_origin_vs_relay=(mode in ("gate", "both")))
+            arms[mode] = {"rank0": {r["bid"]: (r["rank"] == 0) for r in res},
+                          "detected": set(r["bid"] for r in res),
+                          "relay_density": float(np.mean(list(art["relayed"].values()))) if art["relayed"] else 0.0,
+                          "delivery": art["delivery"], "t50": art["t50"]}
+        rows.append(arms)
+
+    def _r1_on(arm_name, S):
+        vals = [rows[r][arm_name]["rank0"][b] for r in range(reps) for b in S[r] if b in rows[r][arm_name]["rank0"]]
+        return float(np.mean(vals)) if vals else 0.0
+
+    S_mix = [rows[r]["baseline"]["detected"] & rows[r]["mixing"]["detected"] & rows[r]["timing_only"]["detected"]
+             for r in range(reps)]
+    S_gate = [rows[r]["baseline"]["detected"] & rows[r]["gate"]["detected"] for r in range(reps)]
+    inter_mix = float(np.mean([len(s) for s in S_mix]))
+    inter_gate = float(np.mean([len(s) for s in S_gate]))
+
+    base_r1_m = _r1_on("baseline", S_mix)
+    mix_r1 = _r1_on("mixing", S_mix)
+    timing_r1 = _r1_on("timing_only", S_mix)
+    base_r1_g = _r1_on("baseline", S_gate)
+    gate_r1 = _r1_on("gate", S_gate)
+    gate_relay_density = float(np.mean([rows[r]["gate"]["relay_density"] for r in range(reps)]))
+    from .anonymity import DEFENSE_MIN_DROP
+    timing_survives = timing_r1 <= base_r1_m * (1.0 - DEFENSE_MIN_DROP)   # gain persists at TTL=inf?
+
+    mixing_verdict = defense_gate(base_r1_m, mix_r1, mustloc["ok"], timing_survives, intersection_size=inter_mix)
+    gate_verdict = defense_gate(base_r1_g, gate_r1, mustloc["ok"], True,
+                                relay_density_ok=(gate_relay_density >= MIN_RELAY_DENSITY), intersection_size=inter_gate)
+
+    def _cost(arm):
+        return {"delivery": float(np.mean([rows[r][arm]["delivery"] for r in range(reps)])),
+                "rank1": _r1_on(arm, [rows[r][arm]["detected"] for r in range(reps)])}
+    return {
+        "mustlocalize": mustloc,
+        "mixing": {"baseline_rank1": base_r1_m, "defended_rank1": mix_r1, "timing_only_rank1": timing_r1,
+                   "intersection": inter_mix, "verdict": mixing_verdict, "cost": _cost("mixing")},
+        "gate": {"baseline_rank1": base_r1_g, "defended_rank1": gate_r1, "relay_density": gate_relay_density,
+                 "intersection": inter_gate, "verdict": gate_verdict, "cost": _cost("gate")},
+        "both_cost": _cost("both"),
+        "scope_tag": SCOPE_TAG, "defense_scope_tag": DEFENSE_SCOPE_TAG,
+    }
 
 
 def crossing_0p5(densities, mean_ratios) -> float:

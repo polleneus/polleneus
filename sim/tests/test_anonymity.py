@@ -67,6 +67,27 @@ def test_defense_gate():
     assert defense_gate(0.30, 0.10, True, True, relay_density_ok=False, intersection_size=100)["credited"] is False
 
 
+def test_intersection_gate():
+    from soup_sim.anonymity import intersection_gate
+    # credited: well above threshold, decoy not pinned, powered, must-localize OK
+    assert intersection_gate(0.80, 0.10, 0.0083, True, 60)["credited"] is True
+    # underpowered -> refuse
+    assert intersection_gate(0.80, 0.10, 0.0083, True, 5)["credited"] is False
+    # must-localize failed -> inconclusive
+    assert intersection_gate(0.80, 0.10, 0.0083, False, 60)["credited"] is False
+    # below the exposure threshold -> not exposed
+    assert intersection_gate(0.30, 0.05, 0.0083, True, 60)["credited"] is False
+    # decoy ALSO pinned (centrality confound) -> not credited
+    g = intersection_gate(0.80, 0.70, 0.0083, True, 60)
+    assert g["credited"] is False and "centrality" in g["label"].lower()
+
+
+def test_intersection_scope_tag():
+    from soup_sim.anonymity import INTERSECTION_SCOPE_TAG
+    t = INTERSECTION_SCOPE_TAG.lower()
+    assert "intersection" in t and "linkage" in t and "upper bound" in t
+
+
 def test_exposure_gate_margin_and_underpower():
     # powered, well above the 0.5 / K*floor threshold -> exposed
     assert exposure_gate(0.7, random_floor=0.02, beats_random=True, n_messages=200, n_reps=6)["exposed"] is True

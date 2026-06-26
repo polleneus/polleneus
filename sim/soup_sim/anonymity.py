@@ -31,6 +31,11 @@ MIN_REPS = 6                 # below this the CI-over-seeds is degenerate -> exp
 UPSTREAM_PENALTY = 10.0      # origin-vs-relay: penalty for a candidate whose first-hold had an in-range upstream holder
 MIN_RELAY_DENSITY = 2.0      # gate credit requires >= this mean distinct foreign ids relayable per node
 MIN_INTERSECTION_SIZE = 30   # same-detected-set rank-1 needs >= this many shared messages, else inconclusive
+# PR-3 multi-session intersection
+INTERSECTION_SCOPE_TAG = ("[INTERSECTION over K linked originations; device-linkage ASSUMED given "
+                          "(PHY out of scope); single external-passive adversary; UPPER BOUND on anonymity]")
+DECOY_MARGIN = 0.2           # the originator's fused rank-1 must beat the central-decoy's by >= this...
+MIN_INTERSECTION_SAMPLES = 24  # ...over >= this many (device x seed) fusion samples, else underpowered
 
 
 def localization_error(point, true_pos, cfg) -> float:
@@ -93,6 +98,22 @@ def defense_gate(baseline_rank1, defended_rank1, mustlocalize_ok, timing_only_ga
     if not relay_density_ok:
         return {"credited": False, "label": "NOT credited — low-density artifact (too few relays to hide among)"}
     return {"credited": True, "label": f"defense cuts exposure (rank-1 {baseline_rank1:.2f} -> {defended_rank1:.2f})"}
+
+
+def intersection_gate(fused_rank1, decoy_rank1, random_floor, mustlocalize_ok, n_samples) -> dict:
+    """Credit "intersection deanonymizes the persistent sender" only if the fused rank-1 crosses the
+    exposure threshold, beats the central-decoy by DECOY_MARGIN (else it's centrality, not origination),
+    the per-message estimator was capable (must-localize), and the run is powered."""
+    if n_samples < MIN_INTERSECTION_SAMPLES:
+        return {"credited": False, "label": f"underpowered ({n_samples} fusion samples < {MIN_INTERSECTION_SAMPLES})"}
+    if not mustlocalize_ok:
+        return {"credited": False, "label": "inconclusive — per-message estimator failed must-localize"}
+    threshold = max(EXPOSURE_RANK1, EXPOSURE_MARGIN_K * random_floor)
+    if fused_rank1 < threshold:
+        return {"credited": False, "label": f"not pinned (fused rank-1 {fused_rank1:.2f} < {threshold:.2f})"}
+    if fused_rank1 - decoy_rank1 < DECOY_MARGIN:
+        return {"credited": False, "label": f"confounded by centrality (origin {fused_rank1:.2f} vs decoy {decoy_rank1:.2f})"}
+    return {"credited": True, "label": f"intersection deanonymizes the sender (fused rank-1 {fused_rank1:.2f} @ decoy {decoy_rank1:.2f})"}
 
 
 def exposure_gate(best_rank1_detected, random_floor, beats_random, n_messages, n_reps) -> dict:

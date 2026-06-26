@@ -593,23 +593,29 @@ def _hearings_by_blob(art, receivers, cfg):
     return by_blob
 
 
+def _pick_decoy(relayed, tracked_nodes, n):
+    """The decoy-centrality control's target: the most-central INNOCENT node = the non-tracked node
+    that relayed the most distinct foreign ids (`relayed` = {node: count}). None if all nodes tracked."""
+    cands = [nd for nd in range(n) if nd not in tracked_nodes]
+    if not cands:
+        return None
+    return max(cands, key=lambda nd: relayed.get(nd, 0))
+
+
 def intersection_sweep(cfg, k_values, f, reps, n_tracked=3, stride=2.0):
     """Fused sender-localization vs K linked originations at fixed coverage f. One engine run per rep
     yields the whole K-sweep (fuse prefixes of each device's k_max plan). Borda (headline) + score-sum
     (sensitivity); fused-random floor + decoy-centrality control. Every number an UPPER BOUND."""
     k_max = max(k_values)
     mustloc = anonymity_sweep(cfg, [0.95], reps=1)["mustlocalize"]   # capability control (reuse PR-1)
-    acc = {k: {"borda_o": [], "sum_o": [], "borda_d": [], "rand": [], "delivery": [], "inter": []}
+    acc = {k: {"borda_o": [], "sum_o": [], "borda_d": [], "rand": [], "delivery": []}
            for k in k_values}
     for rep in range(reps):
         c = replace(cfg, master_seed=_seed_for(cfg.master_seed, 0, rep))
         art = _run_one_anonymity_tracked(c, k_max, n_tracked, stride)
         recv = place_receivers(c, f, "uniform", c.rng(4))
         rng_est = c.rng(6)                                          # ONE persistent estimator rng per rep
-        tracked_nodes = set(art["tracked"])
-        relayed = art["relayed"]
-        decoy = max((nd for nd in range(c.n) if nd not in tracked_nodes),
-                    key=lambda nd: relayed.get(nd, 0), default=None)
+        decoy = _pick_decoy(art["relayed"], set(art["tracked"]), c.n)
         cand0 = _anon_pos_at(art["position_log"], c.warmup)
         by_blob = _hearings_by_blob(art, recv, c)                   # once per rep (reused by all devices)
         reach_cache = {}                                            # keyed by t0; shared across devices
@@ -628,7 +634,6 @@ def intersection_sweep(cfg, k_values, f, reps, n_tracked=3, stride=2.0):
                 if decoy is not None:
                     acc[k]["borda_d"].append(rank_of(fb, decoy) == 0)
                 acc[k]["delivery"].append(art["delivery"])
-                acc[k]["inter"].append(len(detected))
     rows = []
     for k in k_values:
         d = acc[k]
@@ -644,7 +649,10 @@ def intersection_sweep(cfg, k_values, f, reps, n_tracked=3, stride=2.0):
     floor = 1.0 / cfg.n
     hk = next(r for r in rows if r["k"] == k_max)
     credited = min(hk["fused_rank1_borda"], hk["fused_rank1_score_sum"])   # honest: lower on divergence
-    verdict = intersection_gate(credited, hk["decoy_rank1"], floor, mustloc["ok"], hk["n_samples"])
+    # Control A wired into the gate: the MEASURED fused-random floor must stay near 1/N (else artifact).
+    verdict = intersection_gate(credited, hk["decoy_rank1"], floor, mustloc["ok"], hk["n_samples"],
+                                fused_random_floor=hk["random_floor_fused"])
+    verdict = {**verdict, "label": f"@K={k_max}: {verdict['label']}"}   # the verdict is the headline-K one
     return {"rows": rows, "mustlocalize": mustloc, "verdict": verdict, "headline_k": k_max,
             "random_floor": floor,
             "fusion_divergence": abs(hk["fused_rank1_borda"] - hk["fused_rank1_score_sum"]),

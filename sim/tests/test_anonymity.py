@@ -80,6 +80,11 @@ def test_intersection_gate():
     # decoy ALSO pinned (centrality confound) -> not credited
     g = intersection_gate(0.80, 0.70, 0.0083, True, 60)
     assert g["credited"] is False and "centrality" in g["label"].lower()
+    # Control A: a HIGH measured fused-random floor raises the threshold proportionally (5x) so a
+    # rank-1 that would clear 0.5 is NOT credited when fusion itself manufactured a high floor.
+    assert intersection_gate(0.60, 0.05, 0.0083, True, 60, fused_random_floor=0.15)["credited"] is False
+    # a small/noise fused-random floor (just above 1/N) does NOT block a genuine pin
+    assert intersection_gate(0.60, 0.05, 0.0083, True, 60, fused_random_floor=0.03)["credited"] is True
 
 
 def test_intersection_scope_tag():

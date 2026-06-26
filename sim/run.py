@@ -184,16 +184,16 @@ def _run_anonymity_intersection(args) -> None:
     with open(args.out, "w", newline="", encoding="utf-8") as f:
         f.write(intersection_to_csv_string(out, cfg.manifest()))
     print(f"wrote {args.out} (K-sweep @ coverage f=0.7, reps={reps}, tracked=8)")
-    print(out["scope_tag"])
-    print(out["intersection_scope_tag"])
+    print(f"per-message estimator scope: {out['scope_tag']}")
+    print(f"fusion layer: {out['intersection_scope_tag']}")
     print(f"MUST-LOCALIZE control: {out['mustlocalize']['label']} (ok={out['mustlocalize']['ok']})")
     for r in out["rows"]:
         print(f"  K={r['k']:>2}: fused rank-1 borda {r['fused_rank1_borda']:.2f} "
               f"(score-sum {r['fused_rank1_score_sum']:.2f}; decoy {r['decoy_rank1']:.2f}; "
               f"rand {r['random_floor_fused']:.3f}; n={r['n_samples']})")
-    print(f"VERDICT @K={out['headline_k']} (credited = LOWER fusion rule): {out['verdict']['label']}")
+    print(f"VERDICT (credited = LOWER fusion rule): {out['verdict']['label']}")
     print("note: every number is an UPPER BOUND on anonymity; device-linkage is ASSUMED given (PHY out")
-    print("      of scope); the decoy is the most-central innocent relay — if it pins too, it's centrality.")
+    print("      of scope); the decoy is the most-central innocent relay -- if it pins too, it's centrality.")
     if args.plot:
         print("note: --plot is not supported for the anonymity-intersection preset (no plot written).")
 

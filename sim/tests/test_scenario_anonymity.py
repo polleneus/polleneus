@@ -116,6 +116,15 @@ def test_run_tracked_deterministic():
     assert a["acquired"] == b["acquired"] and a["tracked"] == b["tracked"]
 
 
+def test_pick_decoy_is_most_central_innocent_node():
+    from soup_sim.scenario import _pick_decoy
+    relayed = {0: 9, 1: 2, 2: 5, 3: 7}     # node 0 relayed the most foreign ids...
+    # ...but node 0 is a TRACKED originator -> decoy must be the most-central INNOCENT node (node 3).
+    assert _pick_decoy(relayed, tracked_nodes={0}, n=5) == 3
+    assert _pick_decoy({}, tracked_nodes=set(), n=4) in (0, 1, 2, 3)    # no relays -> some valid node
+    assert _pick_decoy({}, tracked_nodes={0, 1, 2, 3}, n=4) is None     # all nodes tracked -> None
+
+
 def test_intersection_sweep_structure_and_determinism():
     from soup_sim.scenario import intersection_sweep
     a = intersection_sweep(tiny(), k_values=[1, 2], f=0.7, reps=1, n_tracked=2, stride=2.0)
@@ -127,6 +136,9 @@ def test_intersection_sweep_structure_and_determinism():
         assert {"k", "fused_rank1_borda", "fused_rank1_score_sum", "decoy_rank1",
                 "random_floor_fused", "delivery", "n_samples"} <= set(r)
     assert [r["k"] for r in a["rows"]] == [1, 2]
+    # this tiny config is deliberately UNDERPOWERED (2 samples < MIN_INTERSECTION_SAMPLES): determinism
+    # is pinned here, but the credit/decoy/sharpening paths are exercised by the slow realistic test.
+    assert "underpowered" in a["verdict"]["label"].lower()
 
 
 def base_intersection_cfg():
@@ -139,18 +151,20 @@ def base_intersection_cfg():
 @pytest.mark.slow
 def test_intersection_sharpens_with_k():
     from soup_sim.scenario import intersection_sweep
+    from soup_sim.anonymity import EXPOSURE_RANK1
     cfg = base_intersection_cfg()
     # n_tracked=8 x reps=4 => ~32 fusion samples (clears MIN_INTERSECTION_SAMPLES=24); raising n_tracked
     # is nearly free thanks to the per-t0 reach cache (reach depends on K distinct t0s, not device count).
     out = intersection_sweep(cfg, k_values=[1, 4, 16], f=0.7, reps=4, n_tracked=8, stride=2.0)
     rows = {r["k"]: r for r in out["rows"]}
-    # intersection must NOT make the originator harder to find as K grows (monotone-ish up)
-    assert rows[16]["fused_rank1_borda"] >= rows[1]["fused_rank1_borda"] - 1e-9
+    # intersection SHARPENS: K=16 must beat K=1 by a real margin (not merely "not worse").
+    assert rows[16]["fused_rank1_borda"] >= rows[1]["fused_rank1_borda"] + 0.15
     # the fused-random floor stays near 1/N (fusion itself creates no signal)
     assert rows[16]["random_floor_fused"] <= 5.0 / cfg.n
-    # K=1 borda ~ a single message's rank-1 (continuity); borda vs score-sum not wildly apart at K=1
-    assert abs(rows[1]["fused_rank1_borda"] - rows[1]["fused_rank1_score_sum"]) <= 0.5
-    # powered enough to reach a real verdict (not the underpowered early return)
+    # the LIVE credit path is exercised and granted: by K=16 the sender is pinned above the threshold,
+    # the decoy is not, and the verdict credits it (a regression to "not pinned"/"centrality" would fail).
+    assert rows[16]["fused_rank1_borda"] >= EXPOSURE_RANK1
+    assert out["verdict"]["credited"] is True
     assert "underpowered" not in out["verdict"]["label"].lower()
 
 

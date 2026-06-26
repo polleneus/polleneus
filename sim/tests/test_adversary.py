@@ -114,14 +114,28 @@ def test_fuse_borda_rewards_consistency():
     assert rank_of(fused, 1) == 0                           # A is exact-catch
 
 
-def test_fuse_score_sum_normalizes_per_message():
+def test_fuse_score_sum_big_scale_msg_does_not_dominate():
     from soup_sim.adversary import fuse_scores
-    # message 2 has a huge scale; without per-message normalization it would dominate. With it,
-    # the consistently-low candidate (idx 0) wins.
-    m1 = np.array([0.0, 1.0, 2.0])
-    m2 = np.array([0.0, 100.0, 200.0])
-    fused = fuse_scores([m1, m2], "score_sum")
+    # The big-scale message DISAGREES with the consistent winner: without per-message normalization the
+    # huge message dominates and crowns candidate 2 ([300,403,6]); WITH normalization the consistently-
+    # low candidate 0 wins. (A tautology test where cand 0 is min in every message would pass either way.)
+    small = [np.array([0.0, 1.0, 2.0])] * 3
+    huge = np.array([300.0, 400.0, 0.0])
+    fused = fuse_scores(small + [huge], "score_sum")
     assert int(np.argmin(fused)) == 0
+    # sanity: the UN-normalized sum would instead pick candidate 2 (the regression this guards against)
+    assert int(np.argmin(np.sum(small + [huge], axis=0))) == 2
+
+
+def test_borda_and_score_sum_can_disagree():
+    from soup_sim.adversary import fuse_scores
+    # the two fusion rules are genuinely different estimators (justifying reporting BOTH + crediting the
+    # lower): cand 0 is rank-0 in 2 of 3 (Borda crowns it) but cand 1 is a hair behind the min every
+    # message (tiny normalized score -> score_sum crowns it instead).
+    msgs = [np.array([0.0, 0.01, 5.0]), np.array([0.0, 0.01, 5.0]), np.array([5.0, 0.01, 0.0])]
+    borda = int(np.argmin(fuse_scores(msgs, "borda")))
+    ssum = int(np.argmin(fuse_scores(msgs, "score_sum")))
+    assert borda == 0 and ssum == 1 and borda != ssum      # the rules crown different candidates
 
 
 def test_fuse_empty_raises():

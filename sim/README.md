@@ -198,11 +198,27 @@ acquisition-time causality.
   decoy's by `DECOY_MARGIN` — else the result is "confounded by centrality," discounted not credited.
 - **Must-localize (inherited)** — the per-message estimator must already be capable (PR-1 gate).
 - **Powered** — ≥ `MIN_INTERSECTION_SAMPLES` (device×seed) fusion samples, else "underpowered."
+- **Control A is wired into the verdict** — the exposure threshold is taken over the *measured*
+  fused-random floor (`max(1/N, fused_random_floor)`), so if fusion ever manufactured a high floor the
+  bar rises with it; credit is the climb **above the floor fusion actually produced**.
+
+**Measured result at the shipped defaults** (f=0.7, 8 tracked devices × 4 reps, K∈{1,2,4,8,16}):
+must-localize passes, the fused-random floor stays ~1/N (≤0.03) and the central-decoy stays at **0.00**
+(centrality ruled out) — and the sender's fused rank-1 **climbs 0.06 → 0.16 → 0.25 → 0.47 → 0.72
+(Borda)** as K goes 1→16. Borda and score-sum diverge at K=16 (0.72 vs 0.62), so the credited headline
+is the lower, **0.62 — which crosses the 0.5 exposure threshold: at K=16 the gate CREDITS
+"intersection deanonymizes the sender."** This is the headline finding of the slice: **multi-session
+intersection breaks sender anonymity even where a single message (K=1, rank-1 0.06 ≈ the floor) does
+not** — exactly the dominant threat PR-1/PR-2 deferred. (Numbers are seed-specific; the *shape* —
+monotone climb crossing the threshold, decoy flat — is the robust result.)
 
 Additive and **default-inert**: `intersection_sweep` is a new entry point; `anonymity_sweep` /
 `anonymity_defense_sweep` and every prior number are bit-identical (no shared mutable path changed).
 Candidate set = all N nodes (cone deferred, as in PR-1); the fused anonymity-set size is not separately
-emitted (the headline is fused rank-1).
+emitted (the headline is fused rank-1). The per-message estimator fused here is **reachability-only**
+(the principled diffusion-source estimator; it can't oracle-pick per message the way PR-1's reported
+best-of can), so K=1 is the single-event *reachability* rank-1 — **≤ PR-1's oracle-best-of headline**,
+i.e. the conservative (anonymity-favorable) direction.
 
 ## The gate (why you can trust the curve)
 `tests/test_integration_percolation.py`:
@@ -233,7 +249,7 @@ defense/intersection gates) · `report` (CSV + plot).
 | contention population | §11 | carrier-sense **max-of-pair, single-snapshot** degree (not the full co-channel union) → **optimistic** (under-counts contenders) |
 | decode failure (`p_fail`) | §8 | applied as a deterministic `(1−p_fail)` mean factor, not independent per-blob → removes tail/variance risk → **optimistic** |
 | anonymity (source-estimator) | §10 | slice-3 PR-1: receiver-grid source-localization, **UPPER BOUND on anonymity** |
-| anonymity: single-event only (no cross-message intersection) | §10 | **optimistic for privacy** — the dominant deferred threat |
+| anonymity (PR-1) single-event *per-message* estimator (no fusion) | §10 | **optimistic for privacy** for a persistent author — now **measured** by the PR-3 intersection slice below |
 | anonymity: external passive only (no insider/compromised) | §10 | **optimistic for privacy** (deferred) |
 | anonymity: uniform vs chokepoint placement | §10 | chokepoint reported as the adversary; uniform shown only as the weaker arm |
 | anonymity: candidate set = all nodes (cone deferred) | §10 | anon-set crowd inflated → **optimistic for privacy** |

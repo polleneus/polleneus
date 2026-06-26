@@ -99,8 +99,9 @@ def test_intersection_csv_carries_tags_and_both_fusion_rules():
     header = lines[2]
     for fld in INTERSECTION_FIELDS:
         assert fld in header
-    assert "intersection_scope_tag" in header and "param_master_seed" in header
-    assert "credited" in header and "fused_rank1_score_sum" in header
+    assert "intersection_scope_tag" in header and "per_message_scope_tag" in header
+    assert "param_master_seed" in header
+    assert "headline_credited" in header and "fused_rank1_score_sum" in header
     assert len(lines) == 2 + 1 + 2                                        # 2 comments + header + 2 K rows
     assert out["intersection_scope_tag"] in lines[3]                      # tag survives as a column value
 

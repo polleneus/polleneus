@@ -93,13 +93,15 @@ INTERSECTION_FIELDS = ["k", "fused_rank1_borda", "ci_lo", "ci_hi", "fused_rank1_
 
 def intersection_to_csv_string(out, manifest) -> str:
     """One row per K. Both fusion rules (borda headline + score_sum sensitivity), the decoy-centrality
-    control, the fused-random floor, and the credit verdict travel per row; both scope tags as columns
-    + comments (a comment alone is dropped by dataframe readers)."""
+    control, and the fused-random floor travel per row. `headline_credited`/`headline_label` are the
+    TABLE-level verdict (the headline-K decision), repeated on every row — NOT per-row. The generic tag
+    is the PER-MESSAGE estimator scope (it does not model intersection — the FUSION layer does, hence
+    intersection_scope_tag); both travel as columns + comments (a comment alone is dropped by readers)."""
     man = list(manifest.keys())
-    header = (INTERSECTION_FIELDS + ["credited", "label", "scope_tag", "intersection_scope_tag"]
-              + [f"param_{k}" for k in man])
+    header = (INTERSECTION_FIELDS + ["headline_credited", "headline_label",
+              "per_message_scope_tag", "intersection_scope_tag"] + [f"param_{k}" for k in man])
     buf = io.StringIO()
-    buf.write(f"# {out['scope_tag']}\n# {out['intersection_scope_tag']}\n")
+    buf.write(f"# per-message estimator scope: {out['scope_tag']}\n# fusion layer: {out['intersection_scope_tag']}\n")
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(header)
     v = out["verdict"]

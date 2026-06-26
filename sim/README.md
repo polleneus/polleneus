@@ -21,6 +21,7 @@ python -m venv .venv
 .venv/Scripts/python -m pytest -m slow -q                  # the heavier airtime end-to-end sweeps
 .venv/Scripts/python run.py --preset static-cliff  --out out/cliff.csv   --plot out/cliff.png
 .venv/Scripts/python run.py --preset airtime-knee --out out/airtime.csv --plot out/airtime.png
+.venv/Scripts/python run.py --preset anonymity    --out out/anon.csv    --plot out/anon.png
 ```
 `run.py` sweeps mean degree and writes a CSV (with the **full parameter manifest** per row,
 so any point is reproducible from the file). `static-cliff` writes the delivery curve;
@@ -87,6 +88,34 @@ utilization**, **delivery ratio**, and a **censoring-aware T50** vs density.
 | `blob_size` | 256 B | one sealed message (parent §6) | — |
 | contact-duration distribution | RWP, open-field | report the empirical distribution; its tail is **optimistic** vs clustered human-contact traces | optimistic |
 
+## What it measures (slice 3: anonymity / source-localization) — PR-1
+Whether a passive **receiver-grid adversary** (covering a fraction f of the arena, the sweep
+axis) can **localize who originated** a message under naked pure-flooding — the project's core
+privacy promise at the network layer (crypto hides content/addressing, not the physical spread).
+
+> ⚠️ **Every anonymity number is an UPPER BOUND on real anonymity** (a stronger adversary only
+> localizes *better*) — never a floor or a guarantee. And this slice models a **single
+> origination event against an external passive adversary ONLY**: the dominant real threat —
+> a PHY-labeled persistent device under **multi-session intersection** — and **insider/compromised
+> nodes** are NOT modeled (deferred). The scope tag travels with every emitted number.
+
+- **Diffusion-source, not radio-triangulation:** the engine floods a component in one step and
+  spreads via mobile holders, so localization is epidemic source-estimation. The strong
+  estimator is a **reachability-likelihood** (rank candidates by how well their origination
+  position + the observed spread explain receiver hear-times); first-spy is the weak reference;
+  random-guess is the no-signal floor. Reported = best per message.
+- **Capability gate (must-localize):** no exposure number publishes unless the reachability
+  estimator demonstrably localizes a **slow-mobility** source under near-total coverage (a
+  *static* source floods instantly with zero gradient — unlocalizable by anyone). This prevents
+  mistaking a weak attack for anonymity.
+- **Exposure gate:** "flooding exposes the source" only if best detected rank-1 ≥ max(0.5,
+  5×the 1/N random floor) with adequate sample size — a bare "beats random" is vacuous at 1/N.
+- **Honesty:** chokepoint placement is the reported (stronger) arm; metrics are conditional on
+  detection with the undetected fraction reported (censoring); estimator-quality error is at the
+  first-hear position, with the origination-time error + the gap (mobility-cloaking) separate;
+  anonymity-set size is always labelled an **upper bound** (never "K-anonymity").
+- **PR-2 (next):** the receive-before-originate gate + Poisson mixing defenses and their cost.
+
 ## The gate (why you can trust the curve)
 `tests/test_integration_percolation.py`:
 1. **Oracle KAT** — in the static unbounded regime the engine's multi-hop fixpoint delivers
@@ -113,7 +142,13 @@ airtime sweep + control arms, per-rep CIs) · `report` (CSV + plot).
 | airtime (collision) | §6/§11 | ALOHA `exp(−β·n)`, **β uncalibrated**, no retransmission, ignored scan-duty-cycle misses → **optimistic** (inflate delivered fraction). (Capture effect — not modeled, OUT §4 — would pull the knee *earlier*; a separate effect, not an offset.) |
 | contention population | §11 | carrier-sense **max-of-pair, single-snapshot** degree (not the full co-channel union) → **optimistic** (under-counts contenders) |
 | decode failure (`p_fail`) | §8 | applied as a deterministic `(1−p_fail)` mean factor, not independent per-blob → removes tail/variance risk → **optimistic** |
-| anonymity (source-estimator) | §10 | **not modeled** (deferred) |
+| anonymity (source-estimator) | §10 | slice-3 PR-1: receiver-grid source-localization, **UPPER BOUND on anonymity** |
+| anonymity: single-event only (no cross-message intersection) | §10 | **optimistic for privacy** — the dominant deferred threat |
+| anonymity: external passive only (no insider/compromised) | §10 | **optimistic for privacy** (deferred) |
+| anonymity: uniform vs chokepoint placement | §10 | chokepoint reported as the adversary; uniform shown only as the weaker arm |
+| anonymity: candidate set = all nodes (cone deferred) | §10 | anon-set crowd inflated → **optimistic for privacy** |
+| anonymity: adversary unit-disk reception | §10 | optimistic for the adversary's coverage (real RF messier) |
+| anonymity: worst-case auxiliary info (all trajectories) | §10 | **conservative** for exposure (safe direction) |
 | crypto / tokens | §5/§9 | **not modeled** (deferred) |
 | clustered "gathering" mobility | — | RWP open-field only (clustered mobility is a named fast-follow) → **optimistic** |
 | delivery | — | arrival == delivery (ignores read-window / FS) → **upper bound** |

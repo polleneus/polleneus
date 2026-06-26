@@ -43,6 +43,19 @@ def test_airtime_csv_has_fields():
     assert len(s.splitlines()) == 1 + 1
 
 
+def test_anonymity_csv_scope_tag_is_a_column_not_just_comment():
+    from soup_sim.report import anonymity_to_csv_string
+    rows = [{"f": 0.5, "arm": "chokepoint", "realized_coverage": 0.48, "rank1_prob": 0.3,
+             "ci_lo": 0.2, "ci_hi": 0.4, "median_err_firsthear": 18.0, "median_err_origin": 22.0,
+             "p90_err": 40.0, "undetected_fraction": 0.1, "beats_random": True}]
+    tag = "[UPPER BOUND on anonymity; intersection NOT modeled]"
+    s = anonymity_to_csv_string(rows, {"master_seed": 5}, tag)
+    lines = s.splitlines()
+    assert lines[0].startswith("#") and "UPPER BOUND" in lines[0]      # human-readable comment
+    assert "scope_tag" in lines[1] and "rank1_prob" in lines[1] and "param_master_seed" in lines[1]
+    assert tag in lines[2]                                              # tag survives as a COLUMN value (row)
+
+
 def test_static_curve_is_monotone_increasing():
     cfg = base()
     rows = static_delivery_sweep(cfg, list(np.linspace(2.0, 10.0, 9)), reps=4)

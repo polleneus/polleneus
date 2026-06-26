@@ -304,7 +304,7 @@ defense/intersection gates) · `report` (CSV + plot).
 | intersection: linkage assumed perfect | §10 | **worst-case upper bound** (real linkage is partial/noisy) — the safe direction for a privacy claim |
 | intersection credit: decoy-centrality + fused-random controls | §10 | credit only if the ORIGINATOR is pinned and the most-central innocent relay (decoy) is not; fusion itself creates no signal (random floor stays ~1/N) |
 | intersection: credited headline = lower of Borda/score-sum | §10 | **conservative** — never credit the adversary a fusion-rule coin-flip |
-| clustered "gathering" mobility (vs RWP open-field) | — | slice-4: **optimism-REMOVING** — real crowds cluster; clustered delivery ≤ RWP at the same global degree |
+| clustered "gathering" mobility (vs RWP open-field) | — | slice-4: **optimism-REMOVING** — real crowds cluster; clustered delivery ≤ RWP at the same node count N (clustering raises the realized degree) |
 | clustered: static clusters (no gather→disperse) | — | abstraction; a forming/dispersing crowd is transient (named follow-up) |
 | clustered: leak=1 recovers RWP | — | correctness sanity gate, not a bias |
 | crypto / tokens | §5/§9 | **not modeled** (deferred) |

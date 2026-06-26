@@ -1,69 +1,93 @@
-# Feature Spec — Anonymity & Source-Localization (Simulator Slice 3)
+# Feature Spec — Anonymity & Source-Localization (Simulator Slice 3) — v2
 
-**Status:** Draft → (fan-out review) → **CTO sign-off pending**.
+**Status:** Draft → **fan-out review round 1 (folded, v2)** → **CTO sign-off pending**.
 **Date:** 2026-06-26
 **Parent design:** [polleneus v0.4](2026-06-25-polleneus-design.md) · **Builds on:** [soup-sim slice 1](2026-06-25-soup-sim-spec.md), [airtime slice 2](2026-06-25-airtime-sim-spec.md)
-**Roadmap:** measures the **existential security promise** — *in a pure-flooding mesh, can an adversary localize who ORIGINATED a message?* Delivery (slice 1) and airtime (slice 2) measured whether the network *works*; this measures whether it *protects*.
+**Roadmap:** measures a **lower-bound proxy for the existential security promise** — *for a single origination event, against an external passive receiver grid, can the adversary localize who originated a message?*
 
-> **Purpose.** Crypto/sealed-sender hides message *content* and the addressing, but pure flooding leaks a **physical-layer** signal: a message radiates outward from its origin in space and time, and an adversary with receivers can run that movie backwards. This slice measures that leak against a realistic receiver-grid adversary, and whether the design's two cheapest defenses (Poisson mixing delay + receive-before-originate gate) actually blunt it — and at what delivery cost.
+> **What this is and is NOT.** This slice measures **one origination event** against an **external passive receiver-grid** adversary. It is a *lower-bound proxy* for real anonymity, **not** the whole promise: the parent design's own dominant threat is a **PHY-labeled persistent device under multi-session intersection** (device-linkage ≈ 1.0, §10), which this slice does **not** model. Single-event localization is therefore **optimistic for privacy** — the biggest deferred risk. Insider/compromised-node adversaries and decoy traffic are also deferred (named follow-ups). **Do not read any number here as "the system is anonymous."**
 
-> **Honesty inversion (read this first).** Unlike slices 1–2 (every number an UPPER BOUND on *delivery*), here **every anonymity number is an UPPER BOUND on real anonymity**: we run a fixed set of adversary estimators, and a smarter real adversary can only localize *better*. So a reported "median localization error = 40 m" means *"the originator is at least this exposed — probably more."* We never claim "at most this exposed."
+> **Honesty inversion (load-bearing).** Every anonymity number is an **UPPER BOUND on real anonymity**: we run a fixed estimator set and report the *best* (most-localizing) one; a smarter real adversary only localizes *better*. So "median localization error = 40 m" means *"at least this exposed — probably more."* We **never** claim "at most this exposed," and **never** present a number as a floor/guarantee. (Both prior slices bounded the optimistic side of *delivery*; this bounds the optimistic side of *anonymity*: real ≤ reported, always.)
+
+> **Scope tag travels with every number (hard requirement).** Every emitted anonymity figure — CLI, CSV, manifest, any plot title — carries the scope clause inline, e.g. `loc_error_median_m=40 [SINGLE-EVENT, EXTERNAL-PASSIVE; intersection+insider NOT modeled; UPPER BOUND on anonymity]`. A DoD item forbids emitting an anonymity number without it. (Mirrors how slices 1–2 made "UPPER BOUND on delivery" + the publish-gate verdict travel with their numbers; the parent design names *false-confidence* the deadliest failure, §12.8.)
 
 ---
 
 ## 1. Threat model (CTO-chosen: static receiver grid)
-- **Adversary = passive static receivers** placed to cover a fraction **f** of the arena (the sweep axis, analogous to density/contention in prior slices). Each receiver logs, per message it hears, the tuple `(message_id, first_hear_time, receiver_location)`. Receivers never transmit, relay, or originate; they are invisible to the protocol.
-- **Coverage f** = fraction of arena area within radio range of ≥1 adversary receiver (placed on a jittered grid; f swept from sparse to near-total). Report the receiver count and the realized coverage, not just nominal f.
-- The adversary knows the protocol, the map, and the (mobile) positions of all *candidate* real nodes at all times (worst-case auxiliary info — conservative). It does **not** see message content (crypto holds) or which node is the true originator (that's what it estimates).
-- **Out of this slice (named follow-ups):** compromised/insider colluding app-nodes (a stronger adversary — separate slice); long-term **intersection/traffic-analysis** across *many* messages from the same author (we localize a *single* origination event, not deanonymize a persistent identity); decoy/cover traffic as a defense.
+- **Adversary = passive static receivers** covering a fraction **f** of the arena (the sweep axis). Each logs, per message it overhears, `(message_id, first_hear_time, receiver_location)`. Receivers never transmit/relay/originate and are **invisible to the protocol** (see §7 — they are a post-hoc overlay, so they cannot perturb contention/delivery).
+- **Coverage f** = fraction of arena area within adversary-range of ≥1 receiver. Report **realized** coverage (disk-overlap aware), not just nominal f and receiver count.
+- **Placement arms:** (a) **uniform jittered grid** (baseline) and (b) **chokepoint/clustered** placement biased toward node-density / mobility hotspots (a budget-matched *smart* adversary). Report the **stronger** as the adversary; uniform-only would over-state anonymity (a budget-matched adversary targets clusters) — flagged in the bias table.
+- The adversary knows the protocol, the map, and all candidate nodes' trajectories (worst-case auxiliary info). It does **not** see content (crypto holds) or the true originator.
+- **Out (named follow-ups):** insider/compromised colluding nodes; **cross-message intersection / persistent-author deanonymization** (the dominant real threat — see banner); decoy/cover traffic as a defense.
 
-## 2. What is measured
-For each originated message, the adversary produces a suspicion ranking over candidate nodes and a point estimate of the origin. We report, swept over coverage f and over each defense arm:
-- **Localization error** — distance from the point estimate to the true originator's position at origination time. Report the distribution (median + tail), not just the mean.
-- **K-anonymity / rank** — the true originator's rank in the adversary's suspicion ordering (rank 1 = fully deanonymized), and the **anonymity-set size** (number of candidates indistinguishable from the true source under the estimator). Report the rank-1 (exact-catch) probability.
-- All metrics are reported **jointly with the delivery ratio and latency** of the same run (a defense that destroys delivery isn't a defense — it's an outage).
+## 2. Candidate set, reference times, and metrics (all pinned — no implementer guessing)
+- **Candidate set (pre-registered):** all real nodes **alive and within the message's space-time reachability cone** at origination (a node that could not possibly have authored it is excluded). The random-guess floor (§4) is uniform over *this* set. Bias direction noted (a smaller set ⇒ stronger random floor ⇒ optimistic for privacy).
+- **Reference times (pinned):** the headline ground truth is the **originator's position at origination time** ("where the author was when they spoke"). Estimators evaluate candidate positions at the **per-receiver first-hear time**. Because the originator moves between origination and first-hear (especially under mixing), report **both** `error_origination_time` (headline) and `error_first_hear_time`; their gap is the *mobility-cloaking* component, kept separate from timing-scramble (so a defense can't bank the originator's own motion as its gain).
+- **Metrics (per originated message, swept over f and arm):**
+  - **localization error** = distance(point-estimate, ground truth); report **median + P90 + P95** (the tail — occasional exact catches — is what dooms a user).
+  - **rank** of the true originator = count of candidates with strictly-better suspicion score (+ fractional mid-rank on ties).
+  - **rank-1 (exact-catch) probability** — the **headline** scalar.
+  - **estimator anonymity-set (upper bound)** = `|{candidates within ε of the best score}|`, ε pre-registered; **always labelled an upper bound** (a stronger adversary splits the set), **never** "K-anonymity / hiding crowd."
+  - **undetected fraction** = messages heard by zero receivers (censoring-aware, see §4); reported **separately**, never folded into the error distribution.
+- All reported **jointly with delivery ratio + censoring-aware T50** of the same run.
 
-## 3. The adversary estimators (model a CAPABLE attacker)
-Because anonymity numbers are an upper bound, we must run the **strongest estimators we can**, and report the best (most-localizing) one as the adversary:
-- **First-spy estimator** — the earliest adversary receiver to hear the message is nearest the source; point estimate = the candidate node closest to that receiver at the first-hear time. The classic flooding deanonymizer.
-- **Time-gradient / arrival-order estimator** — uses first-hear times across *all* hearing receivers: the source minimizes a cost over candidates that best explains the observed radial arrival-time ordering (earlier-hearing receivers should be closer). Stronger than first-spy when coverage is non-trivial.
-- The reported adversary success = **best (smallest error / best rank) across estimators**, per message.
+## 3. Adversary estimators (model a CAPABLE attacker; validated for power)
+Reported adversary success = **best across estimators per message**:
+- **First-spy** — candidate nearest the earliest-hearing receiver (weak; carried as a lower-power reference).
+- **Time-gradient / MLE** — uses the **full** first-hear-time vector + known propagation + known trajectories to compute, per candidate, the likelihood of the observed arrival-time pattern; rank by posterior. This is the strong estimator the upper-bound claim rests on.
+- **Origin-vs-relay estimator (for the gate, §5):** exploits the position oracle to down-weight candidates whose first-emission was preceded by an in-range upstream emitter of the same id (a true relayer) — so the originate-gate is tested against an adversary that actually tries to defeat it (else the gate gets unfair credit, since an omniscient adversary can geometrically separate origin from relay).
+- **random-guess** — uniform over the candidate set; the no-signal floor.
 
-## 4. The estimator-power control + publish gate (the honesty guard)
-The trap (mirror of slice-2's "is it really airtime?"): **claiming anonymity when the attack is merely weak.** Guard:
-- **Random-guess baseline** — an estimator that picks a candidate uniformly at random. Its error/rank is the no-information floor.
-- **Estimator-power gate:** an anonymity *defense* claim ("mixing/gate raises localization error to X") is creditable **only if**, on the **undefended baseline**, the real estimator **beats random-guess by a pre-registered margin** (it demonstrably localizes). If the estimator can't localize even the naked originator, the run is labelled *"estimator too weak — anonymity result inconclusive,"* not "anonymous."
-- **Exposure claim (the headline):** "pure flooding exposes the originator" is creditable only if the best estimator's rank-1 probability (or median error) on the undefended baseline crosses a pre-registered exposure threshold at realistic f. State the prediction up front (e.g., *first-spy localizes within ~1 radio-range at f ≥ X*).
+## 4. Two controls + the publish gates (the honesty guards)
+The trap (mirror of slice-2): **claiming anonymity when the attack is merely weak.** Guards (both must be wired and surfaced like slice-2's `binding_gate`):
+- **Control A — must-localize (capability):** on a **static source + near-total coverage (f→1)** the best estimator MUST drive error→~0 and rank-1→~1. If it can't nail a stationary source under full coverage, the estimator is too weak to measure anything ⇒ **no slice-3 number publishes** ("estimator inconclusive"). (The missing positive control; analog of proving the mechanism is real.)
+- **Control B — no-signal:** random-guess is the floor every estimator must beat.
+- **Exposure gate (headline claim "flooding exposes the originator"):** creditable only if, at realistic f, the best estimator's rank-1 probability / median error crosses a **pre-registered exposure threshold**. State the prediction up front.
+- **Defense-power gate (the FLOOR — fixes the "beats-random-by-a-margin is too weak" hole):** a *defense* gain is creditable only if the **undefended baseline** already reached the exposure threshold (near-exact localization), so the defense's degradation is measured from a *strong* attack, not a mediocre one. "Beats random" alone is insufficient — reuse the exposure threshold as the precondition.
+- **Defense-scope disclaimer:** every defense-gain number is emitted with "gain vs the single-event time-gradient adversary only; NOT evaluated against intersection/insider" — a defense that helps the narrow axis must not read as overall anonymity.
 
-## 5. The defenses (knobs, each with an OFF control on the same axes)
-- **Poisson mixing delay** — a node holds a received (forwardable) blob for an `Exp(λ)` random time before it becomes eligible to rebroadcast, deliberately scrambling the radial arrival-time gradient the estimators exploit. Sweep λ; **off-control = zero delay**. Measure the localization-error gain **and** the delivery-latency cost (reuse slice-2's censoring-aware T50).
-- **Receive-before-originate gate** — a node may originate only after it has relayed ≥ G others' messages (or been receiving ≥ T). An origination is then hidden among relays: the adversary can't equate "a node's first emission of this id" with "origin," because honest relayers also "first-emit" ids they didn't author. **Off-control = G=0** (originate immediately). Measure the rank/anonymity-set gain **and** the origination-latency cost (how long a user waits before their message can leave).
-- Both-on arm, to see whether they compose.
+## 5. Defenses (PR-2; knobs, each with an OFF control + confound control)
+- **Poisson mixing delay** — hold a forwardable blob `Exp(λ)` before rebroadcast; **λ fixed venue-wide** (a per-node/location rate is itself a fingerprint — parent §10). OFF = zero delay. **Confound control (mandatory):** mixing can "improve anonymity" merely by **dropping messages** (TTL expiry → fewer adversary samples), exactly as buffer/TTL masqueraded as airtime in slice-2. So measure a **timing-only arm at TTL=∞** (delivery held at 1.0): if the error gain survives ⇒ real timing-scramble; if it vanishes ⇒ it was message-dropping. The gate refuses to credit mixing if the gain disappears at TTL=∞. Also compute error on the **same detected-message set** across arms. Report delivery/T50/buffer-occupancy cost.
+- **Receive-before-originate gate** — originate only after relaying ≥ G others' ids (or alive ≥ T). OFF = G=0. Scored by the **origin-vs-relay estimator** (§3) so "hidden among relays" is *measured*, not asserted. **Confound control:** a **relay-density** check — the gain is meaningless if few relays exist to hide among, so confirm the gain holds at realistic relay density (not a low-density artifact). Report origination-latency cost (how long a user waits before their message can leave). The gate/mixing are modeled as metadata-free idealizations ⇒ **optimistic for privacy** (real gate-eligibility timing leaks — flagged).
+- **Both-on arm** to test composition (phrased as defense-specific, not "overall anonymity").
 
-## 6. Direction of every bias (so the gate stays honest)
-- Reported anonymity is an **upper bound** (stronger adversary ⇒ less). 
-- The adversary gets worst-case auxiliary info (all candidate positions) ⇒ **conservative** (pessimistic for privacy — the safe direction).
-- Unit-disk reception for adversary receivers ⇒ optimistic for the adversary's coverage (real RF is messier) — note direction.
-- Single-message localization only (no cross-message intersection) ⇒ **optimistic for privacy** (a persistent author is more exposed than one message) — loudly flagged; it's the biggest deferred risk.
+## 6. Bias table (every idealization, with direction)
+| Mechanic | Direction |
+|---|---|
+| reported = best of a finite estimator set | **UPPER BOUND on anonymity** (smarter adversary localizes better) |
+| single origination event, no cross-message intersection | **optimistic for privacy** — the dominant deferred risk |
+| external passive only (no insider/compromised nodes) | **optimistic for privacy** (deferred) |
+| uniform-grid placement (if chokepoint arm not run) | **optimistic for privacy** (budget-matched adversary targets clusters) |
+| originate-gate scored without origin-vs-relay estimator | optimistic for the gate arm (omniscient adversary separates origin/relay) — mitigated by §3 estimator |
+| mixing/gate modeled metadata-free (no eligibility-timing / rate fingerprint) | **optimistic for privacy** |
+| adversary unit-disk reception | optimistic for the adversary's coverage (real RF messier) |
+| worst-case auxiliary info (all trajectories) | **conservative** for exposure (safe direction) |
 
-## 7. Architecture (reuse the trusted engine; additive)
-- `adversary.py` (new): jittered-grid receiver placement + realized-coverage measurement; the reception log; the three estimators (first_spy, time_gradient, random_guess).
-- `anonymity.py` (new): localization-error, rank / anonymity-set-size, exposure + estimator-power gate.
-- `engine.py` (extend, behind defaults): **passive receive-only nodes** (adversary receivers hear in-range transmissions, log, never relay/originate); per-(node,message) **first-hear time** already exists via `acquired`; a per-node **mixing-delay** hold before a blob becomes forwardable; an **originate-gate** predicate. All default OFF ⇒ bit-identical to the merged engine (fidelity + percolation + airtime gates stay green).
-- `scenario.py` (extend): `anonymity_sweep` over coverage f with defense on/off arms + the estimator-power control, returning per-f localization/rank/delivery/latency + the gate verdict.
-- `run.py`: `--preset anonymity` (sweeps f; prints exposure headline + each defense's anonymity gain and its latency cost + the gate verdict).
-- Reuse slice 1/2: RWP mobility + stationarity gate, RNG substream contract, sweep/CI/bootstrap, the censoring-aware latency, report/CSV/manifest.
+## 7. Architecture — POST-HOC OVERLAY (not real adversary nodes), additive
+The adversary is computed **after** the real simulation, so it cannot change `n`, contention, goodput, delivery, or airtime (real engine-nodes would — they'd raise `n_contenders` and suppress goodput, perturbing the delivery measured jointly; and `acquired` is a *billed-transfer hold time*, not physical overhearing).
+- `engine.py` (extend, default-OFF flag): a **hold/transmit event recorder** — per (node, blob): the interval the node *holds* the (unexpired) blob (it is treated as periodically advertising it while held). Default OFF ⇒ recorder list stays empty ⇒ **bit-identical** to the merged engine (slices 1–2 gates green).
+- `adversary.py` (new): receiver placement (uniform + chokepoint) + realized-coverage; **overhearing** = for each (receiver L, message m), `first_hear = min t over holders k of m of {k holds m ∧ k within adversary-range of L at t}` — computed from the recorded hold log + trajectories (reproduced from the mobility substream). The estimators (first_spy, time_gradient/MLE, origin_vs_relay, random_guess).
+- `anonymity.py` (new): candidate-cone, localization error (both reference times), rank / anonymity-set-upper-bound / rank-1 prob, undetected fraction; Controls A/B + exposure + defense-power gates (returns a labelled verdict like `binding_gate`).
+- `scenario.py` (extend): `anonymity_sweep` over coverage f (+ placement arms), returning per-f metrics + delivery/T50 + gate verdicts. **PR-2** adds the defense arms + confound controls.
+- **Defenses (PR-2, engine, default-OFF, guarded):** mixing delay in `_offerable` (`forwardable_at = acquired + delay ≤ exit_`; conjunct with the existing causality guard; delay drawn from a **dedicated RNG substream, only when λ>0** so OFF draws nothing; held blobs excluded from `offered`); originate-gate in `inject`. New config fields default to no-ops.
+- **RNG substream tags (disjoint):** placement=4, mixing=5, estimator=6 (existing: mobility=0, engine=1, cohort=2, buffers=(3,i)). Extend the disjointness test to cover the new tags (slice-1 alias precedent).
+- Reuse slice 1/2: RWP + stationarity gate, sweep/CI/bootstrap, censoring-aware T50, report/CSV/manifest. **Stats:** per-message distributions estimated *within* a run; **CI over SEEDs** (not messages — within-run messages correlate); a **pre-registered minimum messages/run** so the rare rank-1 rate is stable.
 
-## 8. Definition of Done
-- Baseline exposure curve (best-estimator localization error + rank-1 prob vs coverage f) with the random-guess floor overlaid.
-- Estimator-power gate wired: a defense claim is suppressed unless the estimator beats random on the undefended baseline by the pre-registered margin; the verdict is surfaced in CLI + plot.
-- Mixing-delay and originate-gate arms each measured **with their delivery/latency cost**, plus the both-on arm.
-- Every number labelled an UPPER BOUND on anonymity; bias table extended (adversary unit-disk; single-message; worst-case aux info) with directions.
-- All deterministic by seed; one-command run; engine non-regression (slices 1–2 gates) bit-identical with defaults off.
+## 8. Two sequenced PRs (mirrors airtime's fidelity→measurement split)
+A defense changes delivery/latency **and** the estimator's input wavefront at once; shipped together you can't tell "defense works" from "estimator/overlay bug." So:
+- **PR-1 — Adversary/estimator infrastructure + baseline exposure (no defenses).** Hold-event recorder; `adversary.py`; `anonymity.py`; Controls A/B + exposure gate; the baseline exposure curve (best-estimator error/rank-1 vs f, random floor overlaid). DoD: Control A passes (estimator demonstrably localizes a static source at f→1); exposure gate wired; engine non-regression bit-identical. **This proves the attack works before any defense can be credited.**
+- **PR-2 — Defenses + cost.** Mixing (with the TTL=∞ confound control), originate-gate (with origin-vs-relay estimator + relay-density control), both-on; per-arm delivery/T50/buffer cost; CLI preset. Defense-power gate + defense-scope disclaimers.
 
-## 9. Decisions to confirm at sign-off
-- **Threat model = static receiver grid, coverage f the axis** — *CTO-chosen ✓.*
-- **Scope = baseline + Poisson mixing + receive-before-originate (each with off-control); decoy traffic + insider adversary deferred** — *CTO-chosen ✓.*
-- **Headline metric = localization error (m) AND rank/anonymity-set, reported jointly with delivery+latency** — *recommend yes.*
-- **Adversary = best of {first-spy, time-gradient} per message; random-guess as the power control** — *recommend yes.*
-- **Honesty inversion: anonymity numbers are an UPPER BOUND; estimator-power gate prevents "weak-attack = anonymous"** — *recommend yes (this is the slice's whole credibility).*
+**Sign-off authorizes PR-1's plan first.**
+
+## 9. Definition of Done
+- PR-1: baseline exposure curve with random floor; Control A (must-localize) + exposure gate green and surfaced in CLI/plot; every emitted number carries the scope tag (asserted by a test); engine non-regression (slices 1–2) bit-identical with defaults off; deterministic by seed; one-command run.
+- PR-2: mixing + originate-gate arms each measured with delivery/latency/buffer cost; the TTL=∞ timing-only and relay-density confound controls wired into the defense-power gate; both-on arm; defense-scope disclaimer on every gain; bias table filled.
+- All anonymity numbers labelled UPPER BOUND on anonymity; no artifact emits one without the scope tag.
+
+## 10. Decisions confirmed / to confirm at sign-off
+- **Threat = static receiver grid, coverage f the axis** — *CTO ✓.* (v2 adds a chokepoint placement arm so uniform doesn't flatter.)
+- **Scope = baseline + mixing + originate-gate (off-controls); decoy + insider + intersection deferred** — *CTO ✓.* (v2 sequences it as PR-1 infra/exposure → PR-2 defenses.)
+- **Architecture = post-hoc overlay, not real adversary nodes** — *recommend yes (only design that is invisible-to-protocol + non-perturbing + bit-identical).* 
+- **Headline = rank-1 probability + localization error (median/P90/P95), reported jointly with delivery+T50; anonymity-set always labelled an upper bound** — *recommend yes.*
+- **Two controls (must-localize + no-signal) + defense-power FLOOR; scope tag travels with every number** — *recommend yes (the slice's whole credibility).*

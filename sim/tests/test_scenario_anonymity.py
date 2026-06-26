@@ -84,6 +84,38 @@ def base_defense_cfg():
                   mixing_lambda=0.05, originate_gate_relays=3)
 
 
+def test_make_tracked_cohort_staggers_and_maps():
+    from soup_sim.scenario import make_tracked_cohort
+    c = tiny()
+    cohort, tracked = make_tracked_cohort(c, k_max=4, n_tracked=2, stride=2.0,
+                                          inject_time=c.warmup, rng=c.rng(7))
+    assert len(tracked) == 2 and all(len(ids) == 4 for ids in tracked.values())
+    by_id = {b.id: b for (b, _s, _d) in cohort}
+    for dev, ids in tracked.items():
+        times = [by_id[i].created_at for i in ids]
+        assert times == [c.warmup + k * 2.0 for k in range(4)]      # staggered by stride
+        srcs = {s for (b, s, _d) in cohort if b.id in ids}
+        assert srcs == {dev}                                        # all four share the device as src
+    assert len(cohort) == 2 * 4 + c.n_messages                      # tracked + background
+
+
+def test_run_tracked_respects_created_at_causality():
+    from soup_sim.scenario import _run_one_anonymity_tracked
+    art = _run_one_anonymity_tracked(tiny(), k_max=3, n_tracked=1, stride=2.0)
+    assert "tracked" in art and len(art["tracked"]) == 1
+    cohort_created = {bid: created for (bid, _s, created, _ttl) in art["cohort"]}
+    for (node, bid), t_acq in art["acquired"].items():
+        if bid in cohort_created:
+            assert t_acq >= cohort_created[bid] - 1e-9              # no acquire before origination
+
+
+def test_run_tracked_deterministic():
+    from soup_sim.scenario import _run_one_anonymity_tracked
+    a = _run_one_anonymity_tracked(tiny(), k_max=3, n_tracked=1, stride=2.0)
+    b = _run_one_anonymity_tracked(tiny(), k_max=3, n_tracked=1, stride=2.0)
+    assert a["acquired"] == b["acquired"] and a["tracked"] == b["tracked"]
+
+
 def test_report_lines_hard_gate_and_scope_tag():
     from run import anonymity_report_lines
     cfg = tiny()

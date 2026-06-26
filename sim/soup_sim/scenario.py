@@ -247,6 +247,57 @@ def _run_one_anonymity(cfg):
             "delivery": metrics.delivery_ratio(), "t50": metrics.t50()}
 
 
+def make_tracked_cohort(cfg, k_max, n_tracked, stride, inject_time, rng):
+    """n_tracked devices each originate k_max messages staggered by `stride` (so each is an
+    independent geometric constraint on the device's trajectory), plus cfg.n_messages background
+    single-message originators (realistic relay density). Returns (cohort, tracked) where
+    cohort=[(Blob, src, dst)] and tracked={device_node: [blob_id,...]}."""
+    devices = [int(x) for x in rng.choice(cfg.n, size=n_tracked, replace=False)]
+    cohort, tracked, bid = [], {}, 0
+    for dev in devices:
+        ids = []
+        for k in range(k_max):
+            dst = int(rng.integers(0, cfg.n))
+            cohort.append((Blob(id=bid, created_at=inject_time + k * stride, ttl=cfg.ttl,
+                                size=cfg.blob_size), dev, dst))
+            ids.append(bid)
+            bid += 1
+        tracked[dev] = ids
+    for _ in range(cfg.n_messages):
+        src = int(rng.integers(0, cfg.n))
+        dst = int(rng.integers(0, cfg.n))
+        cohort.append((Blob(id=bid, created_at=inject_time, ttl=cfg.ttl, size=cfg.blob_size), src, dst))
+        bid += 1
+    return cohort, tracked
+
+
+def _run_one_anonymity_tracked(cfg, k_max, n_tracked, stride):
+    """Like _run_one_anonymity but with a tracked-device cohort (staggered originations). Defenses
+    OFF (PR-3 is the undefended intersection baseline). A future created_at + the engine's
+    acquisition-time causality make each message's flood start at its own origination time."""
+    cfg.validate()
+    mob = make_mobility(cfg, cfg.rng(0))
+    metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
+    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i)) for i in range(cfg.n)]
+    budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
+                           model=cfg.airtime_model, beta=cfg.beta,
+                           t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
+    eng = Engine(cfg, mob, buffers, budget, cfg.rng(1), on_deliver=metrics.on_deliver, record_positions=True)
+    eng.run_until(cfg.warmup)
+    cohort_raw, tracked = make_tracked_cohort(cfg, k_max, n_tracked, stride, cfg.warmup, cfg.rng(7))
+    cohort = []
+    for blob, src, dst in cohort_raw:
+        metrics.register(blob, src, dst)
+        eng.inject(blob, src)                            # un-gated; created_at carries the stagger
+        cohort.append((blob.id, src, blob.created_at, blob.ttl))
+    eng.run_until(cfg.warmup + cfg.measure_window + cfg.drain)
+    eng.finalize()
+    return {"position_log": eng.position_log, "acquired": dict(eng.acquired), "cohort": cohort,
+            "episodes": list(eng.episodes), "n": cfg.n, "tracked": tracked,
+            "relayed": {k: len(v) for k, v in eng.relayed.items()},
+            "delivery": metrics.delivery_ratio(), "t50": metrics.t50()}
+
+
 def _forward_infection(episodes, source, t0, n):
     """Earliest time each node is infected if the epidemic is SEEDED at `source` at t0, over the
     time-respecting contact graph (a contact [entry,exit] infects b at max(t_a,entry) iff t_a<=exit).

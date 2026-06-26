@@ -112,6 +112,25 @@ def intersection_to_csv_string(out, manifest) -> str:
     return buf.getvalue()
 
 
+CLUSTER_FIELDS = ["leak", "n", "delivery_mean", "ci_lo", "ci_hi", "giant_mean",
+                  "intra_degree", "inter_degree"]
+
+
+def cluster_to_csv_string(out, manifest) -> str:
+    """One row per inter-cluster leak. The mobility-regime tag travels as a leading comment AND a
+    column on every row (a comment alone is dropped by dataframe readers)."""
+    man = list(manifest.keys())
+    header = CLUSTER_FIELDS + ["regime_tag"] + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    buf.write(f"# {out['regime_tag']}  degree={out['degree']} rwp_delivery={out['rwp_delivery']:.3f} "
+              f"rwp_recovered={out['rwp_recovered']}\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for r in out["rows"]:
+        w.writerow([r.get(k) for k in CLUSTER_FIELDS] + [out["regime_tag"]] + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
 def anonymity_plot(out, path) -> bool:
     """rank-1 probability vs coverage f per placement arm; scope tag in the title."""
     try:

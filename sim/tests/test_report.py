@@ -106,6 +106,29 @@ def test_intersection_csv_carries_tags_and_both_fusion_rules():
     assert out["intersection_scope_tag"] in lines[3]                      # tag survives as a column value
 
 
+def test_cluster_csv_has_fields_and_regime_tag():
+    from soup_sim.report import cluster_to_csv_string, CLUSTER_FIELDS
+    out = {
+        "regime_tag": "[MOBILITY REGIME = clustered gathering; uniform/RWP is the optimistic baseline]",
+        "degree": 8.0, "rwp_delivery": 0.95, "rwp_recovered": True,
+        "rows": [
+            {"leak": 0.0, "n": 110, "delivery_mean": 0.16, "ci_lo": 0.1, "ci_hi": 0.2,
+             "giant_mean": 0.17, "intra_degree": 7.0, "inter_degree": 0.0},
+            {"leak": 1.0, "n": 110, "delivery_mean": 0.93, "ci_lo": 0.9, "ci_hi": 0.95,
+             "giant_mean": 0.97, "intra_degree": 1.2, "inter_degree": 6.0},
+        ],
+    }
+    s = cluster_to_csv_string(out, {"master_seed": 5})
+    lines = s.splitlines()
+    assert lines[0].startswith("#") and "clustered" in lines[0]      # regime tag comment
+    header = lines[1]
+    for fld in CLUSTER_FIELDS:
+        assert fld in header
+    assert "regime_tag" in header and "param_master_seed" in header
+    assert len(lines) == 1 + 1 + 2                                   # comment + header + 2 leak rows
+    assert out["regime_tag"] in lines[2]                            # tag survives as a column value
+
+
 def test_static_curve_is_monotone_increasing():
     cfg = base()
     rows = static_delivery_sweep(cfg, list(np.linspace(2.0, 10.0, 9)), reps=4)

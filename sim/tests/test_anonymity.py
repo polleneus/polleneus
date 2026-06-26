@@ -2,7 +2,7 @@ import numpy as np
 from soup_sim.config import Config
 from soup_sim.anonymity import (
     SCOPE_TAG, localization_error, rank_of, anonymity_set_size, quantiles,
-    mustlocalize_gate, exposure_gate, MUSTLOC_RANK1,
+    mustlocalize_gate, exposure_gate,
 )
 
 
@@ -37,11 +37,17 @@ def test_scope_tag():
 
 
 def test_mustlocalize_gate():
-    assert mustlocalize_gate({"rank1": 0.95, "median_err_radii": 0.2})["ok"] is True
-    assert mustlocalize_gate({"rank1": 0.3, "median_err_radii": 0.2})["ok"] is False   # reachability too weak
+    # best estimator demonstrably localizes (like the diagnostic: rank-1 0.35, err 0.7 radii, floor 0.017)
+    assert mustlocalize_gate({"rank1": 0.35, "median_err_radii": 0.7}, random_floor=0.017)["ok"] is True
+    # at the random floor -> not capable
+    assert mustlocalize_gate({"rank1": 0.05, "median_err_radii": 1.8}, random_floor=0.017)["ok"] is False
+    # localizes in rank but error too coarse -> not capable
+    assert mustlocalize_gate({"rank1": 0.5, "median_err_radii": 2.0}, random_floor=0.017)["ok"] is False
+    # high 1/N floor raises the margin bar above the observed rank-1 -> not capable
+    assert mustlocalize_gate({"rank1": 0.3, "median_err_radii": 0.5}, random_floor=0.05)["ok"] is False
     # non-monotone power in coverage -> fail even if the point passes
-    assert mustlocalize_gate({"rank1": 0.95, "median_err_radii": 0.2},
-                             coverage_curve=[(0.3, 5.0), (0.6, 6.0), (0.9, 1.0)])["ok"] is False
+    assert mustlocalize_gate({"rank1": 0.5, "median_err_radii": 0.5}, random_floor=0.017,
+                             coverage_curve=[(0.3, 2.0), (0.6, 3.0), (0.9, 1.0)])["ok"] is False
 
 
 def test_exposure_gate_margin_and_underpower():

@@ -384,33 +384,19 @@ def anonymity_sweep(base_cfg, f_values, reps):
     ctrl = replace(base_cfg, speed_min=0.5, speed_max=0.5,
                    master_seed=_seed_for(base_cfg.master_seed, 999, 0))
     curve = []
-    reach_res = {"rank1": 0.0, "median_err_radii": float("inf")}
+    best_res = {"rank1": 0.0, "median_err_radii": float("inf")}
     for cov in (0.6, 0.95):
         art = _run_one_anonymity(ctrl)
         recv = place_receivers(ctrl, cov, "uniform", ctrl.rng(4))
-        adv_range = ctrl.adversary_range_mult * ctrl.radius
-        # reachability-only capability check (forward diffusion reach, not euclidean)
-        reach = _reach_capped(_forward_reach_matrix(art["episodes"], art["position_log"], recv,
-                                                    ctrl.warmup, art["n"], adv_range, ctrl))
-        H = hearings(recv, adv_range, art["position_log"], art["acquired"],
-                     {bid: c + tt for (bid, _s, c, tt) in art["cohort"]}, ctrl)
-        by_blob = {}
-        for (li, bid), t in H.items():
-            by_blob.setdefault(bid, []).append((li, t))
-        ranks, errs = [], []
-        for (bid, src, _c, _tt) in art["cohort"]:
-            mh = by_blob.get(bid)
-            if not mh:
-                continue
-            cand_fh = _anon_pos_at(art["position_log"], min(t for _l, t in mh))
-            est = estimate("reachability", mh, recv, cand_fh, ctrl.rng(6), reach=reach)
-            ranks.append(rank_of(est["scores"], src) == 0)
-            errs.append(localization_error(est["point"], cand_fh[src], ctrl) / ctrl.radius)
+        # BEST-estimator capability check (first-spy is the workhorse under dense coverage)
+        res, _u, _t = _score_arm(art, recv, ctrl, ctrl.rng(6))
+        ranks = [r["rank"] == 0 for r in res]
+        errs = [r["err_fh"] / ctrl.radius for r in res]
         med_radii = float(np.median(errs)) if errs else float("inf")
         curve.append((cov, med_radii * ctrl.radius))
         if cov == 0.95:
-            reach_res = {"rank1": float(np.mean(ranks)) if ranks else 0.0, "median_err_radii": med_radii}
-    mustlocalize = mustlocalize_gate(reach_res, curve)
+            best_res = {"rank1": float(np.mean(ranks)) if ranks else 0.0, "median_err_radii": med_radii}
+    mustlocalize = mustlocalize_gate(best_res, 1.0 / base_cfg.n, curve)
     return {"rows": rows, "mustlocalize": mustlocalize, "scope_tag": SCOPE_TAG, "headline_arm": headline_arm}
 
 

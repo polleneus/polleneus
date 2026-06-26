@@ -47,6 +47,15 @@ class Engine:
         self.episodes: list[tuple[int, int, float, float]] = []  # (i, j, entry, exit)
         self.origin: dict[int, int] = {}
         self.acquired: dict[tuple[int, int], float] = {}  # (node, blob_id) -> time it held the blob
+        # PR-2 airtime accounting (per-episode billing; blob-unit binding tallies sum to unmet)
+        self.charged_airtime = 0.0
+        self.available_contact_time = 0.0
+        self.offered_airtime = 0.0
+        self.offered_blobs = 0
+        self.served_blobs = 0
+        self.setup_starved_blobs = 0
+        self.quantization_blobs = 0
+        self.contention_blobs = 0
 
     def inject(self, blob, node_idx) -> None:
         self.origin.setdefault(blob.id, node_idx)
@@ -75,7 +84,12 @@ class Engine:
         cand = neighbor_pairs(p0, r_q, w, h, b)
         if self._pair_order == "reversed":
             cand = list(reversed(cand))
-        deg = self._degrees(p0, cand, r, w, h, b)
+        cs_r = r * cfg.cs_radius_mult
+        if cs_r > r:                                       # carrier-sense (co-channel) population != connectivity
+            cs_cand = neighbor_pairs(p0, cs_r + 2.0 * max_disp + _EPS, w, h, b)
+            cs_deg = self._degrees(p0, cs_cand, cs_r, w, h, b)
+        else:
+            cs_deg = self._degrees(p0, cand, r, w, h, b)
         seen, active, expire_nodes = set(), [], set()
         for (i, j) in sorted(cand):  # canonical order -> deterministic
             iv = contact_interval(p0[i], v_leg[i], p0[j], v_leg[j], r, t, t + dt_step, w, h, b)
@@ -88,30 +102,45 @@ class Engine:
             enter, exit_ = iv
             expire_nodes.add(i)
             expire_nodes.add(j)
+            n_contenders = int(max(cs_deg[i], cs_deg[j]))  # computed BEFORE open-dict (scope) + slope-aware setup
             if key not in self.open:
-                self.open[key] = {"entry": enter, "last_end": exit_,
-                                  "setup_debt": self.budget.t_setup, "credit": 0.0}
+                self.open[key] = {"entry": enter, "last_end": exit_, "credit": 0.0,
+                                  "setup_debt": self.budget.t_setup_at(n_contenders),
+                                  "setup_floor": self.budget.t_setup_at(n_contenders),  # bill the RESERVED floor
+                                  "n": n_contenders, "served": set(), "offered": set(),
+                                  "setup_billed": False}
             st = self.open[key]
             st["last_end"] = exit_
+            st["n"] = max(st["n"], n_contenders)
+            self.available_contact_time += (exit_ - enter)
             pay = min(exit_ - enter, st["setup_debt"])     # amortize the handshake floor once
             st["setup_debt"] -= pay
-            eff = self.budget.effective_goodput(int(max(deg[i], deg[j])))
+            eff = self.budget.effective_goodput(n_contenders)
             st["credit"] += (exit_ - enter - pay) * eff / self.budget.blob_size
-            active.append((i, j, enter, exit_, st))
+            for (src, dst) in ((i, j), (j, i)):            # offered = distinct blobs the peer lacks (once/step)
+                st["offered"].update(bl.id for bl in self._offerable(src, self.buffers[dst].ids(), exit_))
+            active.append((i, j, enter, exit_, st, eff))
         for nd in expire_nodes:                            # sweep dead blobs regardless of airtime
             self.buffers[nd].expire(t)
         progressed = True                                  # FIXPOINT: complete in-step multi-hop chains
         while progressed:
             progressed = False
-            for (i, j, enter, exit_, st) in active:
+            for (i, j, enter, exit_, st, eff) in active:
                 allowed = int(st["credit"])
                 if allowed <= 0:
                     continue
-                moved = self._exchange(i, j, allowed, enter, exit_)
+                moved, served_ids = self._exchange(i, j, allowed, enter, exit_)
                 if moved:
                     st["credit"] -= moved
+                    st["served"].update(served_ids)
+                    st["offered"].update(served_ids)       # in-step multi-hop served blobs are offered too
+                    if not st["setup_billed"]:             # one handshake floor per episode (the RESERVED floor)
+                        self.charged_airtime += st["setup_floor"]
+                        st["setup_billed"] = True
+                    self.charged_airtime += moved * self.budget.blob_size / eff  # same eff as accrual -> <= usable
                     progressed = True
-        for (_i, _j, _e, _x, st) in active:                # forfeit idle whole-blob airtime (no bursts)
+        for entry in active:                               # forfeit idle whole-blob airtime (no bursts)
+            st = entry[4]
             if st["credit"] >= 1.0:
                 st["credit"] -= int(st["credit"])
         for key in list(self.open):
@@ -121,8 +150,25 @@ class Engine:
 
     def _close(self, key) -> None:
         st = self.open.pop(key)
+        dur = st["last_end"] - st["entry"]
         self.episodes.append((key[0], key[1], st["entry"], st["last_end"]))
-        self.durations.append(st["last_end"] - st["entry"])
+        self.durations.append(dur)
+        n = st["n"]
+        served = len(st["served"])
+        offered = len(st["offered"])
+        self.served_blobs += served
+        self.offered_blobs += offered
+        self.offered_airtime += self.budget.charged_airtime(offered, n) if offered else 0.0
+        unmet = offered - served
+        if unmet > 0:                                      # classify UNMET blobs (blob-unit binding tallies)
+            t0 = self.budget.t_setup_at(n)
+            capacity = self.budget.effective_goodput(n) * max(0.0, dur - t0) / self.budget.blob_size
+            if t0 >= dur:
+                self.setup_starved_blobs += unmet          # couldn't even handshake
+            elif capacity < 1.0:
+                self.quantization_blobs += unmet           # too short/low-rate for one whole blob
+            else:
+                self.contention_blobs += unmet             # could move blobs, backlog exceeded capacity
 
     def finalize(self) -> None:
         for key in list(self.open):          # per-step model already exchanged; just record open contacts
@@ -149,8 +195,8 @@ class Engine:
             out.append(bl)
         return out
 
-    def _exchange(self, i, j, k, enter, exit_) -> int:
-        remaining, moved = k, 0
+    def _exchange(self, i, j, k, enter, exit_):
+        remaining, moved, served_ids = k, 0, []
         for (src, dst) in ((i, j), (j, i)):
             if remaining <= 0:
                 break
@@ -163,7 +209,8 @@ class Engine:
                     self.on_deliver(dst, blob, deliver_t)
                     remaining -= 1
                     moved += 1
-        return moved
+                    served_ids.append(blob.id)
+        return moved, served_ids
 
     def mean_contact_duration(self) -> float:
         return float(np.mean(self.durations)) if self.durations else 0.0

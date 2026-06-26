@@ -13,6 +13,7 @@ from .metrics import Metrics
 from .workload import make_cohort
 from .cell_list import neighbor_pairs
 from .percolation import same_component_pair_fraction, placement
+from .knee import find_knee, binding_decomposition, binding_gate
 
 
 def density_to_n(d: float, w: float, h: float, r: float) -> int:
@@ -59,18 +60,22 @@ def run_one(cfg) -> dict:
     metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
     buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i))
                for i in range(cfg.n)]
-    budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size)
+    budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
+                           model=cfg.airtime_model, beta=cfg.beta,
+                           t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
     eng = Engine(cfg, mob, buffers, budget, cfg.rng(1), on_deliver=metrics.on_deliver)
 
     eng.run_until(cfg.warmup)
     for blob, src, dst in make_cohort(cfg, inject_time=cfg.warmup, rng=cfg.rng(2)):
         metrics.register(blob, src, dst)
         eng.inject(blob, src)
+    tx0 = eng.transmissions                       # circulation: count accepted transfers in-window only
 
     samples, n_samp = [], 10
     for s in range(1, n_samp + 1):
         eng.run_until(cfg.warmup + cfg.measure_window * s / n_samp)
         samples.append(mean_degree(mob.positions, cfg.radius, cfg.width, cfg.height, cfg.boundary))
+    tx1 = eng.transmissions                       # snapshot BEFORE drain/finalize
     eng.run_until(cfg.warmup + cfg.measure_window + cfg.drain)
     eng.finalize()  # settle any still-open episodes exactly once at the true end
 
@@ -85,6 +90,16 @@ def run_one(cfg) -> dict:
         "transmissions": eng.transmissions,
         "empirical_mean_degree": float(np.mean(samples)),
         "stationary_ok": stationarity_ok(first, second, tol=0.15),
+        # PR-2 airtime measurements
+        "circulated_per_min": metrics.circulated_per_min(tx1 - tx0, cfg.measure_window),
+        "utilization": metrics.utilization(eng.charged_airtime, eng.available_contact_time),
+        "utilization_vs_offered": metrics.utilization_vs_offered(eng.charged_airtime, eng.offered_airtime),
+        "t50": metrics.t50(),
+        "offered_blobs": eng.offered_blobs,
+        "served_blobs": eng.served_blobs,
+        "setup_starved_blobs": eng.setup_starved_blobs,
+        "quantization_blobs": eng.quantization_blobs,
+        "contention_blobs": eng.contention_blobs,
         "manifest": cfg.manifest(),
     }
 
@@ -135,6 +150,58 @@ def static_delivery_sweep(base_cfg, degrees, reps: int) -> list[dict]:
             "overhead_mean": float("nan"), "stationary_ok": True, "per_rep_ratios": ratios,
         })
     return rows
+
+
+def _airtime_arm(base_cfg, densities, reps):
+    """One density sweep returning per-density airtime rows + the per-rep circulation matrix."""
+    rows, circ_matrix = [], []
+    for di, d in enumerate(densities):
+        n = density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius)
+        circ, util, deliv, t50s = [], [], [], []
+        agg = {"offered": 0, "served": 0, "starved": 0, "quant": 0, "contention": 0}
+        for rep in range(reps):
+            cfg = replace(base_cfg, n=max(2, n), master_seed=_seed_for(base_cfg.master_seed, di, rep))
+            r = run_one(cfg)
+            circ.append(r["circulated_per_min"])
+            util.append(r["utilization"])
+            deliv.append(r["delivery_ratio"])
+            t50s.append(r["t50"] if r["t50"] is not None else np.nan)
+            agg["offered"] += r["offered_blobs"]
+            agg["served"] += r["served_blobs"]
+            agg["starved"] += r["setup_starved_blobs"]
+            agg["quant"] += r["quantization_blobs"]
+            agg["contention"] += r["contention_blobs"]
+        m, lo, hi = mean_ci(circ)
+        rows.append({
+            "density": d, "n": n, "circulated_per_min_mean": m, "ci_lo": lo, "ci_hi": hi,
+            "utilization_mean": float(np.mean(util)), "delivery_mean": float(np.mean(deliv)),
+            "t50": float(np.nanmean(t50s)) if np.any(~np.isnan(t50s)) else None,
+            "binding": binding_decomposition(agg["offered"], agg["served"], agg["starved"],
+                                             agg["quant"], agg["contention"]),
+        })
+        circ_matrix.append(circ)
+    return rows, np.array(circ_matrix)
+
+
+def airtime_sweep(base_cfg, densities, reps):
+    """Airtime density sweep with TWO mandatory control arms (alpha=0 airtime-free; cap=inf/ttl=inf),
+    a saturation-knee estimate, and the binding publish-gate. Deterministic by master_seed."""
+    rng = np.random.default_rng(np.random.SeedSequence([base_cfg.master_seed, 777]))
+    rows, circ = _airtime_arm(base_cfg, densities, reps)
+    a0_rows, a0_circ = _airtime_arm(
+        replace(base_cfg, airtime_model="linear", alpha=0.0, beta=0.0, t_setup_slope=0.0), densities, reps)
+    ct_rows, ct_circ = _airtime_arm(
+        replace(base_cfg, buffer_cap=10 ** 9, ttl=1e9), densities, reps)
+    knee = find_knee(densities, circ, np.random.default_rng(rng.integers(0, 2 ** 31)))
+    a0_over = find_knee(densities, a0_circ, np.random.default_rng(rng.integers(0, 2 ** 31)))["status"] == "knee"
+    ct_over = find_knee(densities, ct_circ, np.random.default_rng(rng.integers(0, 2 ** 31)))["status"] == "knee"
+    if knee["status"] == "knee":                          # binding at the row nearest the REFINED knee density
+        ki = int(np.argmin([abs(r["density"] - knee["knee"]) for r in rows]))
+    else:
+        ki = int(np.argmax([r["circulated_per_min_mean"] for r in rows]))
+    gate = binding_gate(knee, rows[ki]["binding"], a0_over, ct_over)
+    return {"rows": rows, "alpha0_rows": a0_rows, "capttl_rows": ct_rows, "knee": knee, "gate": gate,
+            "predicted_knee_contenders": base_cfg.n_channels / base_cfg.beta if base_cfg.beta else None}
 
 
 def crossing_0p5(densities, mean_ratios) -> float:

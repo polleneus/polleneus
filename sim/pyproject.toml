@@ -12,3 +12,5 @@ dev = ["pytest>=7"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["slow: heavier end-to-end airtime sweeps (run with -m slow)"]
+addopts = "-m 'not slow'"

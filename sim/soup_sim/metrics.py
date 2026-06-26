@@ -51,3 +51,41 @@ class Metrics:
     def overhead_ratio(self, transmissions: int) -> float:
         d = self.fair_chance_delivered()
         return transmissions / d if d > 0 else float("inf")
+
+    # --- PR-2 airtime metrics -------------------------------------------------
+    def utilization(self, charged: float, available: float) -> float:
+        return charged / available if available > 0 else 0.0
+
+    def utilization_vs_offered(self, charged: float, offered_airtime: float) -> float:
+        return charged / offered_airtime if offered_airtime > 0 else 0.0
+
+    def circulated_per_min(self, transmissions_in_window: int, measure_window: float) -> float:
+        minutes = measure_window / 60.0
+        return transmissions_in_window / minutes if minutes > 0 else 0.0
+
+    def delivery_cdf_points(self):
+        """(time, cumulative-delivered-fraction) over the FULL fair-chance cohort, so TTL-censored
+        (undelivered) messages count against the denominator. NOT a Kaplan-Meier estimator —
+        all censoring is at a single time (TTL), so the empirical CDF quantile is the right stat."""
+        fc = self.fair_chance_ids()
+        total = len(fc)
+        if total == 0:
+            return []
+        lat = sorted(self.delivered_at[b] - self.created[b] for b in fc if b in self.delivered_at)
+        out, cum = [], 0
+        for t in lat:
+            cum += 1
+            out.append((t, cum / total))
+        return out
+
+    def t50(self):
+        """Time to 50% of the fair-chance cohort delivered; None when <50% ever delivered
+        (censored — avoids the survivorship trap where delivered-only mean looks flattering)."""
+        for (t, frac) in self.delivery_cdf_points():
+            if frac >= 0.5:
+                return t
+        return None
+
+    def delivered_only_mean_latency(self) -> float:
+        lat = self.latencies()
+        return float(sum(lat) / len(lat)) if lat else 0.0   # LOWER bound (survivorship)

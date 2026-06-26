@@ -26,6 +26,51 @@ def write_csv(rows, manifest, path) -> None:
         f.write(to_csv_string(rows, manifest))
 
 
+AIRTIME_FIELDS = ["density", "circulated_per_min_mean", "ci_lo", "ci_hi", "utilization_mean",
+                  "delivery_mean", "t50"]
+BINDING_KEYS = ["contention_bound", "setup_starved", "quantization", "demand_satisfied"]
+
+
+def airtime_to_csv_string(rows, manifest) -> str:
+    man = list(manifest.keys())
+    header = AIRTIME_FIELDS + [f"binding_{k}" for k in BINDING_KEYS] + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for r in rows:
+        w.writerow([r.get(k) for k in AIRTIME_FIELDS]
+                   + [r.get("binding", {}).get(k) for k in BINDING_KEYS]
+                   + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
+def airtime_plot(out, path) -> bool:
+    """Circulated-blobs/min vs density with the alpha=0 and cap/ttl control overlays + knee marker."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return False
+
+    def xy(rows):
+        return [r["density"] for r in rows], [r["circulated_per_min_mean"] for r in rows]
+    fig, ax = plt.subplots()
+    x, y = xy(out["rows"])
+    ax.plot(x, y, marker="o", label="airtime model")
+    ax.plot(*xy(out["alpha0_rows"]), marker="s", ls="--", label="alpha=0 control")
+    ax.plot(*xy(out["capttl_rows"]), marker="^", ls=":", label="cap=inf/ttl=inf control")
+    if out["knee"]["status"] == "knee":
+        ax.axvline(out["knee"]["knee"], color="grey", lw=0.8, label="knee")
+    ax.set_xlabel("mean degree (nodes per radio-disk)")
+    ax.set_ylabel("circulated blobs / min (UPPER BOUND)")
+    ax.set_title(f"polleneus airtime: {out['gate']['label']}")
+    ax.legend()
+    fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    return True
+
+
 def plot(rows, path) -> bool:
     try:
         import matplotlib

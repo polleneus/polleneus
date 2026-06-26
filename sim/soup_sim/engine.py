@@ -60,11 +60,29 @@ class Engine:
         # slice-3 anonymity overlay: per-step position log (default off ⇒ bit-identical)
         self.record_positions = record_positions
         self.position_log: list = []
+        # slice-3 PR-2 defenses (default off ⇒ bit-identical): Poisson mixing + receive-before-originate
+        self._mixing_on = cfg.mixing_lambda > 0                          # no RNG touched when off ⇒ bit-identical
+        self.forward_delay: dict[tuple[int, int], float] = {}            # (node, blob_id) -> Exp(lambda) hold
+        self.relayed: dict[int, set] = {}                                # node -> set of distinct foreign ids forwarded
+        self.gated_origins: set = set()                                  # blob ids subject to the originate-gate
+        #   (only MEASURED cohort originations; background soup flows freely so the gate can't deadlock)
 
-    def inject(self, blob, node_idx) -> None:
+    def inject(self, blob, node_idx, gated=False) -> None:
         self.origin.setdefault(blob.id, node_idx)
         self.acquired[(node_idx, blob.id)] = blob.created_at  # origin holds it from creation
+        if gated:                                             # subject to the receive-before-originate gate
+            self.gated_origins.add(blob.id)
+        self._draw_mix_delay(node_idx, blob.id)
         self.buffers[node_idx].offer(blob, now=self.t)
+
+    def _draw_mix_delay(self, node_idx, blob_id) -> None:
+        # Hold is keyed deterministically on (blob, holder) — NOT a persistent generator — so a given
+        # (blob, holder) gets the SAME Exp(lambda) hold regardless of delivery order or which defense arm
+        # runs. This is what makes the mixing vs TTL=inf timing-only control a fair comparison (same
+        # timing scramble, only message survival differs); a lazy order-dependent draw would confound it.
+        if self._mixing_on:                                    # Poisson mixing on -> hold before forwardable
+            self.forward_delay[(node_idx, blob_id)] = float(
+                self.cfg.rng(5, int(blob_id), int(node_idx)).exponential(1.0 / self.cfg.mixing_lambda))
 
     def run_until(self, t_end: float) -> None:
         dt = self.cfg.dt
@@ -190,6 +208,9 @@ class Engine:
         return deg
 
     def _offerable(self, src, peer_ids, exit_):
+        cfg = self.cfg
+        gate_g = cfg.originate_gate_relays
+        gate_t = cfg.originate_gate_time
         out = []
         for bl in self.buffers[src].blobs():
             if bl.id in peer_ids:
@@ -198,6 +219,17 @@ class Engine:
                 continue
             if self.acquired.get((src, bl.id), _INF) > exit_ + _EPS:  # causality: had it before contact end
                 continue
+            # mixing: not forwardable until the Exp(lambda) hold elapses (default 0.0 -> no-op)
+            if self.acquired.get((src, bl.id), _INF) + self.forward_delay.get((src, bl.id), 0.0) > exit_ + _EPS:
+                continue
+            # receive-before-originate: src's OWN gated origination is held until src has relayed >= G
+            # distinct foreign ids (and been alive >= T). Only MEASURED gated originations are held
+            # (background soup is un-gated, so the gate can't deadlock the whole network). default no-op.
+            if (gate_g or gate_t) and bl.id in self.gated_origins and self.origin.get(bl.id) == src:
+                # time check uses the contact end (exit_), consistent with the causality/mixing guards
+                # above — self.t is not advanced to the step end until after the fixpoint loop.
+                if len(self.relayed.get(src, ())) < gate_g or exit_ + _EPS < gate_t:
+                    continue
             out.append(bl)
         return out
 
@@ -208,9 +240,13 @@ class Engine:
                 break
             db = self.buffers[dst]
             for blob in select_offers(self._offerable(src, db.ids(), exit_), set(), remaining, self.rng):
-                deliver_t = max(enter, self.acquired[(src, blob.id)])  # causal: >= src acquire time
+                # causal + mixing: not before src acquired it AND its forward-hold elapsed
+                deliver_t = max(enter, self.acquired[(src, blob.id)] + self.forward_delay.get((src, blob.id), 0.0))
                 if db.offer(blob, deliver_t) == "Accepted":
                     self.acquired[(dst, blob.id)] = deliver_t
+                    self._draw_mix_delay(dst, blob.id)                 # dst now holds it -> its own mixing hold
+                    if self.origin.get(blob.id) != src:               # src relayed a FOREIGN id (gate accounting)
+                        self.relayed.setdefault(src, set()).add(blob.id)
                     self.transmissions += 1
                     self.on_deliver(dst, blob, deliver_t)
                     remaining -= 1

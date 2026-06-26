@@ -63,6 +63,30 @@ def anonymity_to_csv_string(rows, manifest, scope_tag) -> str:
     return buf.getvalue()
 
 
+DEFENSE_FIELDS = ["arm", "baseline_rank1", "defended_rank1", "timing_only_rank1", "intersection",
+                  "credited", "label", "delivery", "t50", "relay_density"]
+
+
+def anonymity_defense_to_csv_string(out, manifest) -> str:
+    """One row per defense arm (mixing, gate). Both honesty tags travel as columns + comments
+    (a comment alone is dropped by dataframe readers). timing_only_rank1 is the TTL=inf control
+    rank-1 (credit requires the drop to persist there); delivery + t50 are the cost of the defense."""
+    man = list(manifest.keys())
+    header = DEFENSE_FIELDS + ["scope_tag", "defense_scope_tag"] + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    buf.write(f"# {out['scope_tag']}\n# {out['defense_scope_tag']}\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for arm in ("mixing", "gate"):
+        a = out[arm]
+        v = a["verdict"]
+        row = [arm, a["baseline_rank1"], a["defended_rank1"], a.get("timing_only_rank1", ""),
+               a["intersection"], v["credited"], v["label"],
+               a["cost"]["delivery"], a["cost"]["t50"], a.get("relay_density", "")]
+        w.writerow(row + [out["scope_tag"], out["defense_scope_tag"]] + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
 def anonymity_plot(out, path) -> bool:
     """rank-1 probability vs coverage f per placement arm; scope tag in the title."""
     try:

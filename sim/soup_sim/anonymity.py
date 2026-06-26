@@ -12,6 +12,8 @@ import numpy as np
 from .geometry import dist2
 
 SCOPE_TAG = "[SINGLE-EVENT, EXTERNAL-PASSIVE; intersection+insider NOT modeled; UPPER BOUND on anonymity]"
+DEFENSE_SCOPE_TAG = "[defense gain vs the single-event passive-grid adversary ONLY; NOT evaluated vs intersection/insider]"
+DEFENSE_MIN_DROP = 0.2       # a defense must cut rank-1 by >= this relative fraction (on the intersection set)
 
 # pre-registered constants
 EXPOSURE_RANK1 = 0.5          # "flooding exposes the source" if detected rank-1 prob >= this...
@@ -25,6 +27,10 @@ MUSTLOC_ERR_RADII = 1.0     # ...and pin the source to within ~one radio-range (
 ANON_SET_EPS = 1e-6          # candidates within EPS of the best score count as an (upper-bound) anon set
 MIN_MESSAGES_PER_RUN = 150   # below this rank-1 is not estimable -> exposure refuses
 MIN_REPS = 6                 # below this the CI-over-seeds is degenerate -> exposure refuses
+# PR-2 defenses
+UPSTREAM_PENALTY = 10.0      # origin-vs-relay: penalty for a candidate whose first-hold had an in-range upstream holder
+MIN_RELAY_DENSITY = 2.0      # gate credit requires >= this mean distinct foreign ids relayable per node
+MIN_INTERSECTION_SIZE = 30   # same-detected-set rank-1 needs >= this many shared messages, else inconclusive
 
 
 def localization_error(point, true_pos, cfg) -> float:
@@ -70,6 +76,23 @@ def mustlocalize_gate(best_result, random_floor, coverage_curve=None) -> dict:
         if any(errs[i + 1] > errs[i] + 1e-9 for i in range(len(errs) - 1)):
             return {"ok": False, "label": "estimator power non-monotone in coverage"}
     return {"ok": True, "label": f"best estimator localizes (rank-1 {rank1:.2f}, err {err:.2f} radii) — capability confirmed"}
+
+
+def defense_gate(baseline_rank1, defended_rank1, mustlocalize_ok, timing_only_gain_survives,
+                 relay_density_ok=True, intersection_size=None) -> dict:
+    """Credit a defense's anonymity gain only if it's REAL, not an artifact. baseline_rank1/
+    defended_rank1 MUST be computed on the same-detected-set intersection (survivorship removed)."""
+    if intersection_size is not None and intersection_size < MIN_INTERSECTION_SIZE:
+        return {"credited": False, "label": f"inconclusive — intersection too small ({intersection_size} < {MIN_INTERSECTION_SIZE})"}
+    if not mustlocalize_ok:
+        return {"credited": False, "label": "inconclusive — attack failed must-localize (a drop isn't meaningful)"}
+    if defended_rank1 > baseline_rank1 * (1.0 - DEFENSE_MIN_DROP):
+        return {"credited": False, "label": f"no material gain (rank-1 {defended_rank1:.2f} vs baseline {baseline_rank1:.2f})"}
+    if not timing_only_gain_survives:
+        return {"credited": False, "label": "NOT credited — gain is message-dropping/survivorship, not timing-scramble"}
+    if not relay_density_ok:
+        return {"credited": False, "label": "NOT credited — low-density artifact (too few relays to hide among)"}
+    return {"credited": True, "label": f"defense cuts exposure (rank-1 {baseline_rank1:.2f} -> {defended_rank1:.2f})"}
 
 
 def exposure_gate(best_rank1_detected, random_floor, beats_random, n_messages, n_reps) -> dict:

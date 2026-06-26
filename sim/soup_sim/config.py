@@ -51,6 +51,10 @@ class Config:
     cs_radius_mult: float = 1.0       # carrier-sense radius = cs_radius_mult * radius
     # Slice-3 anonymity: passive adversary sniffer range (0 ⇒ overlay off; bit-identical)
     adversary_range_mult: float = 0.0  # adversary receiver range = adversary_range_mult * radius
+    # Slice-3 PR-2 anonymity defenses (all default OFF ⇒ engine bit-identical)
+    mixing_lambda: float = 0.0         # Poisson mixing: Exp(lambda) forward hold per blob (0 ⇒ no hold)
+    originate_gate_relays: int = 0     # receive-before-originate: relay >= G distinct foreign ids before emitting own
+    originate_gate_time: float = 0.0   # ...and/or be alive >= T before emitting own
 
     def validate(self) -> None:
         if self.boundary not in ("torus", "walls"):
@@ -93,6 +97,12 @@ class Config:
             raise ValueError("cs_radius_mult must be >= 1 (carrier-sense >= connectivity range)")
         if self.adversary_range_mult < 0.0:
             raise ValueError("adversary_range_mult must be >= 0")
+        if self.mixing_lambda < 0.0:
+            raise ValueError("mixing_lambda must be >= 0")
+        if self.originate_gate_relays < 0:
+            raise ValueError("originate_gate_relays must be >= 0")
+        if self.originate_gate_time < 0.0:
+            raise ValueError("originate_gate_time must be >= 0")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

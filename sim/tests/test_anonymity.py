@@ -50,6 +50,23 @@ def test_mustlocalize_gate():
                              coverage_curve=[(0.3, 2.0), (0.6, 3.0), (0.9, 1.0)])["ok"] is False
 
 
+def test_defense_gate():
+    from soup_sim.anonymity import defense_gate
+    # real gain: attack works, rank-1 cut >20%, survives timing-only, enough relays, big intersection
+    assert defense_gate(0.30, 0.10, True, True, relay_density_ok=True, intersection_size=100)["credited"] is True
+    # gain vanishes at TTL=inf -> message-dropping, not credited
+    g = defense_gate(0.30, 0.10, True, False, intersection_size=100)
+    assert g["credited"] is False and "dropping" in g["label"].lower()
+    # attack didn't localize the baseline -> a drop is meaningless
+    assert defense_gate(0.30, 0.10, False, True, intersection_size=100)["credited"] is False
+    # no material drop
+    assert defense_gate(0.30, 0.28, True, True, intersection_size=100)["credited"] is False
+    # intersection too small -> inconclusive
+    assert defense_gate(0.30, 0.05, True, True, intersection_size=5)["credited"] is False
+    # low relay density -> not credited (gate-arm artifact)
+    assert defense_gate(0.30, 0.10, True, True, relay_density_ok=False, intersection_size=100)["credited"] is False
+
+
 def test_exposure_gate_margin_and_underpower():
     # powered, well above the 0.5 / K*floor threshold -> exposed
     assert exposure_gate(0.7, random_floor=0.02, beats_random=True, n_messages=200, n_reps=6)["exposed"] is True

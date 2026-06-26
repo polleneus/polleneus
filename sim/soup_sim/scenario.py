@@ -14,6 +14,10 @@ from .workload import make_cohort
 from .cell_list import neighbor_pairs
 from .percolation import same_component_pair_fraction, placement
 from .knee import find_knee, binding_decomposition, binding_gate
+from .adversary import place_receivers, realized_coverage, hearings, estimate
+from .anonymity import (localization_error, rank_of, anonymity_set_size, quantiles,
+                        mustlocalize_gate, exposure_gate, SCOPE_TAG)
+from .geometry import dist2 as _dist2
 
 
 def density_to_n(d: float, w: float, h: float, r: float) -> int:
@@ -202,6 +206,146 @@ def airtime_sweep(base_cfg, densities, reps):
     gate = binding_gate(knee, rows[ki]["binding"], a0_over, ct_over)
     return {"rows": rows, "alpha0_rows": a0_rows, "capttl_rows": ct_rows, "knee": knee, "gate": gate,
             "predicted_knee_contenders": base_cfg.n_channels / base_cfg.beta if base_cfg.beta else None}
+
+
+def _anon_pos_at(log, t):
+    """Node positions at the log step nearest time t."""
+    return min(log, key=lambda e: abs(e[0] - t))[1]
+
+
+def _run_one_anonymity(cfg):
+    """One engine run with the position-log recorder on; returns the artifacts the post-hoc
+    adversary overlay needs (no receivers in the sim ⇒ delivery untouched)."""
+    cfg.validate()
+    mob = make_mobility(cfg, cfg.rng(0))
+    metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
+    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i)) for i in range(cfg.n)]
+    budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
+                           model=cfg.airtime_model, beta=cfg.beta,
+                           t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
+    eng = Engine(cfg, mob, buffers, budget, cfg.rng(1), on_deliver=metrics.on_deliver, record_positions=True)
+    eng.run_until(cfg.warmup)
+    cohort = []
+    for blob, src, dst in make_cohort(cfg, inject_time=cfg.warmup, rng=cfg.rng(2)):
+        metrics.register(blob, src, dst)
+        eng.inject(blob, src)
+        cohort.append((blob.id, src, blob.created_at, blob.ttl))
+    eng.run_until(cfg.warmup + cfg.measure_window + cfg.drain)
+    eng.finalize()
+    return {"position_log": eng.position_log, "acquired": dict(eng.acquired), "cohort": cohort, "n": cfg.n}
+
+
+def _score_arm(art, receivers, cfg, rng_est):
+    """Score the adversary on one receiver layout: per detected cohort message, best-estimator
+    rank/error (first-hear-time = estimator quality; origination-time = headline) + random floor."""
+    log, acquired, cohort = art["position_log"], art["acquired"], art["cohort"]
+    adv_range = cfg.adversary_range_mult * cfg.radius
+    expiry = {bid: created + ttl for (bid, _src, created, ttl) in cohort}
+    H = hearings(receivers, adv_range, log, acquired, expiry, cfg)
+    by_blob = {}
+    for (li, bid), t in H.items():
+        by_blob.setdefault(bid, []).append((li, t))
+    origin_t = cfg.warmup
+    cand_origin = _anon_pos_at(log, origin_t)                       # (n,2) candidate positions at origination
+    reach = np.stack([np.sqrt(_dist2(cand_origin, L, cfg.width, cfg.height, cfg.boundary))
+                      for L in receivers], axis=1) if len(receivers) else np.zeros((art["n"], 0))
+    res, undetected = [], 0
+    for (bid, src, _created, _ttl) in cohort:
+        mh = by_blob.get(bid)
+        if not mh:
+            undetected += 1
+            continue
+        fh = min(t for _li, t in mh)
+        cand_fh = _anon_pos_at(log, fh)
+        best = None
+        for method in ("first_spy", "reachability"):
+            est = estimate(method, mh, receivers, cand_fh, rng_est, reach=reach)
+            rk = rank_of(est["scores"], src)
+            if best is None or rk < best["rank"]:
+                best = {"rank": rk,
+                        "err_fh": localization_error(est["point"], cand_fh[src], cfg),
+                        "err_orig": localization_error(est["point"], cand_origin[src], cfg),
+                        "anon": anonymity_set_size(est["scores"])}
+        rand = estimate("random_guess", mh, receivers, cand_fh, rng_est)
+        best["rand_rank"] = rank_of(rand["scores"], src)
+        res.append(best)
+    return res, undetected, len(cohort)
+
+
+def _anon_aggregate(per_rep):
+    """Mean over reps of the per-run anonymity aggregates (CI over seeds)."""
+    def col(k):
+        return [r[k] for r in per_rep]
+    rank1 = mean_ci(col("rank1"))
+    return {
+        "rank1_prob": rank1[0], "ci_lo": rank1[1], "ci_hi": rank1[2],
+        "median_err_firsthear": float(np.mean(col("median_err_firsthear"))),
+        "median_err_origin": float(np.mean(col("median_err_origin"))),
+        "p90_err": float(np.mean(col("p90_err"))),
+        "undetected_fraction": float(np.mean(col("undetected_fraction"))),
+        "beats_random": bool(np.mean(col("beats_random")) >= 0.5),
+        "realized_coverage": float(np.mean(col("realized_coverage"))),
+    }
+
+
+def _arm_one_rep(cfg, f, mode):
+    art = _run_one_anonymity(cfg)
+    recv = place_receivers(cfg, f, mode, cfg.rng(4))
+    res, undetected, total = _score_arm(art, recv, cfg, cfg.rng(6))
+    rank1 = float(np.mean([r["rank"] == 0 for r in res])) if res else 0.0
+    rand1 = float(np.mean([r["rand_rank"] == 0 for r in res])) if res else 0.0
+    med, p90, _p95 = quantiles([r["err_orig"] for r in res])
+    medfh, _, _ = quantiles([r["err_fh"] for r in res])
+    return {"rank1": rank1, "median_err_origin": med, "p90_err": p90, "median_err_firsthear": medfh,
+            "undetected_fraction": undetected / max(1, total), "beats_random": rank1 > rand1,
+            "realized_coverage": realized_coverage(recv, cfg.adversary_range_mult * cfg.radius, cfg, cfg.rng(4))}
+
+
+def anonymity_sweep(base_cfg, f_values, reps):
+    """Source-exposure vs adversary coverage f, both placement arms (headline = the stronger),
+    plus the must-localize capability control. Every number is an UPPER BOUND on anonymity."""
+    rows, arm_rank1 = [], {"uniform": [], "chokepoint": []}
+    for fi, f in enumerate(f_values):
+        for mode in ("uniform", "chokepoint"):
+            per_rep = [_arm_one_rep(replace(base_cfg, master_seed=_seed_for(base_cfg.master_seed, fi, rep)), f, mode)
+                       for rep in range(reps)]
+            agg = _anon_aggregate(per_rep)
+            agg.update({"f": f, "arm": mode})
+            rows.append(agg)
+            arm_rank1[mode].append(agg["rank1_prob"])
+    headline_arm = "chokepoint" if np.mean(arm_rank1["chokepoint"]) >= np.mean(arm_rank1["uniform"]) else "uniform"
+    # must-localize control: SLOW mobility (not static -> a static flood has no gradient) + dense coverage
+    ctrl = replace(base_cfg, speed_min=0.5, speed_max=0.5,
+                   master_seed=_seed_for(base_cfg.master_seed, 999, 0))
+    curve = []
+    reach_res = {"rank1": 0.0, "median_err_radii": float("inf")}
+    for cov in (0.6, 0.95):
+        art = _run_one_anonymity(ctrl)
+        recv = place_receivers(ctrl, cov, "uniform", ctrl.rng(4))
+        res, _u, _t = _score_arm(art, recv, ctrl, ctrl.rng(6))
+        # reachability-only capability check
+        reach = np.stack([np.sqrt(_dist2(_anon_pos_at(art["position_log"], ctrl.warmup), L,
+                                         ctrl.width, ctrl.height, ctrl.boundary)) for L in recv], axis=1)
+        H = hearings(recv, ctrl.adversary_range_mult * ctrl.radius, art["position_log"], art["acquired"],
+                     {bid: c + tt for (bid, _s, c, tt) in art["cohort"]}, ctrl)
+        by_blob = {}
+        for (li, bid), t in H.items():
+            by_blob.setdefault(bid, []).append((li, t))
+        ranks, errs = [], []
+        for (bid, src, _c, _tt) in art["cohort"]:
+            mh = by_blob.get(bid)
+            if not mh:
+                continue
+            cand_fh = _anon_pos_at(art["position_log"], min(t for _l, t in mh))
+            est = estimate("reachability", mh, recv, cand_fh, ctrl.rng(6), reach=reach)
+            ranks.append(rank_of(est["scores"], src) == 0)
+            errs.append(localization_error(est["point"], cand_fh[src], ctrl) / ctrl.radius)
+        med_radii = float(np.median(errs)) if errs else float("inf")
+        curve.append((cov, med_radii * ctrl.radius))
+        if cov == 0.95:
+            reach_res = {"rank1": float(np.mean(ranks)) if ranks else 0.0, "median_err_radii": med_radii}
+    mustlocalize = mustlocalize_gate(reach_res, curve)
+    return {"rows": rows, "mustlocalize": mustlocalize, "scope_tag": SCOPE_TAG, "headline_arm": headline_arm}
 
 
 def crossing_0p5(densities, mean_ratios) -> float:

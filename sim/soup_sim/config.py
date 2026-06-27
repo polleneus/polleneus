@@ -126,6 +126,10 @@ class Config:
             raise ValueError("recon_c0 must be >= 0")
         if self.recon_k < 0.0:
             raise ValueError("recon_k must be >= 0")
+        if self.recon_cell_bytes > 0.0 and self.recon_c0 <= 0.0 and self.recon_k <= 0.0:
+            # footgun: recon ON with S(n)=c0+ceil(k*n)=0 => cap=floor(0)=0 => ALL novel transfers capped
+            # to zero at ~zero airtime cost (circulation silently zeroed). Require a real schedule.
+            raise ValueError("recon_cell_bytes > 0 requires recon_c0 > 0 or recon_k > 0 (a real schedule)")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

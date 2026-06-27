@@ -2,9 +2,10 @@
 funded contact-episode, INDEPENDENT of the symmetric difference and exact set sizes. Default OFF
 (recon_cell_bytes=0) ⇒ bit-identical to the pre-P1 engine (no new branch, no new RNG draw)."""
 import numpy as np
+import pytest
 from dataclasses import replace
 from soup_sim.config import Config
-from soup_sim.scenario import run_one, density_to_n
+from soup_sim.scenario import run_one, density_to_n, mean_ci, _seed_for
 from soup_sim.mobility import Mobility
 from soup_sim.engine import Engine
 from soup_sim.budget import AirtimeBudget
@@ -43,27 +44,102 @@ def test_recon_off_bit_identical():
     assert r_default["recon_capped_episodes"] == 0 == r_off["recon_capped_episodes"]
 
 
-def test_recon_on_reduces_circulation():
-    """Monotonicity gate (spec §4): turning recon ON can only SHRINK circulation, never grow it,
-    at a couple of densities on the tiny airtime fixture. The spec's example params (cell_bytes=8,
-    c0=2, k=0.5) are checked for the <= bound; a cap-binding config provides the non-vacuous strict
-    reduction (in this UNSATURATED tiny arena the haircut comes from the cap(ρ) throttle — the flat
-    S(ρ) floor only bites once airtime saturates, exactly as §4 anticipates)."""
+def _multi_rep_circ(base_cfg, d, reps):
+    """Per-rep circulated_per_min at density d, mirroring scenario._airtime_arm seeding."""
+    n = max(2, density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius))
+    out = []
+    for rep in range(reps):
+        cfg = replace(base_cfg, n=n, master_seed=_seed_for(base_cfg.master_seed, 0, rep))
+        out.append(run_one(cfg)["circulated_per_min"])
+    return out
+
+
+def _multi_rep_served(base_cfg, d, reps):
+    n = max(2, density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius))
+    total = 0
+    for rep in range(reps):
+        cfg = replace(base_cfg, n=n, master_seed=_seed_for(base_cfg.master_seed, 0, rep))
+        total += run_one(cfg)["served_blobs"]
+    return total
+
+
+def test_recon_monotonicity_served_blobs_exact():
+    """The honest invariant (spec §4): total reconciled novel transfers served_blobs(on) <= served_blobs(off)
+    by CONSTRUCTION — recon only ever consumes airtime / caps transfers, never frees them. This is the
+    EXACT monotone quantity (single-rep windowed circ/min is NOT monotone: recon shifts transfer timing,
+    so a transfer can cross the measurement-window edge and jitter one rep up)."""
     off = tiny()
     on = replace(off, recon_cell_bytes=8.0, recon_c0=2.0, recon_k=0.5)
-    for d in (3.0, 6.0):
-        c_off = run_one(_at_density(off, d))["circulated_per_min"]
-        c_on = run_one(_at_density(on, d))["circulated_per_min"]
-        assert c_on <= c_off + 1e-9, f"recon ON grew circulation at density {d}: on={c_on} off={c_off}"
-    # Non-vacuity: a hard cap (S(n)=1 novel blob/episode) MUST strictly reduce circulation at both
-    # densities and record capped episodes — guaranteeing the gate is testing a real effect.
-    cap_on = replace(off, recon_cell_bytes=8.0, recon_c0=1.0, recon_k=0.0)
-    for d in (3.0, 6.0):
-        r_off = run_one(_at_density(off, d))
-        r_cap = run_one(_at_density(cap_on, d))
-        assert r_cap["circulated_per_min"] < r_off["circulated_per_min"] - 1e-9, \
-            f"cap(ρ) did not reduce circulation at density {d}"
-        assert r_cap["recon_capped_episodes"] >= 1
+    saw_strict = False
+    for d in (3.0, 6.0, 9.0):
+        s_off = _multi_rep_served(off, d, reps=8)
+        s_on = _multi_rep_served(on, d, reps=8)
+        assert s_on <= s_off, f"served_blobs ON > OFF at density {d}: on={s_on} off={s_off}"
+        saw_strict |= s_on < s_off
+    assert saw_strict, "vacuous: recon ON never reduced total served_blobs at any density"
+
+
+def test_recon_monotonicity_circ_per_min_within_ci_multirep():
+    """Multi-rep circ/min(on) <= circ/min(off) within CI at each density (the spec §4 gate stated on the
+    AGGREGATE, not a single fragile rep). Uses reps=8 and the Student-t CI helper the scenario uses."""
+    off = tiny()
+    on = replace(off, recon_cell_bytes=8.0, recon_c0=2.0, recon_k=0.5)
+    for d in (3.0, 6.0, 9.0):
+        c_off = _multi_rep_circ(off, d, reps=8)
+        c_on = _multi_rep_circ(on, d, reps=8)
+        m_off, lo_off, _ = mean_ci(c_off, clamp01=False)
+        m_on, _, hi_on = mean_ci(c_on, clamp01=False)
+        # ON mean must not exceed OFF mean beyond the OFF lower-CI slack: on_mean <= off_mean within CI.
+        assert m_on <= m_off + (m_off - lo_off) + 1e-9, \
+            f"circ/min ON above OFF beyond CI at density {d}: on={m_on} off={m_off} off_lo={lo_off}"
+
+
+def test_recon_saturated_flat_floor_bites():
+    """Non-vacuity for the FLAT FLOOR specifically (not the cap): in a SATURATED two-node contact
+    (airtime fully consumed), the flat S(n) schedule strictly reduces served_blobs even though the cap
+    never binds (S large vs served), proving the floor alone competes for airtime. Utilization stays <=1."""
+    off = _two_node_cfg(throughput_ideal=2000.0, t_setup=0.0)
+    on = replace(off, recon_cell_bytes=200.0, recon_c0=10.0, recon_k=0.0)  # S=10 cells; cap won't bind
+    eng_off = _two_node_engine(off, blobs=30, run=3.0)
+    eng_on = _two_node_engine(on, blobs=30, run=3.0)
+    assert eng_off.charged_airtime > 0 and eng_off.served_blobs > 0       # OFF saturates and circulates
+    assert eng_on.served_blobs < eng_off.served_blobs                     # the flat floor ate airtime
+    assert eng_on.recon_capped_episodes == 0                              # the CAP did not bind (floor only)
+    assert eng_on.charged_airtime <= eng_on.available_contact_time + 1e-9  # utilization stays <= 1
+
+
+def test_recon_billing_dt_invariant():
+    """The recon-debt is amortized across funded steps like setup_debt, so charged_airtime is
+    dt-INVARIANT (mirroring the OFF dt-invariance the module docstring guarantees). A lazy 'bill it all
+    on the first funded step' latch would make charged_airtime vary with dt when the first step is short."""
+    base = _two_node_cfg(recon_cell_bytes=8.0, recon_c0=5.0, recon_k=1.0,
+                         throughput_ideal=4e3, t_setup=0.1)
+    charged = {}
+    for dt in (0.05, 0.1, 1.0):
+        eng = _two_node_engine(replace(base, dt=dt), blobs=8, run=6.0)
+        charged[dt] = eng.charged_airtime
+    vals = list(charged.values())
+    assert max(vals) - min(vals) < 1e-6, f"charged_airtime not dt-invariant: {charged}"
+
+
+def test_recon_on_deterministic():
+    """Same seed -> identical circ/min and served across two recon-ON runs (no new variance source)."""
+    cfg = replace(_at_density(tiny(), 6.0), recon_cell_bytes=8.0, recon_c0=2.0, recon_k=0.5)
+    r1 = run_one(cfg)
+    r2 = run_one(cfg)
+    assert r1["circulated_per_min"] == r2["circulated_per_min"]
+    assert r1["served_blobs"] == r2["served_blobs"]
+    assert r1["utilization"] == r2["utilization"]
+    assert r1["recon_capped_episodes"] == r2["recon_capped_episodes"]
+
+
+def test_recon_degenerate_schedule_rejected():
+    """Footgun guard: recon_cell_bytes>0 with c0=0 AND k=0 gives S(n)=0 -> cap=0 -> circulation silently
+    zeroed at ~zero airtime cost. Config.validate() must reject it; a real schedule (c0>0 OR k>0) is ok."""
+    with pytest.raises(ValueError, match="real schedule"):
+        replace(_at_density(tiny(), 6.0), recon_cell_bytes=8.0, recon_c0=0.0, recon_k=0.0).validate()
+    replace(_at_density(tiny(), 6.0), recon_cell_bytes=8.0, recon_c0=1.0, recon_k=0.0).validate()  # ok
+    replace(_at_density(tiny(), 6.0), recon_cell_bytes=8.0, recon_c0=0.0, recon_k=0.1).validate()  # ok
 
 
 def _two_node_engine(cfg, blobs, run=10.0):

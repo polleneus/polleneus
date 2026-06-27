@@ -139,9 +139,15 @@ Bounded re-run (low reps, capped density — the engine is super-linear in crowd
 - **2-parameter sensitivity band:** sweep **both** uncalibrated axes (`recon_cell_bytes` × `k`), OR
   report the haircut as **linear in `recon_cell_bytes`** for rescaling — β-knee discipline applied to
   **both** uncalibrated params.
-- **Monotonicity sanity gate:** at every swept density **circ/min(on) ≤ circ/min(off)** within CI, and
-  the α=0 / cap=∞·ttl=∞ control arms' qualitative behavior is unchanged. A violation is a **billing
-  bug**, not a finding — guaranteeing by test (not assertion) the §5 "can only shrink the budget" claim.
+- **Monotonicity sanity gate:** the honest invariant is on the **aggregate**, not a single rep:
+  **total reconciled novel transfers `served_blobs`(on) ≤ `served_blobs`(off)** by construction (recon
+  only ever *consumes* airtime / *caps* transfers, never frees them), and **multi-rep `circ/min`(on) ≤
+  `circ/min`(off) within CI** at every swept density, with the α=0 / cap=∞·ttl=∞ control arms' qualitative
+  behavior unchanged. *Single-rep windowed `circ/min` is NOT monotone — recon shifts transfer **timing**,
+  so one transfer can cross the measurement-window edge and jitter a single rep up; that is a
+  measurement-window artifact, not a billing bug.* The gate is therefore asserted on **`served_blobs`
+  (exact) and on multi-rep CI** — never a single-rep hard `circ/min` ≤. A violation **there** is a billing
+  bug, guaranteeing the §5 "can only shrink the budget" claim.
 
 Updates the P0 airtime doc with a recon-on column/note and flips the fidelity-table row to *"overhead
 modeled (cited, uncalibrated, flat density-scheduled floor)."*

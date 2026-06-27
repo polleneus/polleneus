@@ -164,6 +164,10 @@ class Engine:
                 # (avail) so utilization stays <= 1. S(n) is FROZEN at first-bill (recon_n) so the schedule
                 # can't drift as st["n"] grows. recon_billed flips only when the FULL debt is paid.
                 if st["recon_n"] is None:                   # first funded step: open the debt at S(recon_n)
+                    # NAMED OPTIMISTIC GAP: S(recon_n)/eff(recon_n) is frozen at the first funded step, so if
+                    # the crowd (n) grows mid-debt the schedule is UNDER-billed (cheaper than the realized
+                    # density). This is consistent with the once-per-episode frozen-schedule semantics; a
+                    # follow-up could re-price the unpaid debt at the current n. Direction is optimistic.
                     st["recon_n"] = st["n"]
                     st["recon_debt"] = self.cfg.recon_cell_bytes * self._recon_cells(st["recon_n"]) / eff
                 recon_pay = min(st["recon_debt"], avail)    # pay down at most this step's post-setup airtime
@@ -182,6 +186,7 @@ class Engine:
             progressed = False
             for (i, j, enter, exit_, st, eff) in active:
                 allowed = int(st["credit"])
+                room = None
                 if self._recon_on:                         # circulation cap: <= floor(S(n)) NOVEL blobs/episode
                     # deterministic sec.3 cap(n) throttle: the schedule recovers at most floor(S(n)) novel
                     # blobs this episode; the rest waits for a future contact (a circulation haircut, NOT
@@ -191,12 +196,17 @@ class Engine:
                     # recon_n (falls back to st["n"] only on the eff==0 path where nothing moves anyway).
                     cap_n = st["recon_n"] if st["recon_n"] is not None else st["n"]
                     room = int(self._recon_cells(cap_n)) - len(st["served"])
-                    if allowed > room and len(st["offered"]) > len(st["served"]):
-                        st["recon_capped"] = True          # the cap really clamped a wanted+offered transfer
                     allowed = min(allowed, max(0, room))
                 if allowed <= 0:
                     continue
                 moved, served_ids = self._exchange(i, j, allowed, enter, exit_)
+                if self._recon_on and room is not None and room > 0 and moved == room \
+                        and len(st["offered"]) > len(st["served"]) + moved:
+                    # cap GENUINELY bound: the exchange filled the cap (moved==room) AND deliverable offered
+                    # blobs still remain unserved after — so the cap, not the budget/backlog, clamped a
+                    # transfer that would otherwise have moved. (Set after _exchange, not on allowed>room:
+                    # allowed=int(credit) is the budget, not the deliverable backlog -> avoids false +ve.)
+                    st["recon_capped"] = True
                 if moved:
                     st["credit"] -= moved
                     st["served"].update(served_ids)

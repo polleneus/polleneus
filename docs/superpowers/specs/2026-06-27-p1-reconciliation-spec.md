@@ -139,15 +139,19 @@ Bounded re-run (low reps, capped density — the engine is super-linear in crowd
 - **2-parameter sensitivity band:** sweep **both** uncalibrated axes (`recon_cell_bytes` × `k`), OR
   report the haircut as **linear in `recon_cell_bytes`** for rescaling — β-knee discipline applied to
   **both** uncalibrated params.
-- **Monotonicity sanity gate:** the honest invariant is on the **aggregate**, not a single rep:
-  **total reconciled novel transfers `served_blobs`(on) ≤ `served_blobs`(off)** by construction (recon
-  only ever *consumes* airtime / *caps* transfers, never frees them), and **multi-rep `circ/min`(on) ≤
-  `circ/min`(off) within CI** at every swept density, with the α=0 / cap=∞·ttl=∞ control arms' qualitative
-  behavior unchanged. *Single-rep windowed `circ/min` is NOT monotone — recon shifts transfer **timing**,
-  so one transfer can cross the measurement-window edge and jitter a single rep up; that is a
-  measurement-window artifact, not a billing bug.* The gate is therefore asserted on **`served_blobs`
-  (exact) and on multi-rep CI** — never a single-rep hard `circ/min` ≤. A violation **there** is a billing
-  bug, guaranteeing the §5 "can only shrink the budget" claim.
+- **Effect-direction gate (honest — NOT strict monotonicity).** Reconciliation cost is **not**
+  guaranteed to reduce circulation on every run: the multi-hop fixpoint + acquisition-time causality mean
+  the cost/cap **reorder which blobs move when**, so circulation can jitter **either way** — including
+  total `served_blobs` (counterexample observed: tiny fixture, density 9, seed 637571, mild schedule
+  `cell_bytes=1,c0=1,k=0.2` → `served_blobs` ON 186 > OFF 176). This is **reordering, not a budget gain**
+  (recon never *frees* credit or *adds* airtime). What is reliable and **tested**: (a) **airtime is
+  genuinely consumed** — `charged_airtime`(on) > `charged_airtime`(off) whenever the schedule is paid, so
+  the free-reconciliation optimism is provably gone; (b) **at airtime-saturation** the multi-rep-mean
+  `circ/min` and `served_blobs` **strictly drop** (the real haircut), with the α=0 / cap=∞·ttl=∞ controls
+  unchanged. In the **unsaturated operating range** the net circulation effect is **within reordering
+  noise** (consistent with P0: that range is not airtime-bound). The haircut is reported as a **multi-rep
+  mean with CI**, never as a strict per-run bound. (Earlier drafts wrongly claimed `served_blobs`(on) ≤
+  `served_blobs`(off) "by construction" — false; corrected here after design review.)
 
 Updates the P0 airtime doc with a recon-on column/note and flips the fidelity-table row to *"overhead
 modeled (cited, uncalibrated, flat density-scheduled floor)."*
@@ -159,10 +163,13 @@ modeled (cited, uncalibrated, flat density-scheduled floor)."*
   **independent of `Δ`, `d_size`, and exact set sizes** (§2.2/§3). A difference- or set-size-adaptive
   wire is explicitly forbidden. Spec obligation (the sim bills `S(ρ)` but does not model wire framing).
 - **Poisoning defense** keyed to ephemeral session only — no per-device identity hook.
-- **Strictly conservative, by test:** the cost is `Δ`-independent and only ever *added* to airtime /
-  *subtracted* from per-episode novel transfers; the monotonicity gate (§4) guarantees it can only make
-  the budget **smaller/more honest**. Every number stays an UPPER BOUND (cited-not-calibrated; iOS
-  asymmetry + no-prefix-carry are named optimistic gaps).
+- **Honest, not "strictly conservative":** the cost is `Δ`-independent and only ever *charges* airtime /
+  *caps* per-episode transfers — it never frees credit, so there is **no systematic circulation gain**.
+  But it is **not strictly monotone per run**: the multi-hop engine reorders transfers, so a single run
+  can jitter either way (§4). The tested guarantees are airtime is genuinely consumed (free-reconciliation
+  optimism removed) and at saturation the multi-rep-mean circulation drops; in the unsaturated operating
+  range the net is within reordering noise. Every number stays an UPPER BOUND (cited-not-calibrated; iOS
+  asymmetry, frozen-schedule-`eff`, and no-prefix-carry are named optimistic gaps).
 
 ## 6. Out of scope / deferred
 

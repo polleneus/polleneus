@@ -45,53 +45,74 @@ def test_recon_off_bit_identical():
 
 
 def _multi_rep_circ(base_cfg, d, reps):
-    """Per-rep circulated_per_min at density d, mirroring scenario._airtime_arm seeding."""
+    """Per-rep circulated_per_min at density d, using disjoint per-(density,rep) seeds (same scheme as
+    scenario._airtime_arm: _seed_for(master, di, rep)). di is the density index so each density gets a
+    distinct substream."""
     n = max(2, density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius))
     out = []
     for rep in range(reps):
-        cfg = replace(base_cfg, n=n, master_seed=_seed_for(base_cfg.master_seed, 0, rep))
+        cfg = replace(base_cfg, n=n, master_seed=_seed_for(base_cfg.master_seed, int(d), rep))
         out.append(run_one(cfg)["circulated_per_min"])
     return out
 
 
-def _multi_rep_served(base_cfg, d, reps):
-    n = max(2, density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius))
-    total = 0
-    for rep in range(reps):
-        cfg = replace(base_cfg, n=n, master_seed=_seed_for(base_cfg.master_seed, 0, rep))
-        total += run_one(cfg)["served_blobs"]
-    return total
+def test_recon_charges_airtime():
+    """The reliable, honest CORE guarantee (spec §4/§5): when the recon schedule is actually paid,
+    charged_airtime(on) > charged_airtime(off) — the free-reconciliation optimism is provably gone.
+    Isolated cleanly: ample goodput so airtime is NOT the limiter and a large schedule so the cap never
+    binds => the SAME blobs move both ways, and ON charges strictly more (the recon floor on top).
+    (Per-run circulation is NOT a reliable guarantee — see test_recon_circulation_not_strictly_monotone,
+    where the cap reordering can even make ON serve more — but airtime CONSUMPTION always is: recon only
+    ever CHARGES airtime, never frees it.)"""
+    off = _two_node_cfg(throughput_ideal=1e7, t_setup=0.05)
+    on = replace(off, recon_cell_bytes=8.0, recon_c0=100.0, recon_k=0.0)  # S=100 >> blobs => cap never binds
+    eng_off = _two_node_engine(off, blobs=20, run=10.0)
+    eng_on = _two_node_engine(on, blobs=20, run=10.0)
+    assert eng_off.served_blobs == eng_on.served_blobs == 20             # same transfers both ways
+    assert eng_off.charged_airtime > 0.0                                  # OFF does real work to compare against
+    assert eng_on.recon_capped_episodes == 0                              # cap did NOT bind (floor isolated)
+    assert eng_on.charged_airtime > eng_off.charged_airtime + 1e-9, \
+        f"recon ON did not charge extra airtime: on={eng_on.charged_airtime} off={eng_off.charged_airtime}"
 
 
-def test_recon_monotonicity_served_blobs_exact():
-    """The honest invariant (spec §4): total reconciled novel transfers served_blobs(on) <= served_blobs(off)
-    by CONSTRUCTION — recon only ever consumes airtime / caps transfers, never frees them. This is the
-    EXACT monotone quantity (single-rep windowed circ/min is NOT monotone: recon shifts transfer timing,
-    so a transfer can cross the measurement-window edge and jitter one rep up)."""
-    off = tiny()
-    on = replace(off, recon_cell_bytes=8.0, recon_c0=2.0, recon_k=0.5)
-    saw_strict = False
-    for d in (3.0, 6.0, 9.0):
-        s_off = _multi_rep_served(off, d, reps=8)
-        s_on = _multi_rep_served(on, d, reps=8)
-        assert s_on <= s_off, f"served_blobs ON > OFF at density {d}: on={s_on} off={s_off}"
-        saw_strict |= s_on < s_off
-    assert saw_strict, "vacuous: recon ON never reduced total served_blobs at any density"
+def test_recon_circulation_not_strictly_monotone():
+    """HONESTY PIN (spec §4): strict per-run circulation monotonicity is FALSE — the multi-hop fixpoint +
+    acquisition-time causality REORDER which blobs move when, so served_blobs can go EITHER way (it is
+    reordering, NOT a budget gain: recon never frees credit/airtime). This test pins a known
+    counterexample so nobody re-adds a false `served_blobs(on) <= served_blobs(off)` claim. If the spec's
+    exact seed stops reproducing, we search a small range and pin a fresh one (printed in the message)."""
+    base = replace(_at_density(tiny(), 9.0), master_seed=637571)
+    on_override = dict(recon_cell_bytes=1.0, recon_c0=1.0, recon_k=0.2)
+    s_off = run_one(base)["served_blobs"]
+    s_on = run_one(replace(base, **on_override))["served_blobs"]
+    if s_on <= s_off:                                          # the spec seed no longer reproduces; find one
+        found = None
+        for seed in range(637000, 638001):
+            b = replace(_at_density(tiny(), 9.0), master_seed=seed)
+            if run_one(replace(b, **on_override))["served_blobs"] > run_one(b)["served_blobs"]:
+                found = seed
+                break
+        assert found is not None, "no ON>OFF counterexample in [637000,638000] — investigate before pinning"
+        s_off = run_one(replace(_at_density(tiny(), 9.0), master_seed=found))["served_blobs"]
+        s_on = run_one(replace(_at_density(tiny(), 9.0), master_seed=found, **on_override))["served_blobs"]
+    assert s_on > s_off, f"expected ON>OFF reordering counterexample, got on={s_on} off={s_off}"
 
 
 def test_recon_monotonicity_circ_per_min_within_ci_multirep():
-    """Multi-rep circ/min(on) <= circ/min(off) within CI at each density (the spec §4 gate stated on the
-    AGGREGATE, not a single fragile rep). Uses reps=8 and the Student-t CI helper the scenario uses."""
+    """Multi-rep circ/min(on) <= circ/min(off) at each density — the spec §4 haircut gate, claimed ONLY in
+    a SATURATED / aggressive-cap regime (here S(n)=1: at most 1 novel blob/episode), where the mean
+    reduction is genuine. NOT claimed in the unsaturated/mild regime (there the net effect is within
+    reordering noise — see test_recon_circulation_not_strictly_monotone — consistent with P0's finding
+    that the unsaturated range is not airtime-bound). Reps=8; the Student-t CI helper the scenario uses."""
     off = tiny()
-    on = replace(off, recon_cell_bytes=8.0, recon_c0=2.0, recon_k=0.5)
+    on = replace(off, recon_cell_bytes=8.0, recon_c0=1.0, recon_k=0.0)   # aggressive cap S(n)=1
     for d in (3.0, 6.0, 9.0):
         c_off = _multi_rep_circ(off, d, reps=8)
         c_on = _multi_rep_circ(on, d, reps=8)
-        m_off, lo_off, _ = mean_ci(c_off, clamp01=False)
-        m_on, _, hi_on = mean_ci(c_on, clamp01=False)
-        # ON mean must not exceed OFF mean beyond the OFF lower-CI slack: on_mean <= off_mean within CI.
-        assert m_on <= m_off + (m_off - lo_off) + 1e-9, \
-            f"circ/min ON above OFF beyond CI at density {d}: on={m_on} off={m_off} off_lo={lo_off}"
+        m_off, _, _ = mean_ci(c_off, clamp01=False)
+        m_on, _, _ = mean_ci(c_on, clamp01=False)
+        assert m_on <= m_off + 1e-9, \
+            f"saturated-cap circ/min ON mean above OFF at density {d}: on={m_on} off={m_off}"
 
 
 def test_recon_saturated_flat_floor_bites():

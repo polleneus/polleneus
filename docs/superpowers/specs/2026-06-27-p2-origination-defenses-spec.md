@@ -1,6 +1,6 @@
 # polleneus — P2 PR-2: Effective origination defenses (venue-wide cover floor + probabilistic license)
 
-**Version:** v0.2 — 2026-06-27 (design-review round 1 folded in — a CORE re-model) · **Roadmap:** P2 — PR-2 of 3
+**Version:** v0.4 — 2026-06-27 (design-review rounds 1-2 + build-review round 1: which-root adversary) · **Roadmap:** P2 — PR-2 of 3
 **Parent design:** [polleneus v0.5 §10](2026-06-25-polleneus-design.md#10-anonymity-engineering--measured-not-assumed)
 · **Builds on:** slice-3 PR-1 (source-localization apparatus) + PR-2 (the *cheap* defenses, measured **not credited**).
 
@@ -50,54 +50,62 @@ the originator's private dummies.
 
 Extend the slice-3 anonymity apparatus, **default-inert**:
 
-- **Cover-floor arm + a NEW mixed-graph adversary (the round-2 fix — the metric must be able to SEE
-  cover).** All nodes emit propagating byte-uniform dummy roots at rate `cover_rate`. The round-1
-  apparatus localized the source from **one known blob's** hearings — but the dummies are *separate blob
-  ids* that never enter that blob's hearings, so that metric is **structurally blind** to cover (a
-  near-tautological null). So PR-2 adds a **mixed-graph source-estimator mode** that models §10's actual
-  position-cover benefit — the adversary's **real-vs-dummy uncertainty**:
-  - the estimator is given the **first-sighting graph of ALL roots in the window (real + every node's
-    dummies), and is NOT told which blob is the real origination** (exactly the §10 threat: it must infer
-    *which* of many indistinguishable propagating roots, from many distinct emitter nodes, is real);
-  - it estimates, over the **distinct EMITTER NODES** of all observed roots, the probability each is the
-    true originator, and the credited metric is the **true originator node's rank-1 among those distinct
-    emitter nodes**.
-  - **This is NOT the banned 1/K.** 1/K was the real blob's rank among *one node's own roots* (content,
-    trivially diluted by emitting more). This is the true *node's* rank among *distinct emitter nodes*,
-    produced by the estimator's *real inference* over a mixed graph — the §10-mandated source-estimator
-    probability. A floor of dummies that the estimator can separate by timing/reachability gives **no**
-    credit; only genuine confusion of *which node* originated counts.
-- **The swept variable is the COVER FLOOR rate / plausible-originator density** — `cover_rate` (and venue
-  density) — **not** any single originator's private dummy count. The question: can a venue-wide floor of
-  propagating roots from many distinct emitter nodes make the true originator **indistinguishable, to the
-  mixed-graph estimator, from the other emitter nodes** — and does the estimator still pin it by the
-  hear-time gradient despite the floor?
+- **Cover-floor arm + the WHICH-ROOT adversary (round-3 fix — the metric must model §10's ACTUAL
+  threat).** All nodes emit propagating byte-uniform dummy roots at rate `cover_rate`. *(Round 2's
+  "mixed-graph" estimator was proven a denominator artifact: it still scored the **real blob's own
+  hearings** and merely enlarged the candidate-node list, so a non-emitting padding null reproduced the
+  whole "credit" — cover moved rank-1 by exactly 0. It did NOT do real-vs-dummy inference. Removed.)*
+  The faithful adversary:
+  - **Per-root emitter localization.** Each root (real or dummy) floods from its own emitter, so the
+    adversary localizes **each root's emitter** from **that root's own** first-sighting hearings (not the
+    real blob's). This is the only way dummies enter the metric on equal footing with the real root.
+  - **Real-vs-dummy uncertainty under the STRONGEST realistic signal.** The adversary does **not** know
+    which root is real, but — to avoid *over*-crediting cover — we model a **timing-aware** adversary
+    (the conservative/strong direction): it knows the **approximate real-origination time** `t*` (a
+    realistic out-of-band capability) and treats as *plausibly-real* only roots whose inferred
+    origination time lies within a window `±Δt` of `t*`. Cover therefore helps **only** if *other*
+    emitters' dummies genuinely coincide in time **and** space with the real send — real K-anonymity,
+    not denominator padding.
+  - **Metric = rank of the TRUE EMITTER among the distinct emitters of the *plausibly-real* root set**,
+    at a **fixed, consistent denominator** for cover-OFF and cover-ON (the round-2 artifact was an
+    inconsistent denominator). A floor that adds no temporally-and-spatially-coincident emitters near the
+    true source gives **no** credit. **Not the banned 1/K** (that was content-rank among one node's own
+    roots; this is the true *emitter's* rank among *distinct emitters* the adversary cannot rule out).
+- **The swept variable is the COVER FLOOR rate / venue density.** The question: can a venue-wide floor of
+  propagating roots produce **distinct emitter nodes whose roots are, to the timing-aware adversary,
+  indistinguishable from the real origination** — putting the true source in a genuine K-anonymity set of
+  emitters — or does the adversary still pin it (because few/no dummies coincide with the real send in
+  time and space)?
 - **License arm:** probabilistic time-bounded release; measured for deadlock-freedom (always fires by T,
   even sub-percolation) + cadence-invariance; its rank-1 reported but **not** expected to beat the null hard gate.
-- **Credit gate = slice-3 PR-2 gate + a NEW co-location control (mandatory):**
-  - must-localize (defenses-off attack must localize first), same-detected-set intersection (survivorship),
-    per-arm TTL=∞ control (a drop that dies there was message-dropping), cost (delivery + t50). **All retained.**
-  - **NEW — physically-distinct-candidate control:** a credited anonymity set / tie-cluster must be
-    **physically distinct candidate NODES**; an originator's own roots are **never** counted as distinct
-    candidate originators, and a co-located tie at one position is an **artifact the gate REJECTS** (it
-    would otherwise survive the TTL=∞ control and be falsely credited — the exact v0.1 trap). The cover
-    arm is scored by re-running the node-rank estimator on the real blob against the unchanged
-    distinct-node candidate set; a credit requires the true **node's** rank to actually rise.
+- **Credit gate = slice-3 PR-2 gate + the corrected controls (mandatory):**
+  - must-localize (the which-root estimator must localize cover-OFF at the fixed denominator), same-detected-set
+    intersection (survivorship), per-arm TTL=∞ control (a drop that dies there was message-dropping), cost
+    (delivery + t50). **All retained.**
+  - **FIXED DENOMINATOR + GROWN-CANDIDATE-NULL (replaces the round-2 control, which was proven inverted —
+    it *required* the denominator growth that manufactured the artifact).** Cover-OFF and cover-ON are
+    scored against the **same fixed candidate denominator**, and a **non-emitting padding null** (grow the
+    candidate set with zero dummies) **must credit ~0**; the cover arm is credited **only for the rank-1
+    increment above that null**. A credit requires the true emitter's rank to rise from **genuine
+    temporally-and-spatially-coincident dummy emitters** (real K-anonymity), never from denominator size.
+  - **Distinct-emitter + co-location guard (retained, necessary-not-sufficient):** an originator's own
+    roots are never counted as distinct candidate emitters (rejects the v1 own-root 1/K trap).
 - **Airtime cost (venue-wide):** the cover floor's dummies/min are billed against the §11 airtime budget
   (P0 apparatus) — a cover floor that floods is **not free** and competes with real delivery (a genuine
   second inv-1/§11 tension, reported, not hidden).
 
 ## 4. What we measure
 
-- **Does a venue-wide cover floor cut the position leak? (measured by the mixed-graph adversary that CAN
-  see it.)** True originator node's rank-1 **among the distinct emitter nodes of all observed roots**, vs
-  `cover_rate` and density, credited **only** through the gate (incl. the new distinct-node control).
-  Falsifiable expectation: rank-1 falls **only if** the floor genuinely confuses *which node* originated —
-  and **may NOT**, since the estimator rides hear-time gradients a fixed-rate floor does not erase. The
-  must-localize control runs the **same mixed-graph estimator** on the defenses-off baseline, so the
-  comparison is apples-to-apples (cover-off the estimator localizes; does cover-on stop it?). **A null
-  result remains an honest, plausible outcome** — but now it is a *real* test of §10 cover (the metric can
-  move), not the structurally-blind null of the round-1 design.
+- **Does a venue-wide cover floor cut the position leak? (measured by the which-root, timing-aware
+  adversary.)** True emitter's rank-1 **among the distinct emitters of the plausibly-real root set**, vs
+  `cover_rate` and density, at a **fixed denominator**, credited **only** through the gate. Falsifiable
+  expectation: rank-1 falls **only if** the floor produces emitters whose roots coincide with the real
+  send in **time AND space** — and **may NOT**, if the timing-aware adversary rules out most dummies.
+  **Mandatory grown-candidate-null control (the round-2 lesson):** a non-emitting padding null (grow the
+  candidate set with zero dummies) must credit **~0**; the cover arm is credited only for the increment
+  **above** that null. The must-localize control runs the **same** estimator cover-OFF at the same fixed
+  denominator. **A null result remains an honest, plausible (perhaps likely) outcome** — and is now a
+  *real* test of §10 cover, immune to the denominator artifact.
 - **The sparse-mode tension (honest):** §10 invokes cover for the sparse/cliff venue — but that is exactly
   where there are **fewest other nodes** to supply position-cover and where the airtime cost bites hardest.
   Measure and report rank-1 + cost across density, **including** the sparse regime where cover is weakest.
@@ -133,7 +141,7 @@ Extend the slice-3 anonymity apparatus, **default-inert**:
    off → bit-identical; zero new RNG on the off path.
 2. Overlay: all nodes emit propagating byte-uniform dummy roots at `cover_rate`; probabilistic
    time-bounded license release. Default-inert.
-3. Adversary: a **mixed-graph source-estimator mode** — input = first-sighting graph of ALL roots
+3. Adversary: the WHICH-ROOT timing-aware estimator — localize EACH root from ITS OWN hearings; rank the true emitter among distinct emitters of the plausibly-real (within ±Δt of t*) root set at a FIXED denominator. Plus a mandatory grown-candidate (non-emitting padding) NULL control crediting ~0.
    (real + dummies), NOT told which is real; output = rank of the true originator among the distinct
    emitter nodes. Reuse the slice-3 estimators (reachability/first-spy) over the union root-set.
 4. Scenario: cover-floor + license arms scored by the mixed-graph estimator; the **distinct-node

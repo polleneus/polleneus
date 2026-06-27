@@ -72,11 +72,12 @@ utilization**, **delivery ratio**, and a **censoring-aware T50** vs density.
   curve is monotone, merely plateaus (the post-peak minimum must fall ≥15% below the peak), or
   the local fit is not concave (no genuine interior max).
 - **Binding publish-gate (the honesty guard):** the saturation figure publishes **only if**
-  there is a knee AND ≥50% of *unmet* demand at the knee is **contention-bound** AND **neither**
-  the **α=0** (airtime-free: β=0, α=0, t_setup_slope=0 → constant goodput, flat setup) control
-  **nor** the **cap=∞/ttl=∞** control turns over. Otherwise
-  the curve is labelled connectivity/buffer/TTL-limited. This makes it impossible to mislabel a
-  storage/connectivity effect as "airtime."
+  there is a knee AND ≥50% of *unmet* demand at the knee is **contention-bound** AND the
+  **α=0** (airtime-free: β=0, α=0, t_setup_slope=0 → constant goodput, flat setup) control does
+  **NOT** turn over (else the turn-down is connectivity-caused) AND the **cap=∞/ttl=∞** control
+  **DOES still** turn over (the turn-down persisting when buffer/TTL are infinite is what rules
+  out a buffer/TTL cause). Otherwise the curve is labelled connectivity/buffer/TTL-limited. This
+  makes it impossible to mislabel a storage/connectivity effect as "airtime."
 - **Censoring-aware latency:** TTL-expired messages are censored; we report **T50** (time to 50%
   of the fair-chance cohort delivered; `None` when <50% ever arrive) jointly with delivery
   ratio. Delivered-only mean latency is a LOWER bound (survivorship) and labelled as such.
@@ -88,7 +89,7 @@ utilization**, **delivery ratio**, and a **censoring-aware T50** vs density.
 | `t_setup` | 50 ms | BLE connection/handshake floor; short contacts move nothing | — |
 | `t_setup_slope` | density-dependent | discovery latency grows with advertiser count (scan-window contention) | optimistic if slope under-set |
 | `β` (collision steepness) | **uncalibrated free parameter** | predicted knee `n* = 1/β` reported up front (no `/n_channels`: BLE advertises on all 3 channels per event, so they don't triple capacity); sweep is run across the band | report knee as a function of β |
-| `blob_size` | 256 B | one sealed message (parent §6) | — |
+| `blob_size` | 256 B | one sealed message — sim's modeled size; parent §6 rounds to ~1 KB (circ/min scales ~inversely with blob size, so ~4× lower at 1 KB) | optimistic vs 1 KB |
 | contact-duration distribution | RWP, open-field | report the empirical distribution; its tail is **optimistic** vs clustered human-contact traces | optimistic |
 
 ## What it measures (slice 3: anonymity / source-localization) — PR-1

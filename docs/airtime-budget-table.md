@@ -88,7 +88,7 @@ airtime_cfg, reps 2, ON = `cell_bytes 8, c0 2, k 0.5`):
 |---|---|---|---|---|
 | 2 | 3,640 → 3,640 | **1.00** | 0.03 → 0.04 | 601 → 843 |
 | 4 | 7,280 → 7,280 | **1.00** | 0.05 → 0.09 | 3,820 → 6,385 |
-| 6 | 10,960 → 10,960 | **1.00** | 0.11 → 0.30 | 17,728 → 48,949 |
+| 6 | 10,960 → 10,960 | **1.00** | 0.11 → 0.30 | 17,728 → 48,948 |
 
 Reconciliation airtime is **genuinely consumed** (utilization and charged-airtime rise — at d=6 utilization
 nearly triples, 0.11 → 0.30 — so the free-reconciliation optimism is provably gone), yet **circulation is
@@ -96,22 +96,28 @@ unchanged** because the operating range is **not airtime-bound**: there is spare
 cost, and per-episode-capped transfers simply complete in later contacts via the soup's redundancy.
 **P1 confirms, rather than overturns, the P0 conclusion for the operating range.**
 
-**At airtime-saturation the haircut is real** (a deliberately saturated fixture, util ≈ 0.7, reps 4): circ/min
-**4,599 → 4,348, haircut 0.945** (served 920 → 870). And the **2-D sensitivity band** (saturated, baseline
-circ 4,622) shows the two mechanisms separately — *uncalibrated `(cell_bytes, k)`, reported as a band, not a
-single number*:
+**At airtime-saturation the haircut is real.** A deliberately saturated fixture (util ≈ 0.7, seed 12345)
+gives, at the representative ON schedule (`cell_bytes 8, k 0.5`), **haircut 0.93** (circ/min 4,435 → 4,127).
+The **2-D sensitivity band** (same fixture, baseline circ 4,435) shows the two mechanisms separately —
+*uncalibrated `(cell_bytes, k)`, reported as a band, not a single number* (reproduce: `--preset recon-band`):
 
 | `cell_bytes` ↓ \ `k` → | 0.0 (tight cap) | 0.5 | 1.0 |
 |---|---|---|---|
-| 1 | 0.47 *(cap-bound)* | 0.99 | 0.98 |
-| 8 | 0.47 *(cap-bound)* | 0.95 | 0.87 |
-| 32 | 0.46 *(cap-bound)* | 0.69 | 0.37 |
+| 1 | 0.45 *(cap-bound)* | 0.99 | 0.98 |
+| 8 | 0.44 *(cap-bound)* | 0.93 | 0.85 |
+| 32 | 0.43 *(cap-bound)* | 0.66 | 0.36 |
 
-At `k=0` the per-episode **cap** dominates (a big haircut ~0.46–0.47, ~570–600 capped episodes,
+At `k=0` the per-episode **cap** dominates (a big haircut ~0.43–0.45, ~520–550 capped episodes,
 ≈cell_bytes-independent); at `k>0` the **flat airtime floor** dominates and the haircut scales with the
 floor size (`cell_bytes × cells`). **Honest caveat:** reconciliation cost is **not strictly monotone** —
 the multi-hop engine reorders transfers, so a single run can jitter either way (spec §4); the numbers above
-are multi-rep means, and the operating-range haircut is **within reordering noise**.
+are multi-rep means, and the operating-range haircut is **within reordering noise**. *(The cap is modeled
+as `floor(S(n))` — overhead 1, no `c0_reserve` — the minisketch primary, cheapest-defensible bound; a
+stricter cap would only increase the haircut.)*
+
+*Reproduce:* `cd sim && .venv/Scripts/python run.py --preset recon-compare --reps 2 --out out/recon.csv`
+(operating-range OFF vs ON); the saturated haircut + 2-D sensitivity band via
+`--preset recon-band --out out/recon_band.csv`. Both CSVs carry the ON recon schedule in the manifest.
 
 ## 3. How to read it — the publish-gate (the honesty guard)
 

@@ -64,11 +64,18 @@ def test_recon_off_arm_bit_identical_to_plain_airtime():
     out = recon_compare_sweep(tiny(), dens, reps=2, recon_cfg=RECON_ON)
     air_rows, _ = _airtime_arm(tiny(), dens, reps=2)
     assert len(out) == len(air_rows)
-    for r, a in zip(out, air_rows):
+    for di, (r, a) in enumerate(zip(out, air_rows)):
         # circ/min mean + CI bit-identical to the plain airtime arm (same seeds, same off engine)
         assert r["off"]["circ_mean"] == a["circulated_per_min_mean"]
         assert r["off"]["circ_ci_lo"] == a["ci_lo"] and r["off"]["circ_ci_hi"] == a["ci_hi"]
         assert r["off"]["util_mean"] == a["utilization_mean"]
+        # served_mean + charged_mean also bit-identical to an independent run_one baseline (same seeds):
+        # the OFF arm IS the same engine run, so EVERY metric must match, not just circ/util.
+        n = max(2, density_to_n(dens[di], tiny().width, tiny().height, tiny().radius))
+        base = [run_one(replace(tiny(), n=n, master_seed=_seed_for(tiny().master_seed, di, rep)))
+                for rep in range(2)]
+        assert r["off"]["served_mean"] == float(np.mean([b["served_blobs"] for b in base]))
+        assert r["off"]["charged_mean"] == float(np.mean([b["charged_airtime"] for b in base]))
 
 
 def test_recon_compare_charged_airtime_strictly_higher_on_when_cap_does_not_bind():

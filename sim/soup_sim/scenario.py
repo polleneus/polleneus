@@ -337,6 +337,12 @@ def recon_sensitivity_band(base_cfg, density, reps, cell_bytes_list, k_list):
     cell is {"cell_bytes", "k", "circ_on_mean", "haircut", "recon_capped_episodes"}. Keep the grid small
     (the engine is super-linear in crowd size)."""
     n = max(2, density_to_n(density, base_cfg.width, base_cfg.height, base_cfg.radius))
+    # Precondition: a k=0 column with cell_bytes>0 needs base_cfg.recon_c0>0, else S(n)=0 (degenerate ON
+    # schedule) and Config.validate would raise mid-sweep. Fail early with a clear, actionable message.
+    if base_cfg.recon_c0 <= 0 and any(k == 0 for k in k_list) and any(cb > 0 for cb in cell_bytes_list):
+        raise ValueError("recon_sensitivity_band: base_cfg.recon_c0 must be > 0 to include a k=0 column "
+                         "(cell_bytes>0 with c0=0 and k=0 is a degenerate S(n)=0 schedule). "
+                         "Pass replace(base_cfg, recon_c0=<floor>).")
 
     def _circ_mean(cfg_arm):
         circ, capped = [], 0

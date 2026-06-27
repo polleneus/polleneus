@@ -18,11 +18,11 @@ from dataclasses import replace
 from soup_sim.config import Config
 from soup_sim.scenario import (static_delivery_sweep, midpoint_with_ci, airtime_sweep, anonymity_sweep,
                                anonymity_defense_sweep, intersection_sweep, cluster_leak_sweep,
-                               recon_compare_sweep)
+                               recon_compare_sweep, recon_sensitivity_band)
 from soup_sim.report import (write_csv, plot, airtime_to_csv_string, airtime_plot,
                              anonymity_to_csv_string, anonymity_plot, anonymity_defense_to_csv_string,
                              intersection_to_csv_string, cluster_to_csv_string,
-                             recon_compare_to_csv_string)
+                             recon_compare_to_csv_string, recon_band_to_csv_string)
 from soup_sim.anonymity import exposure_gate, EXPOSURE_RANK1
 
 
@@ -239,7 +239,7 @@ def _run_recon_compare(args) -> None:
     rows = recon_compare_sweep(cfg, [2.0, 4.0, 6.0], reps=reps, recon_cfg=recon_on)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", newline="", encoding="utf-8") as f:
-        f.write(recon_compare_to_csv_string(rows, cfg.manifest()))
+        f.write(recon_compare_to_csv_string(rows, replace(cfg, **recon_on).manifest()))  # persist the ON schedule
     print(f"wrote {args.out} (recon OFF vs ON, densities 2/4/6, reps={reps}, ON={recon_on})")
     for r in rows:
         o, n = r["off"], r["on"]
@@ -251,11 +251,39 @@ def _run_recon_compare(args) -> None:
     print("      appears at saturation; recon cost is NOT strictly monotone (multi-hop reordering). UPPER BOUND.")
 
 
+def _saturated_cfg(seed: int) -> Config:
+    # airtime-saturated venue (low throughput, util~0.7) so the reconciliation haircut is REAL, not
+    # within reordering noise. recon_c0=2 so the k=0 (cap-dominated) band column has a valid S(n)>=1.
+    return Config(n=0, width=30.0, height=30.0, radius=8.0, boundary="torus", mobility="rwp",
+                  speed_min=1.5, speed_max=1.5, dt=1.0, ttl=30.0, buffer_cap=200, throughput_ideal=600.0,
+                  alpha=1.0, t_setup=0.05, p_fail=0.0, blob_size=200.0, warmup=4.0, measure_window=12.0,
+                  drain=0.0, n_messages=40, seen_margin=30.0, master_seed=seed,
+                  airtime_model="collision", beta=0.05, t_setup_slope=0.002, n_channels=3, cs_radius_mult=2.0,
+                  recon_c0=2.0)
+
+
+def _run_recon_band(args) -> None:
+    # P1 2-D sensitivity band (recon_cell_bytes x recon_k) at a SATURATED density where the haircut is real.
+    cfg = _saturated_cfg(args.seed)
+    reps = max(args.reps, 3)
+    out = recon_sensitivity_band(cfg, density=6.0, reps=reps, cell_bytes_list=[1, 8, 32], k_list=[0.0, 0.5, 1.0])
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        f.write(recon_band_to_csv_string(out, cfg.manifest()))
+    print(f"wrote {args.out} (2-D band cell_bytes x k @ saturated d=6, reps={reps})")
+    print(f"  circ_off baseline = {out['circ_off_mean']:.0f} (n={out['n']})")
+    for c in out["cells"]:
+        print(f"   cb={c['cell_bytes']:>4} k={c['k']:>4} -> haircut {c['haircut']:.3f} "
+              f"(circ_on {c['circ_on_mean']:.0f}, capped {c['recon_capped_episodes']})")
+    print("note: k=0 -> per-episode CAP dominates (large haircut); k>0 -> flat airtime FLOOR dominates")
+    print("      (scales with cell_bytes). Uncalibrated band, multi-rep means, UPPER BOUND on circulation.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--preset",
                     choices=["static-cliff", "airtime-knee", "anonymity", "anonymity-defenses",
-                             "anonymity-intersection", "cluster-delivery", "recon-compare"],
+                             "anonymity-intersection", "cluster-delivery", "recon-compare", "recon-band"],
                     default="static-cliff")
     ap.add_argument("--out", default="out/cliff.csv")
     ap.add_argument("--plot", default=None)
@@ -274,6 +302,8 @@ def main() -> None:
         _run_cluster_delivery(args)
     elif args.preset == "recon-compare":
         _run_recon_compare(args)
+    elif args.preset == "recon-band":
+        _run_recon_band(args)
     else:
         _run_static(args)
 

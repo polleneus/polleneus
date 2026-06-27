@@ -375,8 +375,9 @@ def _anon_pos_at(log, t):
 
 # P2 PR-2 origination defenses ----------------------------------------------------------------------
 COVER_BLOB_BASE = 20_000_000   # dummy-root id namespace (disjoint from cohort 0.. and gated soup 10M..)
-ORIGINATION_SCOPE_TAG = ("[ORIGINATION DEFENSE = venue-wide cover floor vs the MIXED-GRAPH source "
-                         "estimator (real+dummy roots, not told which is real); single-event "
+ORIGINATION_SCOPE_TAG = ("[ORIGINATION DEFENSE = venue-wide cover floor vs the WHICH-ROOT, timing-aware "
+                         "source estimator (each root localized from its OWN hearings; not told which is "
+                         "real); credited only ABOVE the grown-candidate-null; single-event "
                          "external-passive ONLY; intersection (does a floor survive multi-session) + "
                          "insider NOT modeled; PHY device-linkage carried; UPPER BOUND on anonymity]")
 
@@ -817,8 +818,11 @@ def anonymity_defense_sweep(base_cfg, f, reps):
 
 
 # P2 PR-2: origination defenses — the venue-wide cover floor (the headline) + the probabilistic license.
-# Both default-inert; the cover floor is scored by the MIXED-GRAPH estimator (above) and gated by the
-# distinct-node co-location control; the license is a POST-HOC liveness model (no engine perturbation).
+# Both default-inert; the cover floor is scored by the WHICH-ROOT timing-aware estimator (above), credited
+# only ABOVE the grown-candidate-null; the license is a POST-HOC liveness model (no engine perturbation).
+# Soundness edge (verification flag, did NOT trigger here — verdict was NULL): the grown-candidate-null
+# pads per-bid to the cover-ON arm's per_bid_K; a bid detected cover-OFF but absent cover-ON defaults to
+# K=1 (no padding), which would bias TOWARD crediting cover — watch this if a future floor genuinely helps.
 # ---------------------------------------------------------------------------------------------------
 
 def license_release_time(t0, T, floor, relay_event_times, rng, dt=1.0, novelty_gain=0.0) -> float:

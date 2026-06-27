@@ -264,7 +264,7 @@ is bit-identical, zero new RNG on the off path).
   for **deadlock-freedom** + **cadence-invariance** (a jammed target still fires by T ⇒ isolation-oracle
   closed). **Honest scope:** liveness only, **NOT a leak reducer** — no leak-drop claimed.
 
-**Measured verdict — NULL** (bounded: n=40, f=0.7, 2 reps, ±Δt=8, `cover_rates`∈{0, 0.2, 0.4}):
+**Measured verdict — NULL** (bounded: n=40, f=0.7, 2 reps, ±Δt=8, `cover_rates`∈{0, 0.4}):
 must-localize passes (the estimator localizes cover-OFF, rank-1 0.45, err 0.62 radii). Cover-OFF the
 unhidden source is trivially caught (rank-1 **1.00**, K=1). Cover-ON the which-root rank-1 falls to
 **0.19** (K≈33–38 plausibly-real emitters) — **but the grown-candidate-null reproduces it: 0.16 with

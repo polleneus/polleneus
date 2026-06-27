@@ -286,7 +286,7 @@ defense/intersection gates) · `report` (CSV + plot).
 | pure flooding, no routing | §1/§2 | faithful; engine is addressing-blind (lint-enforced) → none |
 | absolute TTL | §6 | faithful |
 | eviction = oldest-by-creation | §9.5 | faithful |
-| reconciliation | §8 | per-contact **byte budget**, set-reconciliation overhead modeled as **zero** → optimistic (no IBLT/rateless overhead) |
+| reconciliation | §8 | per-contact **byte budget**; set-reconciliation overhead **modeled** (P1, opt-in): a flat density-scheduled airtime floor `S(n)=c0+ceil(k*n)` + per-episode cap (`recon_*` config, **default off** ⇒ zero ⇒ bit-identical). Cost cited/uncalibrated; **iOS asymmetry + cross-peer prefix-carry still unmodeled → optimistic** |
 | airtime (collision) | §6/§11 | ALOHA `exp(−β·n)`, **β uncalibrated**, no retransmission, ignored scan-duty-cycle misses → **optimistic** (inflate delivered fraction). (Capture effect — not modeled, OUT §4 — would pull the knee *earlier*; a separate effect, not an offset.) |
 | contention population | §11 | carrier-sense **max-of-pair, single-snapshot** degree (not the full co-channel union) → **optimistic** (under-counts contenders) |
 | decode failure (`p_fail`) | §8 | applied as a deterministic `(1−p_fail)` mean factor, not independent per-blob → removes tail/variance risk → **optimistic** |

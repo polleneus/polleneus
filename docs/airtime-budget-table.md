@@ -75,6 +75,44 @@ simulator's `test_collision_knee_linear_plateau_distinguishable` gate. We **cite
 re-plot the tail here: sweeping the high-density regime is hours of compute (the engine is super-linear
 in crowd size) and produces no claim the gate doesn't already establish.
 
+### P1 update (2026-06-27) — reconciliation cost, re-measured
+
+The table above was generated with **set-reconciliation overhead modeled as zero** (optimistic). P1
+replaced that with a conservative cost model — a **flat, density-scheduled airtime floor** `S(n)=c0+⌈k·n⌉`
+plus a per-episode novel-transfer **cap** (spec [`2026-06-27-p1-reconciliation`](superpowers/specs/2026-06-27-p1-reconciliation-spec.md)) — and re-measured. The honest result is **two-regime**:
+
+**In the operating range it costs airtime but does NOT cut circulation** (`recon_compare_sweep`,
+airtime_cfg, reps 2, ON = `cell_bytes 8, c0 2, k 0.5`):
+
+| Mean degree | circ/min OFF → ON | haircut | utilization OFF → ON | charged-airtime OFF → ON |
+|---|---|---|---|---|
+| 2 | 3,640 → 3,640 | **1.00** | 0.03 → 0.04 | 601 → 843 |
+| 4 | 7,280 → 7,280 | **1.00** | 0.05 → 0.09 | 3,820 → 6,385 |
+| 6 | 10,960 → 10,960 | **1.00** | 0.11 → 0.30 | 17,728 → 48,949 |
+
+Reconciliation airtime is **genuinely consumed** (utilization and charged-airtime rise — at d=6 utilization
+nearly triples, 0.11 → 0.30 — so the free-reconciliation optimism is provably gone), yet **circulation is
+unchanged** because the operating range is **not airtime-bound**: there is spare airtime to absorb the
+cost, and per-episode-capped transfers simply complete in later contacts via the soup's redundancy.
+**P1 confirms, rather than overturns, the P0 conclusion for the operating range.**
+
+**At airtime-saturation the haircut is real** (a deliberately saturated fixture, util ≈ 0.7, reps 4): circ/min
+**4,599 → 4,348, haircut 0.945** (served 920 → 870). And the **2-D sensitivity band** (saturated, baseline
+circ 4,622) shows the two mechanisms separately — *uncalibrated `(cell_bytes, k)`, reported as a band, not a
+single number*:
+
+| `cell_bytes` ↓ \ `k` → | 0.0 (tight cap) | 0.5 | 1.0 |
+|---|---|---|---|
+| 1 | 0.47 *(cap-bound)* | 0.99 | 0.98 |
+| 8 | 0.47 *(cap-bound)* | 0.95 | 0.87 |
+| 32 | 0.46 *(cap-bound)* | 0.69 | 0.37 |
+
+At `k=0` the per-episode **cap** dominates (a big haircut ~0.46–0.47, ~570–600 capped episodes,
+≈cell_bytes-independent); at `k>0` the **flat airtime floor** dominates and the haircut scales with the
+floor size (`cell_bytes × cells`). **Honest caveat:** reconciliation cost is **not strictly monotone** —
+the multi-hop engine reorders transfers, so a single run can jitter either way (spec §4); the numbers above
+are multi-rep means, and the operating-range haircut is **within reordering noise**.
+
 ## 3. How to read it — the publish-gate (the honesty guard)
 
 A figure is **only** labelled "airtime-saturation" if the binding publish-gate passes: there is a knee
@@ -94,7 +132,7 @@ honest outcome (no airtime wall in the operating densities; the wall is higher u
 | `t_setup_slope` | density-dependent | discovery latency grows with advertiser count | optimistic if under-set |
 | `β` (collision steepness) | **uncalibrated** (0.1) | predicted knee `n* = 1/β` reported up front; swept across the band | knee reported *as a function of* β |
 | `blob_size` | **256 B** | sim's modeled sealed message; parent §6 rounds to ~1 KB (circ/min ~4× lower at 1 KB; the storage/circulation *ratio* is blob-size-invariant) | optimistic vs 1 KB |
-| reconciliation overhead | **0** | set-reconciliation modeled as free (no IBLT/rateless cost) | **optimistic** — real cost only lowers the budget |
+| reconciliation overhead | **0** in the §2 table; **modeled** in the P1 update above | §2 used zero (optimistic); P1 adds a flat density-scheduled floor `S(n)=c0+⌈k·n⌉` + per-episode cap (cited, uncalibrated) | §2 optimistic; the P1 update removes that optimism (airtime consumed; operating-range circulation unchanged, haircut at saturation) |
 | contact-duration dist. | RWP, open-field | tail is optimistic vs clustered human-contact traces | optimistic |
 
 ## 5. The public claim this supports (re-scoped, honest)

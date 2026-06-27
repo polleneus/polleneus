@@ -17,10 +17,12 @@ import numpy as np
 from dataclasses import replace
 from soup_sim.config import Config
 from soup_sim.scenario import (static_delivery_sweep, midpoint_with_ci, airtime_sweep, anonymity_sweep,
-                               anonymity_defense_sweep, intersection_sweep, cluster_leak_sweep)
+                               anonymity_defense_sweep, intersection_sweep, cluster_leak_sweep,
+                               recon_compare_sweep)
 from soup_sim.report import (write_csv, plot, airtime_to_csv_string, airtime_plot,
                              anonymity_to_csv_string, anonymity_plot, anonymity_defense_to_csv_string,
-                             intersection_to_csv_string, cluster_to_csv_string)
+                             intersection_to_csv_string, cluster_to_csv_string,
+                             recon_compare_to_csv_string)
 from soup_sim.anonymity import exposure_gate, EXPOSURE_RANK1
 
 
@@ -228,11 +230,32 @@ def _run_cluster_delivery(args) -> None:
     print("      BOUND on real delivery; uniform/RWP is the optimistic baseline (clustering removes optimism).")
 
 
+def _run_recon_compare(args) -> None:
+    # P1 re-measure: reconciliation OFF vs ON across the operating range (airtime_cfg). reps default 2
+    # (run_one is super-linear in crowd size — keep it small). ON schedule cell_bytes=8/c0=2/k=0.5.
+    cfg = airtime_cfg(args.seed)
+    reps = max(args.reps, 2)
+    recon_on = dict(recon_cell_bytes=8.0, recon_c0=2.0, recon_k=0.5)
+    rows = recon_compare_sweep(cfg, [2.0, 4.0, 6.0], reps=reps, recon_cfg=recon_on)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        f.write(recon_compare_to_csv_string(rows, cfg.manifest()))
+    print(f"wrote {args.out} (recon OFF vs ON, densities 2/4/6, reps={reps}, ON={recon_on})")
+    for r in rows:
+        o, n = r["off"], r["on"]
+        print(f"  d={r['density']:>3} | circ off {o['circ_mean']:7.0f} -> on {n['circ_mean']:7.0f} "
+              f"(haircut {r['haircut']:.3f}) | util off {o['util_mean']:.2f}/on {n['util_mean']:.2f} "
+              f"| charged off {o['charged_mean']:.0f}/on {n['charged_mean']:.0f} | capped {n['recon_capped_episodes']}")
+    print("note: in the operating range circulation is unchanged (haircut ~1.0) but recon airtime IS")
+    print("      consumed (utilization/charged rise) -- the range is not airtime-bound. The real haircut")
+    print("      appears at saturation; recon cost is NOT strictly monotone (multi-hop reordering). UPPER BOUND.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--preset",
                     choices=["static-cliff", "airtime-knee", "anonymity", "anonymity-defenses",
-                             "anonymity-intersection", "cluster-delivery"],
+                             "anonymity-intersection", "cluster-delivery", "recon-compare"],
                     default="static-cliff")
     ap.add_argument("--out", default="out/cliff.csv")
     ap.add_argument("--plot", default=None)
@@ -249,6 +272,8 @@ def main() -> None:
         _run_anonymity_intersection(args)
     elif args.preset == "cluster-delivery":
         _run_cluster_delivery(args)
+    elif args.preset == "recon-compare":
+        _run_recon_compare(args)
     else:
         _run_static(args)
 

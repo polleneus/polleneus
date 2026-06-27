@@ -103,6 +103,42 @@ def defense_gate(baseline_rank1, defended_rank1, mustlocalize_ok, timing_only_ga
     return {"credited": True, "label": f"defense cuts exposure (rank-1 {baseline_rank1:.2f} -> {defended_rank1:.2f})"}
 
 
+# P2 PR-2 (spec v0.4): origination (venue-wide cover floor) defense gate — WHICH-ROOT, timing-aware.
+ORIGINATION_DEFENSE_SCOPE_TAG = ("[cover-floor gain vs the single-event passive WHICH-ROOT timing-aware "
+                                 "adversary ONLY; credited only ABOVE the grown-candidate-null; NOT "
+                                 "evaluated vs intersection (P2 PR-3)/insider; UPPER BOUND]")
+
+
+def origination_defense_gate(null_rank1, cover_rank1, mustlocalize_ok, credited_increment,
+                             cover_off_rank1, timing_only_gain_survives, intersection_size=None) -> dict:
+    """Credit a venue-wide cover floor ONLY for the which-root rank-1 increment ABOVE the GROWN-CANDIDATE-
+    NULL — the key honesty fix that pins the round-2 denominator artifact (a non-emitting padding null
+    reproduced the whole "credit"; cover moved rank-1 by exactly 0).
+      * null_rank1   — cover-OFF, candidate set padded to the cover-ON denominator with NON-emitting nodes
+                       (pure denominator inflation, zero coincident dummy emitters).
+      * cover_rank1  — cover-ON which-root rank-1 (REAL time-coincident dummy emitters in the candidate set).
+      * credited_increment = null_rank1 - cover_rank1 — the drop BEYOND denominator inflation (genuine
+        time-AND-space-coincident K-anonymity). The cover arm is credited only for THIS increment.
+    Controls retained: must-localize (the which-root estimator must localize the true emitter cover-OFF at
+    the FIXED denominator — note this ALSO proves the grown-candidate-null itself credits ~0, since a
+    padding that hid the source would drive null_rank1 below the must-localize bar); a material increment;
+    TTL=inf (a drop that dies there was message-dropping); powered same-detected-set intersection. The
+    own-root co-location guard is built into the metric (an emitter is ONE distinct candidate node)."""
+    if intersection_size is not None and intersection_size < MIN_INTERSECTION_SIZE:
+        return {"credited": False, "label": f"inconclusive — intersection too small ({intersection_size} < {MIN_INTERSECTION_SIZE})"}
+    if not mustlocalize_ok:
+        return {"credited": False, "label": f"inconclusive — which-root estimator failed must-localize at the "
+                f"fixed denominator (null rank-1 {null_rank1:.2f}; padding alone hid the source or no signal)"}
+    if credited_increment < DEFENSE_MIN_DROP * null_rank1:
+        return {"credited": False, "label": f"NULL — no credit above the grown-candidate-null (cover rank-1 "
+                f"{cover_rank1:.2f} vs null {null_rank1:.2f}; increment {credited_increment:+.2f} = denominator, "
+                f"not time+space-coincident cover)"}
+    if not timing_only_gain_survives:
+        return {"credited": False, "label": "NOT credited — gain dies at TTL=inf (message-dropping, not position cover)"}
+    return {"credited": True, "label": f"cover floor cuts the position leak ABOVE the null (which-root rank-1 "
+            f"{null_rank1:.2f} -> {cover_rank1:.2f}, increment {credited_increment:+.2f} from coincident emitters)"}
+
+
 def intersection_gate(fused_rank1, decoy_rank1, random_floor, mustlocalize_ok, n_samples,
                       fused_random_floor=None) -> dict:
     """Credit "intersection deanonymizes the persistent sender" only if the fused rank-1 crosses the

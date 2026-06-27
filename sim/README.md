@@ -229,6 +229,53 @@ emitted (the headline is fused rank-1). The per-message estimator fused here is 
 best-of can), so K=1 is the single-event *reachability* rank-1 — **≤ PR-1's oracle-best-of headline**,
 i.e. the conservative (anonymity-favorable) direction.
 
+## Origination defenses (P2 — PR-2): venue-wide cover floor + probabilistic license
+PR-1/PR-2 measured the *cheap* defenses (mixing, hard gate) as **not credited**. This slice tests what
+parent §10 actually sanctions against the source-localization adversary, scored by a **which-root,
+timing-aware adversary** (spec v0.4), all default-inert (`cover_rate=0`, license off ⇒ every prior number
+is bit-identical, zero new RNG on the off path).
+
+> **Build-review correction (round 2 → round 3).** An earlier "mixed-graph" estimator was **proven a
+> denominator artifact**: it still scored the *real blob's own hearings* and merely enlarged the
+> candidate-node list, so a non-emitting **padding null** (grow candidates with zero dummies) reproduced
+> the entire apparent "credit" — at a fixed denominator the cover floor moved rank-1 by **exactly 0**. It
+> did no real-vs-dummy inference. That estimator and its "0.49→0.37 credit" are **removed**.
+
+- **Venue-wide cover floor.** EVERY node emits byte-uniform **propagating** dummy roots into the soup at
+  Poisson rate `cover_rate`; each is a separate blob id with a distinct emitter node that spreads like any
+  blob (real-vs-dummy hidden).
+- **The WHICH-ROOT, timing-aware adversary.** It localizes **each root (real *or* dummy) from that root's
+  own** first-sighting hearings (per-root emitter localization — the only way dummies enter on equal
+  footing). It knows the approximate real-origination time `t*` and treats as **plausibly-real** only
+  roots whose emission lies within **±Δt** of `t*` (the strong/conservative direction — knowing `t*`
+  rules out temporally-distant dummies, so cover is never *over*-credited). **Metric = rank of the true
+  emitter among the distinct emitters of the plausibly-real root set**, at a **fixed denominator**. Cover
+  helps only if *other* emitters' dummies coincide with the real send in **time AND space** — real
+  K-anonymity, not the banned 1/K and not denominator padding.
+- **Credit gate = slice-3 controls + the GROWN-CANDIDATE-NULL (the honesty fix).** A **non-emitting
+  padding null** (cover-OFF, candidate set grown to the cover-ON denominator with zero dummies) must
+  credit **~0**; the cover arm is credited **only for the rank-1 increment ABOVE that null**. Retains
+  must-localize (the slice-3 estimators the adversary reuses must localize cover-OFF), the TTL=∞ control,
+  and the powered same-detected-set intersection. The own-root co-location guard is built into the metric
+  (an emitter is **one** distinct candidate node).
+- **Airtime cost (venue-wide):** cover dummies/min reported and billed against the §11 budget.
+- **Probabilistic, time-bounded license** (`license_floor`>0, `license_max_latency_T`=T): fires with
+  probability floored >0 and ceiled to **always fire by T** — measured (post-hoc, no engine perturbation)
+  for **deadlock-freedom** + **cadence-invariance** (a jammed target still fires by T ⇒ isolation-oracle
+  closed). **Honest scope:** liveness only, **NOT a leak reducer** — no leak-drop claimed.
+
+**Measured verdict — NULL** (bounded: n=40, f=0.7, 2 reps, ±Δt=8, `cover_rates`∈{0, 0.4}):
+must-localize passes (the estimator localizes cover-OFF, rank-1 0.45, err 0.62 radii). Cover-OFF the
+unhidden source is trivially caught (rank-1 **1.00**, K=1). Cover-ON the which-root rank-1 falls to
+**0.19** (K≈33–38 plausibly-real emitters) — **but the grown-candidate-null reproduces it: 0.16 with
+ZERO dummies.** The credited increment (null − cover) is **−0.03** — real time+space-coincident dummy
+emitters are **no more confusable than random padding**, so the gate returns **NULL: no credit above the
+grown-candidate-null** (denominator, not position cover). This is the §10 sparse-mode tension made
+concrete: a *uniform* venue-wide floor produces emitters spread uniformly, **not concentrated in time and
+space around the true send**, so it buys no genuine K-anonymity — at a real airtime cost (≈500–1000
+dummies/min). The **license** is deadlock-free and cadence-invariant (fires by T even fully isolated).
+Every number is an **UPPER BOUND** (single-event external-passive; intersection/insider deferred to PR-3).
+
 ## Clustered "gathering" mobility (slice 4 — PR-1)
 Every prior headline (delivery cliff, airtime knee, anonymity) was measured under **RWP open-field**
 mobility, flagged *optimistic* — but polleneus's real deployment is a **gathering** (a clustered

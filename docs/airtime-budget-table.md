@@ -1,0 +1,129 @@
+# polleneus — Scale: the airtime budget (beside the storage table)
+
+**Roadmap:** P0 (*re-scope & measure*) · **Parent design:** [polleneus v0.5 §11](superpowers/specs/2026-06-25-polleneus-design.md#11-scale--airtime-budget-beside-the-storage-table)
+· **Generated from:** `sim/` `airtime-knee` apparatus (seed 12345; see *Reproduce*).
+
+> ⚠️ **Every number here is an UPPER BOUND on real-world circulation.** The simulator idealizes the
+> radio (unit-disk links, single-snapshot contention, no retransmission), models set-reconciliation
+> overhead as **zero**, and the collision steepness **β is an uncalibrated free parameter**. Read these
+> as *"the apparatus can detect an airtime knee when one exists,"* **not** as measured BLE performance.
+> The field/USRP number is still owed (see [`superpowers/release-blockers.md`](superpowers/release-blockers.md) B2).
+
+## Why this table exists — the re-scope
+
+The intuitive scale wall for a store-and-flood messenger is **storage**: *"won't every phone fill up?"*
+The second red-team (v0.3) showed that framing is wrong. **Storage is comfortable; the binding
+constraint is *circulation* — how many distinct blobs the soup can actually re-share per minute over a
+few shared BLE advertising channels.** So we publish an **airtime-budget table beside the storage
+table**, and let the airtime one carry the honest scale claim.
+
+> **Blob size used throughout this doc = 256 B** (the simulator's modeled sealed-message size). The
+> parent spec §6 rounds to ~1 KB; **both tables below use 256 B so the comparison is apples-to-apples.**
+> Crucially the *ratio* that follows is **blob-size-invariant**: storage capacity (blobs held) and
+> circulation (blobs/min) both scale ~1/blob_size, so they cancel — at 1 KB the storage counts and the
+> circ/min would each be ~4× smaller and the gap below is unchanged.
+
+## 1. The storage table — capacity is *not* the wall
+
+At **256 B per sealed blob**, a **1–2 GB** working buffer holds **~4–8 million live blobs**, and
+absolute TTL + size caps keep the live set bounded.
+
+| Buffer | Blobs held (256 B each) | Binding? |
+|---|---|---|
+| 256 MB | ~1.0 M | no |
+| 1 GB | ~4.2 M | no |
+| 2 GB | ~8.4 M | no |
+
+## 2. The airtime table — what the soup actually moves
+
+Measured circulated-blobs/min vs crowd density over **3 shared advertising channels**, mobile (RWP)
+nodes, ALOHA **collision** model. The **linear** model (`1/(1+α·n)`, no turn-over) is the optimistic
+edge of a model-uncertainty band. *Measured: seed 12345, reps = 2, densities 2–6 (the gathering
+operating range — see the reproduce note for why this slice).*
+
+| Mean degree | Collision (blobs/min) | Linear band | Airtime utilization | Delivery | T50 (s) |
+|---|---|---|---|---|---|
+| 2 | 3,640 | 3,640 | 3.1 % | 1.00 | 9.2 |
+| 3 | 5,480 | 5,480 | 3.7 % | 1.00 | 4.8 |
+| 4 | 7,280 | 7,280 | 5.7 % | 1.00 | 5.8 |
+| 5 | 9,120 | 9,120 | 6.9 % | 1.00 | 6.0 |
+| 6 | 10,960 | 10,960 | 10.3 % | 1.00 | 9.8 |
+
+*Collision and linear **coincide exactly** in this range (the band has **zero width** until the
+high-density tail, where collision turns over and linear plateaus). The 95% CIs are also zero-width
+here — but only because the two reps produced identical circulation to sub-integer precision; this is a
+**degenerate reps = 2 interval, NOT a cross-seed stability claim.** (The airtime CI estimator's
+upper-bound clamp — which would mis-clamp this unbounded metric's upper CI at higher reps — is corrected
+in sibling **PR #13**, and lands on `main` when that PR is merged.)*
+
+**The gap is the point.** Capacity is **millions of blobs** but circulation is **thousands per
+minute** — a **~1000× gap** (≈ many hours to circulate one buffer's worth), and that ratio holds at any
+blob size. **You will never store-limit before you circulate-limit.**
+
+**What this range shows — and the honest non-claim.** Across the operating range, circulation rises
+~linearly with density (≈1.8 k blobs/min per unit degree), **delivery is complete (1.00) and airtime
+utilization stays low (3–10 %)** — so the soup is **not airtime-bound at these densities**, and the
+binding **publish-gate (§3) returns `publish = False · "no knee in range"`.** We therefore **do not**
+label this curve "airtime saturation"; here circulation is connectivity-/demand-bound. (Corroborating
+the approach to the wall: the contention-bound fraction of unmet demand already erodes from 1.00 to
+**0.85** by d = 6 — the apparatus sees the knee coming, just above the published range.)
+
+**Where the airtime wall is.** The collision turn-over (the airtime *knee*) sits in the **high-density
+tail above this range** — predicted at **n\* = 1/β = 10 co-channel contenders** (β = 0.1, uncalibrated).
+Its *existence* (the falsifiable prediction: collision turns over, linear plateaus) is pinned by the
+simulator's `test_collision_knee_linear_plateau_distinguishable` gate. We **cite** that gate rather than
+re-plot the tail here: sweeping the high-density regime is hours of compute (the engine is super-linear
+in crowd size) and produces no claim the gate doesn't already establish.
+
+## 3. How to read it — the publish-gate (the honesty guard)
+
+A figure is **only** labelled "airtime-saturation" if the binding publish-gate passes: there is a knee
+**AND** ≥50 % of unmet demand at the knee is contention-bound **AND** the **α = 0** (airtime-free)
+control does **NOT** turn over (else the turn-down is connectivity-caused) **AND** the **cap = ∞ /
+ttl = ∞** control **DOES still** turn over (the turn-down persisting when buffer/TTL are infinite is
+what rules out a buffer/TTL cause). Otherwise the curve is labelled **connectivity-/buffer-/TTL-limited**.
+For the swept range above the gate returns **`publish = False · "no knee in range"`** — exactly the
+honest outcome (no airtime wall in the operating densities; the wall is higher up).
+
+## 4. Provenance (where the inputs come from — all conservative / upper-bound)
+
+| Parameter | Value used | Source / rationale | Bias |
+|---|---|---|---|
+| `throughput_ideal` (goodput) | ~100 kbps (12.5 kB/s) | BLE 4.x, no Data-Length-Extension; BLE 5 2M PHY + DLE (~1.4 Mbps) is the optimistic sensitivity | conservative headline |
+| `t_setup` | 50 ms | BLE connection/handshake floor | — |
+| `t_setup_slope` | density-dependent | discovery latency grows with advertiser count | optimistic if under-set |
+| `β` (collision steepness) | **uncalibrated** (0.1) | predicted knee `n* = 1/β` reported up front; swept across the band | knee reported *as a function of* β |
+| `blob_size` | **256 B** | sim's modeled sealed message; parent §6 rounds to ~1 KB (circ/min ~4× lower at 1 KB; the storage/circulation *ratio* is blob-size-invariant) | optimistic vs 1 KB |
+| reconciliation overhead | **0** | set-reconciliation modeled as free (no IBLT/rateless cost) | **optimistic** — real cost only lowers the budget |
+| contact-duration dist. | RWP, open-field | tail is optimistic vs clustered human-contact traces | optimistic |
+
+## 5. The public claim this supports (re-scoped, honest)
+
+> **Undirected flooding buys anonymity and *caps* scale — and the cap is airtime, not storage.**
+> A phone can store ~millions of blobs but the soup circulates only ~thousands per minute (a ~1000×
+> gap, blob-size-invariant); at gathering densities that circulation is not yet airtime-bound, and the
+> airtime ceiling (collision turn-over) bites only as the crowd gets much denser. polleneus works at
+> **gathering scale** (stadium / protest / campus / blacked-out neighbourhood); a metropolis needs
+> bridges. The scale limit is a **cost bound**, **not** an impossibility and **not** a storage ceiling.
+> Shorter TTL, size caps, and rateless reconciliation (§8) stretch the feasible density.
+
+No claim of metropolis scale. No claim that capacity is the constraint. The number that travels with any
+scale statement is **circulated-blobs/min at the venue's density, labelled an upper bound.**
+
+## Reproduce
+
+The shipped preset sweeps **densities 2–18, reps 12** (the full curve through the high-density knee) —
+**expensive (hours: the engine is super-linear in crowd size):**
+
+```bash
+cd sim
+.venv/Scripts/python run.py --preset airtime-knee --reps 12 --seed 12345 --out out/airtime.csv
+```
+
+The **table above is the densities 2–6 slice at reps 2** — a reduced operating-range run for tractability
+(the preset's density grid is fixed at 2–18, so the published rows are the low-density portion of that
+curve; the production preset above regenerates the full curve including the knee). The CSV carries the
+full parameter manifest per row, so every point is reproducible. **For correct circ/min confidence
+intervals, regenerate on a `main` that includes PR #13** (the CI-clamp fix). See `sim/README.md`
+(*slice 2: airtime & mobile delivery*) for the model and the bias table for every idealization's
+direction. **Do not read these curves as measured BLE performance.**

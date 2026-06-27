@@ -241,7 +241,7 @@ The dominant unresolved threat is funded-adversary **device count**, structurall
 
 ## 11. Scale — airtime budget beside the storage table
 
-Storage (≈1 KB/blob): a 1–2 GB buffer holds 1–2M live blobs. **But the binding constraint is circulation, not capacity.** Ship an **airtime-budget table** beside the storage table: *live-blobs-that-can-circulate-per-minute* given 3 advertising channels, collision-vs-density, and chosen cadence — computed and field-measured. Rateless reconciliation (§8) is what makes achievable circulation track the buffer instead of collapsing below it.
+Storage (≈1 KB/blob): a 1–2 GB buffer holds 1–2M live blobs. **But the binding constraint is circulation, not capacity.** The **airtime-budget table** beside the storage table — *live-blobs-that-can-circulate-per-minute* given 3 advertising channels, collision-vs-density, and chosen cadence — is **published in [`docs/airtime-budget-table.md`](../../airtime-budget-table.md)** (P0): measured operating-range circulation + the binding publish-gate verdict; the field/USRP number is still owed (release-blockers B2). Rateless reconciliation (§8) is what makes achievable circulation track the buffer instead of collapsing below it.
 
 **The core trade, unchanged:** undirected flooding buys anonymity and caps scale. Gathering-scale works; metropolis needs bridges. Shorter TTL + size caps + reconciliation stretch feasible density.
 

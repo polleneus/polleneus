@@ -39,9 +39,14 @@ def _t_crit(df: int) -> float:
     return _T95.get(df, 1.96)
 
 
-def mean_ci(values):
+def mean_ci(values, clamp01=True):
     """Student-t 95% CI across the per-replication observations (the replication unit is
-    the SEED, not the message — small reps need t, not the normal z, or the band is too tight)."""
+    the SEED, not the message — small reps need t, not the normal z, or the band is too tight).
+
+    clamp01=True clamps the band to [0, 1] for RATIO metrics (delivery, rank-1 probability).
+    clamp01=False keeps the upper bound unclamped for unbounded NON-ratio metrics such as
+    circulated_per_min (clamping its upper CI to 1.0 would be nonsense — circ/min is in the
+    thousands). The lower bound is clamped to 0 either way: every metric here is non-negative."""
     arr = np.asarray(values, float)
     n = len(arr)
     if n == 0:
@@ -51,7 +56,9 @@ def mean_ci(values):
         return (m, m, m)
     se = float(np.std(arr, ddof=1)) / np.sqrt(n)
     t = _t_crit(n - 1)
-    return (m, max(0.0, m - t * se), min(1.0, m + t * se))
+    lo = max(0.0, m - t * se)
+    hi = m + t * se
+    return (m, lo, min(1.0, hi) if clamp01 else hi)
 
 
 def _seed_for(base_seed: int, di: int, rep: int) -> int:
@@ -243,7 +250,7 @@ def _airtime_arm(base_cfg, densities, reps):
             agg["starved"] += r["setup_starved_blobs"]
             agg["quant"] += r["quantization_blobs"]
             agg["contention"] += r["contention_blobs"]
-        m, lo, hi = mean_ci(circ)
+        m, lo, hi = mean_ci(circ, clamp01=False)  # circ/min is unbounded — do NOT clamp upper to 1.0
         rows.append({
             "density": d, "n": n, "circulated_per_min_mean": m, "ci_lo": lo, "ci_hi": hi,
             "utilization_mean": float(np.mean(util)), "delivery_mean": float(np.mean(deliv)),

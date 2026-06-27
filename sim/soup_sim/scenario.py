@@ -737,6 +737,35 @@ def anonymity_sweep(base_cfg, f_values, reps):
     return {"rows": rows, "mustlocalize": mustlocalize, "scope_tag": SCOPE_TAG, "headline_arm": headline_arm}
 
 
+def origination_cover_sweep(base_cfg, counts, f=0.7, reps=2):
+    """Concurrent-origination ("free cover" / "chamber") experiment — see docs/originator-anonymity-limit.md §6.
+    Sweep the number of concurrent originations in the window. Per count, measure:
+      - blob_known_rank1 = mean(true source ranked #1 on the TARGET blob's OWN hearings) — the STRONG
+        adversary that can identify which byte-uniform blob is the target; expected ~flat (cover useless).
+      - distinct_origs A(W) = distinct originators in the window (the blob-blind anonymity set).
+      - blob_blind_rank1 = 1/A(W) — the adversary knows only the timing WINDOW, not which blob is the
+        target; expected to FALL toward 1/N as the venue gets busier. This is the honest free-cover floor
+        (no spatial prior; a region-targeting blob-blind adversary does better — see the doc caveat).
+    Deterministic by master_seed. Every number is an UPPER BOUND on anonymity."""
+    rows = []
+    for ci, c in enumerate(counts):
+        known, aw = [], []
+        for rep in range(reps):
+            cfg = replace(base_cfg, n_messages=c, master_seed=_seed_for(base_cfg.master_seed, ci, rep))
+            art = _run_one_anonymity(cfg)
+            recv = place_receivers(cfg, f, "uniform", cfg.rng(4))
+            res, _u, _t = _score_arm(art, recv, cfg, cfg.rng(6))
+            if res:
+                known.append(float(np.mean([r["rank"] == 0 for r in res])))
+            aw.append(len({src for (_bid, src, _cr, _ttl) in art["cohort"]}))
+        A = float(np.mean(aw))
+        rows.append({"n_orig": c, "blob_known_rank1": float(np.mean(known)) if known else float("nan"),
+                     "distinct_origs": A, "blob_blind_rank1": (1.0 / A) if A > 0 else float("nan")})
+    return {"rows": rows, "f": f, "scope_tag": (
+        "[FREE-COVER: blob-blind 1/A(W) is the no-spatial-prior floor; blob-known adv unaffected by "
+        "cover; persistent device-fingerprinted sender NOT helped (multi-session). UPPER BOUND.]")}
+
+
 _DEFENSE_ARMS = {
     "baseline":         dict(mixing_lambda=0.0, originate_gate_relays=0),
     "mixing":           dict(originate_gate_relays=0),                  # keep base_cfg.mixing_lambda

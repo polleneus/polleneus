@@ -1,139 +1,130 @@
-"""P2 PR-2: origination defenses — venue-wide cover floor (mixed-graph estimator) + probabilistic license.
+"""P2 PR-2 (spec v0.4): origination defenses — venue-wide cover floor scored by the WHICH-ROOT,
+timing-aware adversary (+ the grown-candidate-null honesty control) + the probabilistic license.
 
-Tiny/fast tests (the engine is super-linear in crowd size — every dummy is an extra propagating blob,
-so all configs here are bounded). The slow, powered measurement lives behind @pytest.mark.slow.
+The round-2 "mixed-graph" estimator was proven a denominator artifact (it scored the real blob's own
+hearings and merely enlarged the candidate list; a non-emitting padding null reproduced the whole
+"credit"). These tests pin that artifact so it can never return, and exercise the which-root metric.
+
+Tiny/fast (the engine is super-linear in crowd size — every dummy is an extra propagating blob).
 """
 import numpy as np
 import pytest
 from dataclasses import replace
 from soup_sim.config import Config
 from soup_sim.scenario import (
-    _run_one_anonymity, _mixed_graph_score_arm, license_release_time, license_liveness,
-    origination_defense_sweep, COVER_BLOB_BASE,
+    _run_one_anonymity, _which_root_score_arm, _dummy_created,
+    license_release_time, license_liveness, origination_defense_sweep, COVER_BLOB_BASE,
 )
 from soup_sim.adversary import place_receivers
 from soup_sim.anonymity import origination_defense_gate, MIN_INTERSECTION_SIZE
 
 
 def tiny(**kw):
-    d = dict(n=14, width=40.0, height=40.0, radius=8.0, boundary="torus", mobility="rwp",
-             speed_min=1.5, speed_max=1.5, dt=1.0, ttl=20.0, buffer_cap=80, throughput_ideal=1e9,
+    d = dict(n=16, width=44.0, height=44.0, radius=9.0, boundary="torus", mobility="rwp",
+             speed_min=1.5, speed_max=1.5, dt=1.0, ttl=20.0, buffer_cap=120, throughput_ideal=1e9,
              alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=4.0, measure_window=12.0,
-             drain=4.0, n_messages=12, seen_margin=40.0, master_seed=5, adversary_range_mult=1.0)
+             drain=4.0, n_messages=14, seen_margin=40.0, master_seed=5, adversary_range_mult=1.0,
+             cover_timing_window=12.0)
     d.update(kw)
     return Config(**d)
 
 
-def _mixed(cfg, f=0.7):
+def _which(cfg, f=0.7, delta_t=None, **kw):
     art = _run_one_anonymity(cfg)
     recv = place_receivers(cfg, f, "uniform", cfg.rng(4))
-    res, n_emit, undet, total = _mixed_graph_score_arm(art, recv, cfg, cfg.rng(6))
+    dt = cfg.cover_timing_window if delta_t is None else delta_t
+    res = _which_root_score_arm(art, recv, cfg, cfg.rng(6), dt, **kw)
     rank1 = float(np.mean([r["rank"] == 0 for r in res])) if res else 0.0
-    rand1 = float(np.mean([r["rand_rank"] == 0 for r in res])) if res else 0.0
-    return {"art": art, "res": res, "n_emit": n_emit, "rank1": rank1, "rand1": rand1, "total": total}
+    K = float(np.mean([r["K"] for r in res])) if res else 0.0
+    coinc = float(np.mean([r["n_coincident"] for r in res])) if res else 0.0
+    return {"art": art, "res": res, "rank1": rank1, "K": K, "coincident": coinc}
 
 
 # --- bit-identity OFF -------------------------------------------------------------------------------
 
 def test_cover_off_is_bit_identical_and_dormant():
-    # cover_rate=0 + license off -> NO dummy roots injected, NO new RNG, deterministic, no 20M ids.
     a = _run_one_anonymity(tiny())
     b = _run_one_anonymity(tiny())
     assert a["acquired"] == b["acquired"] and a["delivery"] == b["delivery"]      # deterministic
     assert a["dummy_origins"] == {}                                               # no cover floor
     assert not any(bid >= COVER_BLOB_BASE for (_n, bid) in a["acquired"])         # no dummy ids leaked in
-    # turning the cover floor ON actually changes the run (feature wired, not a silent no-op)
-    on = _run_one_anonymity(tiny(cover_rate=0.3))
-    assert len(on["dummy_origins"]) > 0 and on["acquired"] != a["acquired"]
+    on = _run_one_anonymity(tiny(cover_rate=0.4))
+    assert len(on["dummy_origins"]) > 0 and on["acquired"] != a["acquired"]       # cover ON changes the run
 
 
-def test_cover_dummies_are_distinct_emitter_nodes_namespace():
+# --- THE round-2 artifact, pinned: the grown-candidate-null reproduces a "drop" with ZERO dummies ---
+
+def test_grown_candidate_null_reproduces_drop_with_zero_dummies():
+    # Pad the cover-OFF candidate set with NON-emitting nodes (zero dummies). The which-root rank-1 falls
+    # purely from denominator size — this IS the artifact the gate must subtract, so it must be REAL here.
+    m1 = _which(tiny(cover_rate=0.0))                                             # natural K=1 -> rank1=1.0
+    m_pad = _which(tiny(cover_rate=0.0), pad_to=12, pad_rng=tiny().rng(9))        # pad to 12 non-emitters
+    assert m1["K"] == 1.0 and m1["rank1"] == 1.0                                  # lone emitter trivially caught
+    assert m_pad["K"] > 8 and m_pad["rank1"] < m1["rank1"]                        # denominator alone lowers rank-1
+
+
+def test_which_root_candidate_is_emitters_only_not_arbitrary_nodes():
+    # Without padding, the candidate set is ONLY the true source + time-coincident DUMMY emitters — a
+    # non-emitting node is never a which-root suspect (no observed root points to it).
+    m = _which(tiny(cover_rate=0.4))
+    assert m["coincident"] >= 1                                                   # real coincident emitters exist
+    assert m["K"] in (m["coincident"], m["coincident"] + 1)                      # = src + distinct coincident nodes
+
+
+# --- timing-aware mechanism: widening Δt admits more plausibly-real dummies -------------------------
+
+def test_timing_window_admits_more_dummies_as_delta_widens():
+    narrow = _which(tiny(cover_rate=0.5), delta_t=2.0)
+    wide = _which(tiny(cover_rate=0.5), delta_t=12.0)
+    assert wide["coincident"] >= narrow["coincident"]                            # wider ±Δt -> more plausibly-real
+    assert wide["coincident"] > 0                                                # the mechanism is live
+
+
+def test_dummy_namespace_and_emitters_are_real_nodes():
     on = _run_one_anonymity(tiny(cover_rate=0.5))
     assert all(bid >= COVER_BLOB_BASE for bid in on["dummy_origins"])             # disjoint namespace
-    assert all(0 <= node < 14 for node in on["dummy_origins"].values())           # emitted by real nodes
+    assert all(0 <= node < 16 for node in on["dummy_origins"].values())
+    created = _dummy_created(on, tiny(cover_rate=0.5))
+    assert all(c >= tiny().warmup - 1e-9 for c in created.values())              # emitted within the window
 
 
-# --- the mixed-graph estimator: must-localize cover-OFF, and the metric MOVES with cover -------------
+# --- the gate: credit ONLY the increment above the grown-candidate-null -----------------------------
 
-def test_mixed_graph_localizes_cover_off_nonvacuous():
-    # cover-OFF the mixed-graph estimator must localize the true node BETTER than a random guess among
-    # the distinct emitter nodes, over a NON-VACUOUS candidate set (>1 distinct emitter) — else the
-    # whole cover comparison is vacuous (the round-2 must-localize requirement).
-    m = _mixed(tiny())
-    assert m["n_emit"] > 1                                  # candidate set is real, not a single node
-    assert m["rank1"] > m["rand1"]                          # localizes better than chance among nodes
-    assert m["rank1"] >= 2.0 / m["n_emit"]                  # a real signal, not the 1/|E| floor
-
-
-def test_metric_moves_with_cover_not_structurally_blind():
-    # THE round-2 fix, pinned: the true-node rank-1 must MOVE as cover_rate rises (the estimator is NOT
-    # structurally blind to the cover floor). Cover adds DISTINCT emitter nodes and the rank-1 drops.
-    off = _mixed(tiny(cover_rate=0.0))
-    on = _mixed(tiny(cover_rate=0.8))
-    assert on["n_emit"] > off["n_emit"]                     # cover added distinct candidate NODES
-    assert on["rank1"] < off["rank1"]                       # ...and the true-node rank-1 dropped (moved)
-
-
-# --- distinct-node co-location control: the v1 1/K own-root trap cannot return -----------------------
-
-def test_candidate_set_is_distinct_nodes_never_root_count():
-    # the candidate set / random floor is over DISTINCT EMITTER NODES (<= n), never the number of ROOTS
-    # (blobs). With a heavy cover floor there are FAR more roots than nodes; distinct_emitters must stay
-    # bounded by n, and no message's rank may exceed the distinct-emitter count.
-    c = tiny(cover_rate=1.0)
-    m = _mixed(c)
-    assert m["n_emit"] <= c.n                               # distinct NODES, not roots
-    assert len(m["art"]["dummy_origins"]) > m["n_emit"]     # far more roots than distinct nodes
-    assert all(r["rank"] < m["n_emit"] for r in m["res"])   # rank is AMONG the distinct emitter nodes
-
-
-def test_distinct_node_gate_rejects_colocated_own_root_tie():
-    # the gate's NEW co-location control: a rank-1 "drop" with NO growth in distinct candidate NODES is
-    # an own-root/co-located tie artifact (the v1 1/K trap) and must be REJECTED even though it would
-    # survive the TTL=inf control and look material.
-    v = origination_defense_gate(baseline_rank1=0.30, defended_rank1=0.05, mustlocalize_ok=True,
-                                 distinct_emitters_cover_on=8.0, distinct_emitters_cover_off=8.0,
+def test_gate_null_verdict_when_cover_equals_padding():
+    # cover ~= null (increment ~0) -> NULL, NOT credited (the round-2 artifact is subtracted out).
+    v = origination_defense_gate(null_rank1=0.16, cover_rank1=0.19, mustlocalize_ok=True,
+                                 credited_increment=-0.03, cover_off_rank1=1.0,
                                  timing_only_gain_survives=True, intersection_size=100)
-    assert v["credited"] is False and "artifact" in v["label"].lower()
-    # ...but the SAME drop WITH genuine distinct-node growth (cover from OTHER nodes) is credited.
-    v2 = origination_defense_gate(baseline_rank1=0.30, defended_rank1=0.05, mustlocalize_ok=True,
-                                  distinct_emitters_cover_on=20.0, distinct_emitters_cover_off=8.0,
-                                  timing_only_gain_survives=True, intersection_size=100)
-    assert v2["credited"] is True
+    assert v["credited"] is False and "null" in v["label"].lower()
 
 
-def test_origination_gate_retains_slice3_controls():
-    # must-localize fail -> inconclusive; message-dropping (dies at TTL=inf) -> not credited; tiny
-    # intersection -> inconclusive; no material drop -> not credited.
-    assert origination_defense_gate(0.30, 0.05, False, 20.0, 8.0, True, 100)["credited"] is False
-    g = origination_defense_gate(0.30, 0.05, True, 20.0, 8.0, False, 100)
-    assert g["credited"] is False and "ttl=inf" in g["label"].lower()
-    assert origination_defense_gate(0.30, 0.05, True, 20.0, 8.0, True, 5)["credited"] is False  # < MIN_INTERSECTION_SIZE
-    assert origination_defense_gate(0.30, 0.28, True, 20.0, 8.0, True, 100)["credited"] is False  # no material drop
+def test_gate_credits_only_a_material_increment_above_null():
+    # a genuine increment above the null (cover beats padding by a material margin) IS credited.
+    v = origination_defense_gate(null_rank1=0.40, cover_rank1=0.10, mustlocalize_ok=True,
+                                 credited_increment=0.30, cover_off_rank1=1.0,
+                                 timing_only_gain_survives=True, intersection_size=100)
+    assert v["credited"] is True
+    # ...but must-localize fail -> inconclusive; TTL=inf undo -> not credited; tiny intersection -> inconclusive.
+    assert origination_defense_gate(0.40, 0.10, False, 0.30, 1.0, True, 100)["credited"] is False
+    assert origination_defense_gate(0.40, 0.10, True, 0.30, 1.0, False, 100)["credited"] is False
+    assert origination_defense_gate(0.40, 0.10, True, 0.30, 1.0, True, 5)["credited"] is False
 
 
-# --- the probabilistic, time-bounded license: never deadlocks + cadence-invariant -------------------
+# --- the probabilistic, time-bounded license: never deadlocks + cadence-invariant ------------------
 
 def test_license_never_deadlocks_and_ceils_at_T():
     rng = np.random.default_rng(0)
-    # floor>0, NO relays (fully isolated/jammed) -> still fires, always within [t0, t0+T]
     for _ in range(50):
-        t = license_release_time(t0=3.0, T=10.0, floor=0.15, relay_event_times=[],
-                                 rng=rng, novelty_gain=0.0)
+        t = license_release_time(t0=3.0, T=10.0, floor=0.15, relay_event_times=[], rng=rng, novelty_gain=0.0)
         assert 3.0 <= t <= 13.0 + 1e-9
-    # floor=0 but T>0 -> the hard ceiling still fires by t0+T (deadlock-free)
-    assert license_release_time(0.0, 10.0, 0.0, [], np.random.default_rng(1)) == 10.0
-    # off (floor=0, T=0) -> immediate, no license
-    assert license_release_time(5.0, 0.0, 0.0, [], np.random.default_rng(1)) == 5.0
+    assert license_release_time(0.0, 10.0, 0.0, [], np.random.default_rng(1)) == 10.0   # ceiling fires
+    assert license_release_time(5.0, 0.0, 0.0, [], np.random.default_rng(1)) == 5.0     # off -> immediate
 
 
 def test_license_liveness_deadlock_free_and_cadence_invariant():
     out = license_liveness(tiny(license_floor=0.2, license_max_latency_T=10.0), reps=30)
-    assert out["deadlock_free"] is True                     # every release lands by T
-    assert out["isolated_fires_by_T"] is True               # the jammed target is never silent
-    assert out["cadence_invariant"] is True                 # isolation oracle closed
-    assert out["max_release"] <= out["T"] + 1e-9
-    # novelty raises p -> the CONNECTED node fires sooner, but BOTH are bounded (liveness, not leak)
+    assert out["deadlock_free"] is True and out["isolated_fires_by_T"] is True
+    assert out["cadence_invariant"] is True and out["max_release"] <= out["T"] + 1e-9
     assert out["mean_release_connected"] <= out["mean_release_isolated"] + 1e-9
 
 
@@ -141,41 +132,37 @@ def test_license_liveness_deadlock_free_and_cadence_invariant():
 
 def test_origination_defense_sweep_structure_and_determinism():
     base = tiny()
-    a = origination_defense_sweep(base, cover_rates=[0.0, 0.5], f=0.7, reps=1)
-    b = origination_defense_sweep(base, cover_rates=[0.0, 0.5], f=0.7, reps=1)
-    assert a["arms"] == b["arms"]                           # deterministic
+    a = origination_defense_sweep(base, cover_rates=[0.0, 0.4], f=0.7, reps=1)
+    b = origination_defense_sweep(base, cover_rates=[0.0, 0.4], f=0.7, reps=1)
+    assert a["arms"] == b["arms"] and a["verdict"] == b["verdict"]               # deterministic
     assert "UPPER BOUND" in a["scope_tag"] and "credited" in a["verdict"]
-    assert [arm["cover_rate"] for arm in a["arms"]] == [0.0, 0.5]
-    for arm in a["arms"]:
-        assert {"cover_rate", "rank1", "distinct_emitters", "cover_dummies_per_min",
-                "median_err_radii", "delivery"} <= set(arm)
-    # cover-ON adds distinct emitter nodes + airtime cost vs the cover-OFF baseline
-    assert a["arms"][1]["distinct_emitters"] >= a["arms"][0]["distinct_emitters"]
+    assert {"grown_candidate_null_rank1", "cover_off_rank1", "cover_on_rank1",
+            "credited_increment", "fixed_denominator", "delta_t"} <= set(a)
     assert a["arms"][1]["cover_dummies_per_min"] > 0.0 and a["arms"][0]["cover_dummies_per_min"] == 0.0
-    assert "mustlocalize" in a and "ttl_inf_rank1" in a
+    # the credited increment is exactly null - cover (credit ONLY above the grown-candidate-null)
+    assert abs(a["credited_increment"] - (a["grown_candidate_null_rank1"] - a["cover_on_rank1"])) < 1e-9
 
 
 def test_origination_defense_sweep_requires_cover_off_baseline():
     with pytest.raises(ValueError):
-        origination_defense_sweep(tiny(), cover_rates=[0.5, 0.8], f=0.7, reps=1)
+        origination_defense_sweep(tiny(), cover_rates=[0.4, 0.8], f=0.7, reps=1)
 
 
-# --- powered measurement (slow) ---------------------------------------------------------------------
+# --- powered measurement (slow): the HONEST verdict -------------------------------------------------
 
 def measure_cfg():
-    return Config(n=45, width=70.0, height=70.0, radius=9.0, boundary="torus", mobility="rwp",
-                  speed_min=1.5, speed_max=1.5, dt=1.0, ttl=30.0, buffer_cap=400, throughput_ideal=1e9,
-                  alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=8.0, measure_window=30.0,
-                  drain=10.0, n_messages=45, seen_margin=60.0, master_seed=11, adversary_range_mult=1.0)
+    return Config(n=40, width=60.0, height=60.0, radius=9.0, boundary="torus", mobility="rwp",
+                  speed_min=1.5, speed_max=1.5, dt=1.0, ttl=25.0, buffer_cap=400, throughput_ideal=1e9,
+                  alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=8.0, measure_window=24.0,
+                  drain=8.0, n_messages=40, seen_margin=60.0, master_seed=11, adversary_range_mult=1.0,
+                  cover_timing_window=8.0)
 
 
 @pytest.mark.slow
-def test_origination_defense_sweep_powered_verdict():
-    out = origination_defense_sweep(measure_cfg(), cover_rates=[0.0, 0.3, 0.8], f=0.7, reps=2)
-    # the mixed-graph estimator localizes cover-OFF (must-localize passes) so the verdict is a REAL
-    # credit/null decision, not the "failed must-localize" early return.
-    assert out["mustlocalize"]["ok"] is True
+def test_origination_cover_is_null_above_grown_candidate_null():
+    # THE honest verdict at scale: the venue-wide cover floor credits ~0 ABOVE the grown-candidate-null —
+    # real time+space-coincident dummy emitters are no more confusable than random padding (uniform floor).
+    out = origination_defense_sweep(measure_cfg(), cover_rates=[0.0, 0.4], f=0.7, reps=2)
     assert out["intersection"] >= MIN_INTERSECTION_SIZE
-    # the metric MOVES with cover at scale, and the verdict carries the distinct-node-controlled reason.
-    assert out["arms"][-1]["distinct_emitters"] > out["arms"][0]["distinct_emitters"]
-    assert "credited" in out["verdict"]
+    assert abs(out["credited_increment"]) < 0.15          # null reproduces ~the entire cover "drop"
+    assert out["verdict"]["credited"] is False            # NULL — denominator, not position cover

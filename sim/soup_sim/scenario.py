@@ -592,69 +592,79 @@ def _score_arm(art, receivers, cfg, rng_est, with_origin_vs_relay=False):
     return res, undetected, len(cohort)
 
 
-def _mixed_graph_score_arm(art, receivers, cfg, rng_est):
-    """The MIXED-GRAPH source estimator (P2 PR-2, the round-2 fix). Unlike _score_arm (handed ONE real
-    blob's hearings), this estimator sees the first-sighting graph of ALL roots in the window — the real
-    cohort originations PLUS every node's propagating cover dummies — and is NOT told which roots are
-    dummies. It scores each DISTINCT EMITTER NODE of the observed roots as the candidate true-originator
-    and returns, per real cohort message, the rank of its true emitter node AMONG THOSE DISTINCT EMITTER
-    NODES (rank 0 = caught exactly).
+def _dummy_created(art, cfg):
+    """Recover each dummy root's emission (created_at) time from the engine's acquire log
+    (inject set acquired[(emitter, bid)] = created_at)."""
+    acq = art["acquired"]
+    return {bid: acq.get((node, bid), cfg.warmup) for bid, node in art.get("dummy_origins", {}).items()}
 
-    Why this is the §10 source-estimator node-rank and NOT the banned 1/K:
-      * the candidate set is the set of distinct EMITTER NODES (the cover floor adds plausible-originator
-        NODES, supplied by OTHER nodes' roots — genuine position cover);
-      * a node that emits many dummies appears ONCE in the candidate set, so emitting more of one's OWN
-        roots cannot dilute the rank (the v1 own-root 1/K trap cannot return);
-      * each node is scored by the slice-3 reachability/first-spy inference over the REAL spread — it
-        rides the hear-time gradient a fixed-rate floor does not erase — so a floor the estimator can
-        separate by timing/reachability gives NO credit; only genuine confusion of WHICH NODE
-        originated lowers the true node's rank.
 
-    Returns (per-message records [{rank, bid, err_fh, rand_rank}], distinct_emitter_count, undetected,
-    total). The candidate set = distinct emitter NODES heard, so distinct_emitter_count is the size of
-    the physically-distinct candidate set the gate's co-location control checks for growth."""
+def _which_root_score_arm(art, receivers, cfg, rng_est, delta_t, t_star=None,
+                          pad_to=0, pad_per_bid=None, pad_rng=None):
+    """The WHICH-ROOT, timing-aware adversary (spec v0.4 §3). REPLACES the mixed-graph estimator, which
+    was PROVEN a denominator artifact: it still scored the REAL blob's own hearings and merely enlarged
+    the candidate-node list, so a non-emitting padding null reproduced the whole "credit" (cover moved
+    rank-1 by exactly 0). The faithful adversary models §10's actual threat:
+
+      * PER-ROOT emitter localization — each root (real or dummy) floods from its OWN emitter, so a dummy
+        enters the metric on equal footing with the real root only by being its OWN observed first-
+        sighting. The candidate emitters are therefore the EMITTER NODES of OBSERVED roots, never
+        arbitrary nodes (a non-emitting node has no root pointing to it ⇒ cannot be a which-root suspect).
+      * TIMING-AWARE real-vs-dummy uncertainty (the STRONG/conservative direction, to avoid OVER-crediting
+        cover) — the adversary knows the approximate real-origination time t* and treats as PLAUSIBLY-REAL
+        only roots whose (true) emission time lies within ±delta_t of t*. Knowing t* RULES OUT temporally-
+        distant dummies, so cover helps ONLY if OTHER emitters' dummies coincide in TIME (within ±delta_t)
+        AND in SPACE (beat the true source in the source-estimator) — genuine K-anonymity, not padding.
+      * METRIC = rank of the TRUE EMITTER among the DISTINCT EMITTERS of the plausibly-real root set,
+        scored by the best-of (first_spy, reachability) slice-3 estimator over the real event's hearings.
+
+    `pad_to` / `pad_per_bid` inject NON-emitting nodes into the candidate set (the GROWN-CANDIDATE-NULL
+    control): growing the denominator with zero real coincident emitters MUST credit ~0 — that pins the
+    round-2 artifact so it can never return. Returns per-message records [{bid, rank, K, n_coincident}]."""
     log, acquired, cohort = art["position_log"], art["acquired"], art["cohort"]
     dummy_origins = art.get("dummy_origins", {})
+    dummy_created = _dummy_created(art, cfg)
     adv_range = cfg.adversary_range_mult * cfg.radius
-    # origins + expiry over ALL roots (real cohort + cover dummies) -> the UNION first-sighting graph.
-    origins = {bid: src for (bid, src, _c, _t) in cohort}
-    origins.update(dummy_origins)
+    t_star = cfg.warmup if t_star is None else t_star
     expiry = {bid: created + ttl for (bid, _src, created, ttl) in cohort}
-    for bid, node in dummy_origins.items():
-        expiry[bid] = acquired.get((node, bid), cfg.warmup) + cfg.ttl      # dummy created_at recovered from acquire
+    for bid in dummy_origins:
+        expiry[bid] = dummy_created[bid] + cfg.ttl
     H = hearings(receivers, adv_range, log, acquired, expiry, cfg)
     by_blob = {}
     for (li, bid), t in H.items():
         by_blob.setdefault(bid, []).append((li, t))
-    # candidate set = DISTINCT EMITTER NODES of all HEARD roots (real + dummies); a node appears ONCE.
-    E = sorted({origins[bid] for bid in by_blob if bid in origins})
-    e_index = {node: i for i, node in enumerate(E)}
-    origin_t = cfg.warmup
-    reach_full = _reach_capped(_forward_reach_matrix(art["episodes"], log, receivers, origin_t,
+    reach_full = _reach_capped(_forward_reach_matrix(art["episodes"], log, receivers, t_star,
                                                      art["n"], adv_range, cfg))
-    reach_E = reach_full[E] if E else reach_full
-    res, undetected = [], 0
+    # plausibly-real DUMMY emitters: root HEARD and TRUE emission within ±delta_t of t* (the same set for
+    # every protected message, since all cohort originations share t*). Distinct NODES (a node emitting
+    # many coincident dummies appears ONCE — the own-root co-location guard, necessary-not-sufficient).
+    coincident = sorted({node for bid, node in dummy_origins.items()
+                         if bid in by_blob and abs(dummy_created[bid] - t_star) <= delta_t})
+    res = []
     for (bid, src, _created, _ttl) in cohort:
         mh = by_blob.get(bid)
-        if not mh or src not in e_index:
-            undetected += 1
+        if not mh:
             continue
+        # candidate emitters = the true source + the time-coincident dummy emitters (distinct nodes)
+        C = set([src]) | set(coincident)
+        target = (pad_per_bid or {}).get(bid, pad_to)         # grown-candidate-null: pad to a fixed denom
+        if target and pad_rng is not None and len(C) < target:
+            extra = [n for n in range(art["n"]) if n not in C]
+            pad_rng.shuffle(extra)                            # NON-emitting padding (zero coincident roots)
+            C |= set(extra[: target - len(C)])
+        C = sorted(C)
+        idx = {n: i for i, n in enumerate(C)}
         fh = min(t for _li, t in mh)
-        cand_all = _anon_pos_at(log, fh)
-        cand_E = cand_all[E]                                   # positions of the distinct emitter nodes
-        si = e_index[src]
+        cand_pos = _anon_pos_at(log, fh)[C]
+        reach_C = reach_full[C]
         best = None
         for method in ("first_spy", "reachability"):
-            est = estimate(method, mh, receivers, cand_E, rng_est, reach=reach_E)
-            rk = rank_of(est["scores"], si)
-            if best is None or rk < best["rank"]:
-                best = {"rank": rk, "bid": bid,
-                        "err_fh": localization_error(est["point"], cand_E[si], cfg)}
-        # random floor: a no-signal guess AMONG THE DISTINCT EMITTER NODES (floor = 1/|E|, never 1/N)
-        rand = estimate("random_guess", mh, receivers, cand_E, rng_est)
-        best["rand_rank"] = rank_of(rand["scores"], si)
-        res.append(best)
-    return res, len(E), undetected, len(cohort)
+            est = estimate(method, mh, receivers, cand_pos, rng_est, reach=reach_C)
+            rk = rank_of(est["scores"], idx[src])
+            if best is None or rk < best:
+                best = rk
+        res.append({"bid": bid, "rank": best, "K": len(C), "n_coincident": len(coincident)})
+    return res
 
 
 def _anon_aggregate(per_rep):
@@ -869,89 +879,86 @@ def license_liveness(cfg, reps, T=None, floor=None, novelty_gain=0.5, dt=1.0,
     }
 
 
-def _origination_arm_rep(cfg, f, cover_rate):
-    """One rep of one cover-floor arm: run the engine with the cover floor at `cover_rate`, score the
-    MIXED-GRAPH estimator at coverage f, and return the true-node rank-1 + the distinct-emitter count +
-    the cover airtime cost (dummies/min) for that rep."""
+def _origination_arm_rep(cfg, f, cover_rate, delta_t, pad_per_bid=None, pad_to=0):
+    """One rep of one cover-floor arm: run the engine with the cover floor at `cover_rate` and score the
+    WHICH-ROOT, timing-aware adversary at coverage f. Returns the per-bid which-root ranks (for paired,
+    same-bid comparison across arms), the true-emitter rank-1, the plausibly-real candidate count K, the
+    coincident-dummy-emitter count, and the venue-wide cover airtime (dummies/min). `pad_per_bid`/`pad_to`
+    drive the GROWN-CANDIDATE-NULL (non-emitting padding to a fixed denominator)."""
     c = replace(cfg, cover_rate=cover_rate)
     art = _run_one_anonymity(c)
     recv = place_receivers(c, f, "uniform", c.rng(4))
-    res, n_emit, undetected, total = _mixed_graph_score_arm(art, recv, c, c.rng(6))
+    res = _which_root_score_arm(art, recv, c, c.rng(6), delta_t, pad_to=pad_to,
+                                pad_per_bid=pad_per_bid, pad_rng=c.rng(9))
     rank1 = float(np.mean([r["rank"] == 0 for r in res])) if res else 0.0
-    rand1 = float(np.mean([r["rand_rank"] == 0 for r in res])) if res else 0.0
-    med_err = float(np.median([r["err_fh"] for r in res])) / c.radius if res else float("inf")
     n_dummies = len(art.get("dummy_origins", {}))
     minutes = c.measure_window / 60.0
-    return {"rank1": rank1, "rand1": rank1 > rand1, "rand_rank1": rand1, "distinct_emitters": float(n_emit),
-            "median_err_radii": med_err, "detected": len(res),
-            "cover_dummies_per_min": (n_dummies / minutes) if minutes > 0 else 0.0,
+    return {"rank1": rank1, "per_bid_rank": {r["bid"]: r["rank"] for r in res},
+            "per_bid_K": {r["bid"]: r["K"] for r in res},
+            "K": float(np.mean([r["K"] for r in res])) if res else 1.0,
+            "n_coincident": float(np.mean([r["n_coincident"] for r in res])) if res else 0.0,
+            "detected": len(res), "cover_dummies_per_min": (n_dummies / minutes) if minutes > 0 else 0.0,
             "delivery": art["delivery"], "t50": art["t50"]}
 
 
-def origination_defense_sweep(base_cfg, cover_rates, f, reps):
-    """The P2 PR-2 headline: does a VENUE-WIDE COVER FLOOR cut originator NODE-localization, measured by
-    the MIXED-GRAPH estimator that CAN see it (real+dummy roots, not told which is real)? Sweeps
-    `cover_rates` (cover_rates[0] MUST be 0.0 = the cover-OFF baseline) at coverage f. Per cover_rate, the
-    true-originator rank-1 AMONG DISTINCT EMITTER NODES + the distinct-emitter count + the venue-wide
-    cover airtime (dummies/min). Each cover-ON arm is credited ONLY through origination_defense_gate
-    (must-localize cover-OFF, material drop, distinct-node co-location control, TTL=inf timing-only
-    control, same-detected-set intersection). The license arm reports liveness (deadlock-freedom +
-    cadence-invariance), NOT a leak number. Deterministic by master_seed. Keep cover_rates/reps tiny —
-    the engine is super-linear in crowd size and every dummy is an extra propagating blob."""
+def origination_defense_sweep(base_cfg, cover_rates, f, reps, delta_t=None):
+    """The P2 PR-2 headline (spec v0.4): does a VENUE-WIDE COVER FLOOR cut the originator's position leak,
+    measured by the WHICH-ROOT, timing-aware adversary (localize EACH root from its OWN hearings; rank the
+    true emitter among the distinct emitters of the *plausibly-real* — within ±Δt of t* — root set)? Sweeps
+    `cover_rates` (cover_rates[0] MUST be 0.0). Crediting is gated on the increment ABOVE the mandatory
+    GROWN-CANDIDATE-NULL (cover-OFF padded to the cover-ON denominator with NON-emitting nodes): denominator
+    size alone must credit ~0, so only genuine time-AND-space-coincident dummy emitters earn credit.
+    Deterministic by master_seed. Keep cover_rates/reps tiny — the engine is super-linear in crowd size."""
     if not cover_rates or cover_rates[0] != 0.0:
         raise ValueError("origination_defense_sweep: cover_rates[0] must be 0.0 (the cover-OFF baseline)")
-    # per-arm aggregation over reps (paired seeds: every arm shares the rep's venue/cohort)
-    arms = []
+    delta_t = base_cfg.cover_timing_window if delta_t is None else delta_t
+    arms, head_per_reps = [], []
     for ci, cr in enumerate(cover_rates):
-        per = [_origination_arm_rep(replace(base_cfg, master_seed=_seed_for(base_cfg.master_seed, 0, rep)), f, cr)
-               for rep in range(reps)]
+        per = [_origination_arm_rep(replace(base_cfg, master_seed=_seed_for(base_cfg.master_seed, 0, rep)),
+                                    f, cr, delta_t) for rep in range(reps)]
+        if cr == cover_rates[-1]:
+            head_per_reps = per
         r1 = mean_ci([p["rank1"] for p in per])
         arms.append({
             "cover_rate": cr, "rank1": r1[0], "ci_lo": r1[1], "ci_hi": r1[2],
-            "distinct_emitters": float(np.mean([p["distinct_emitters"] for p in per])),
-            "median_err_radii": float(np.mean([p["median_err_radii"] for p in per])),
+            "K": float(np.mean([p["K"] for p in per])),
+            "n_coincident": float(np.mean([p["n_coincident"] for p in per])),
             "cover_dummies_per_min": float(np.mean([p["cover_dummies_per_min"] for p in per])),
             "detected": float(np.mean([p["detected"] for p in per])),
-            "beats_random": bool(np.mean([p["rand_rank1"] for p in per]) < np.mean([p["rank1"] for p in per])),
             "delivery": float(np.mean([p["delivery"] for p in per])),
-            "_detected_total": int(np.sum([p["detected"] for p in per])),
         })
-    base = arms[0]
-    # must-localize: the SAME mixed-graph estimator must localize the true node cover-OFF (slow source,
-    # dense coverage) — else a cover-on "drop" is meaningless. Uses the BEST estimator like the slice-3
-    # control; random floor = 1/(distinct emitter nodes) measured cover-OFF (never 1/N).
-    ctrl = replace(base_cfg, cover_rate=0.0, speed_min=0.5, speed_max=0.5,
-                   master_seed=_seed_for(base_cfg.master_seed, 999, 0))
-    art_c = _run_one_anonymity(ctrl)
-    recv_c = place_receivers(ctrl, 0.95, "uniform", ctrl.rng(4))
-    res_c, n_emit_c, _u, _t = _mixed_graph_score_arm(art_c, recv_c, ctrl, ctrl.rng(6))
-    ml_rank1 = float(np.mean([r["rank"] == 0 for r in res_c])) if res_c else 0.0
-    ml_err = float(np.median([r["err_fh"] for r in res_c])) / ctrl.radius if res_c else float("inf")
-    # capability floor = the venue 1/N (the standard slice-3 "can it localize the originator at all?"
-    # question — retained). The mixed-graph estimator ranks among the (smaller) distinct-emitter set, so
-    # clearing the 1/N margin here is a conservative capability check.
-    ml_floor = 1.0 / base_cfg.n
-    mustloc = mustlocalize_gate({"rank1": ml_rank1, "median_err_radii": ml_err}, ml_floor)
-    # TTL=inf timing-only control on the HEADLINE cover-on arm (the strongest cover): a drop that dies at
-    # TTL=inf was message-dropping, not position cover. Headline = the largest cover_rate.
-    head_cr = cover_rates[-1]
+    base, head = arms[0], arms[-1]
+    cover_rank1 = head["rank1"]
+    # GROWN-CANDIDATE-NULL: cover-OFF, pad each bid's candidate set to the SAME per-bid denominator the
+    # cover-ON headline arm used, with NON-emitting nodes (zero coincident roots). MUST credit ~0 — a
+    # rank-1 drop reproduced here is pure denominator inflation (the round-2 artifact), not position cover.
+    null_per = [_origination_arm_rep(replace(base_cfg, master_seed=_seed_for(base_cfg.master_seed, 0, rep)),
+                                     f, 0.0, delta_t, pad_per_bid=head_per_reps[rep]["per_bid_K"])
+                for rep in range(reps)]
+    null_rank1 = float(np.mean([p["rank1"] for p in null_per]))
+    # must-localize: capability of the SAME slice-3 estimators the which-root adversary reuses (first_spy/
+    # reachability), measured cover-OFF on a slow source under near-total coverage among ALL N candidates
+    # (the standard slice-3 control — a stronger denominator than the cover-on set). Decouples "is the
+    # estimator capable?" from "does cover beat the grown-candidate-null?" (the latter is the increment).
+    off = replace(base_cfg, cover_rate=0.0, mixing_lambda=0.0, originate_gate_relays=0, originate_gate_time=0.0)
+    mustloc = anonymity_sweep(off, [0.95], reps=1)["mustlocalize"]
+    # TTL=inf control on the headline cover arm (a drop that dies there was message-dropping, not cover).
     ttl_per = [_origination_arm_rep(replace(base_cfg, ttl=1e9, seen_margin=1e9,
-                                            master_seed=_seed_for(base_cfg.master_seed, 0, rep)), f, head_cr)
-               for rep in range(reps)]
+                                            master_seed=_seed_for(base_cfg.master_seed, 0, rep)),
+                                    f, cover_rates[-1], delta_t) for rep in range(reps)]
     ttl_rank1 = float(np.mean([p["rank1"] for p in ttl_per]))
     from .anonymity import DEFENSE_MIN_DROP, origination_defense_gate, ORIGINATION_DEFENSE_SCOPE_TAG
-    head = arms[-1]
-    timing_survives = ttl_rank1 <= base["rank1"] * (1.0 - DEFENSE_MIN_DROP)
-    inter = min(base["_detected_total"], head["_detected_total"])   # same-detected-set proxy (paired venues)
-    verdict = origination_defense_gate(base["rank1"], head["rank1"], mustloc["ok"],
-                                       head["distinct_emitters"], base["distinct_emitters"],
-                                       timing_survives, intersection_size=inter)
-    for a in arms:
-        a.pop("_detected_total", None)
+    # credited increment = how much MORE the real cover floor lowers rank-1 than non-emitting padding does
+    credited_increment = null_rank1 - cover_rank1
+    timing_survives = ttl_rank1 <= cover_rank1 + 1e-9          # cover drop not undone at TTL=inf
+    inter = int(np.sum([p["detected"] for p in head_per_reps]))
+    verdict = origination_defense_gate(null_rank1, cover_rank1, mustloc["ok"], credited_increment,
+                                       base["rank1"], timing_survives, intersection_size=inter)
     return {
-        "arms": arms, "headline_cover_rate": head_cr,
-        "mustlocalize": {**mustloc, "rank1": ml_rank1, "median_err_radii": ml_err,
-                         "distinct_emitters": float(n_emit_c), "random_floor": ml_floor},
+        "arms": arms, "headline_cover_rate": cover_rates[-1], "delta_t": delta_t,
+        "grown_candidate_null_rank1": null_rank1, "cover_off_rank1": base["rank1"],
+        "cover_on_rank1": cover_rank1, "credited_increment": credited_increment,
+        "fixed_denominator": head["K"], "mustlocalize": mustloc,
         "ttl_inf_rank1": ttl_rank1, "timing_survives": timing_survives, "intersection": inter,
         "verdict": verdict,
         "scope_tag": ORIGINATION_SCOPE_TAG, "defense_scope_tag": ORIGINATION_DEFENSE_SCOPE_TAG,

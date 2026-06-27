@@ -61,6 +61,11 @@ class Config:
     # the emitter's own key; real-vs-dummy hidden) so the first-sighting graph carries roots from many
     # distinct emitter nodes. 0 ⇒ off (no dummies injected, no RNG drawn — bit-identical). (§10 cover floor.)
     cover_rate: float = 0.0
+    # The WHICH-ROOT timing-aware adversary's ±Δt window (spec v0.4 §3): a dummy root is "plausibly-real"
+    # iff its emission time lies within ±this of the real-origination time t*. An ADVERSARY capability
+    # (post-hoc overlay), carried here so it travels in the manifest; 0 ⇒ only exactly-coincident roots are
+    # plausibly-real (the strongest adversary admits no temporally-distant dummies).
+    cover_timing_window: float = 0.0
     # Probabilistic, time-bounded origination license (liveness, NOT a leak reducer). Origination fires with
     # a per-step probability FLOORED at license_floor (>0 ⇒ never deadlocks) and CEILED to always fire by
     # license_max_latency_T. Measured post-hoc for deadlock-freedom + cadence-invariance. Both 0 ⇒ off.
@@ -144,6 +149,8 @@ class Config:
             raise ValueError("originate_gate_time must be >= 0")
         if self.cover_rate < 0.0:
             raise ValueError("cover_rate must be >= 0")
+        if self.cover_timing_window < 0.0:
+            raise ValueError("cover_timing_window must be >= 0")
         if not 0.0 <= self.license_floor <= 1.0:
             raise ValueError("license_floor must be in [0, 1]")
         if self.license_max_latency_T < 0.0:

@@ -59,6 +59,12 @@ class Config:
     n_clusters: int = 1                # number of cluster centers (gathering zones)
     cluster_sigma: float = 0.0         # intra-cluster Gaussian spread (arena units)
     cluster_leak: float = 0.0          # per-retarget prob. a node wanders uniformly (0=islands, 1=RWP)
+    # P1 set-reconciliation cost model (all default OFF ⇒ zero overhead, zero new RNG draws, bit-identical).
+    # Flat, density-scheduled airtime floor billed per funded contact-episode, INDEPENDENT of the symmetric
+    # difference and exact set sizes (inv 4). S(n)=recon_c0+ceil(recon_k*n); cost=recon_cell_bytes*S(n).
+    recon_cell_bytes: float = 0.0      # bytes per scheduled cell (8 = minisketch; 0 ⇒ OFF, exactly free)
+    recon_c0: float = 0.0              # per-episode floor cells (the dominant conservative term, Δ≈0 regime)
+    recon_k: float = 0.0               # cells per unit local density n (the density-scheduled term)
 
     def validate(self) -> None:
         if self.boundary not in ("torus", "walls"):
@@ -114,6 +120,12 @@ class Config:
             raise ValueError("originate_gate_relays must be >= 0")
         if self.originate_gate_time < 0.0:
             raise ValueError("originate_gate_time must be >= 0")
+        if self.recon_cell_bytes < 0.0:
+            raise ValueError("recon_cell_bytes must be >= 0")
+        if self.recon_c0 < 0.0:
+            raise ValueError("recon_c0 must be >= 0")
+        if self.recon_k < 0.0:
+            raise ValueError("recon_k must be >= 0")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

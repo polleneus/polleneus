@@ -21,6 +21,7 @@ self.episodes. Addressing-blind: knows only blob {id, created_at, ttl, size}; me
 delivery via on_deliver(node, blob, now). one_hop (test mutant) disables forwarding.
 """
 from __future__ import annotations
+import math
 import numpy as np
 from .cell_list import neighbor_pairs
 from .geometry import contact_interval, in_range
@@ -60,6 +61,10 @@ class Engine:
         # slice-3 anonymity overlay: per-step position log (default off ⇒ bit-identical)
         self.record_positions = record_positions
         self.position_log: list = []
+        # P1 set-reconciliation cost (default off ⇒ NO new branch executes ⇒ bit-identical, no RNG touched).
+        # Flat density-scheduled airtime floor billed per funded episode; deterministic, no sampling.
+        self._recon_on = cfg.recon_cell_bytes > 0
+        self.recon_capped_episodes = 0                                   # internal metric (not on the wire)
         # slice-3 PR-2 defenses (default off ⇒ bit-identical): Poisson mixing + receive-before-originate
         self._mixing_on = cfg.mixing_lambda > 0                          # no RNG touched when off ⇒ bit-identical
         self.forward_delay: dict[tuple[int, int], float] = {}            # (node, blob_id) -> Exp(lambda) hold
@@ -83,6 +88,11 @@ class Engine:
         if self._mixing_on:                                    # Poisson mixing on -> hold before forwardable
             self.forward_delay[(node_idx, blob_id)] = float(
                 self.cfg.rng(5, int(blob_id), int(node_idx)).exponential(1.0 / self.cfg.mixing_lambda))
+
+    def _recon_cells(self, n: int) -> float:
+        """Scheduled cell count S(n) = recon_c0 + ceil(recon_k * n), a pure function of the public
+        local-density proxy n — independent of the symmetric difference and exact set sizes (inv 4)."""
+        return self.cfg.recon_c0 + math.ceil(self.cfg.recon_k * max(0, n))
 
     def run_until(self, t_end: float) -> None:
         dt = self.cfg.dt
@@ -139,6 +149,20 @@ class Engine:
             st["setup_debt"] -= pay
             eff = self.budget.effective_goodput(n_contenders)
             st["credit"] += (exit_ - enter - pay) * eff / self.budget.blob_size
+            if self._recon_on and eff > 0.0 and not st.get("recon_billed"):
+                # P1: flat density-scheduled reconciliation floor, billed ONCE per funded episode BEFORE
+                # any blob transfer (so it genuinely competes for the same airtime, even if 0 blobs move).
+                # Bytes are Δ-independent (inv 4); the blob-equivalent is subtracted from this episode's
+                # credit so fewer blobs move; the novel-transfer cap is recorded at _close. Deterministic.
+                # (eff==0 ⇒ fully starved, nothing transmits anyway ⇒ bill nothing, keep utilization <= 1.)
+                # Cap the billed airtime to the post-setup contact time accrued this step (= credit·blob/eff)
+                # so the schedule never bills more airtime than the contact affords (utilization stays <= 1);
+                # a contact too short for the full schedule just recovers less (throughput loss, not bytes).
+                recon_bytes = self.cfg.recon_cell_bytes * self._recon_cells(st["n"])
+                recon_air = min(recon_bytes / eff, max(0.0, st["credit"]) * self.budget.blob_size / eff)
+                self.charged_airtime += recon_air               # same eff as accrual ⇒ <= usable airtime
+                st["credit"] -= recon_air * eff / self.budget.blob_size
+                st["recon_billed"] = True
             for (src, dst) in ((i, j), (j, i)):            # offered = distinct blobs the peer lacks (once/step)
                 st["offered"].update(bl.id for bl in self._offerable(src, self.buffers[dst].ids(), exit_))
             active.append((i, j, enter, exit_, st, eff))
@@ -149,6 +173,11 @@ class Engine:
             progressed = False
             for (i, j, enter, exit_, st, eff) in active:
                 allowed = int(st["credit"])
+                if self._recon_on:                         # circulation cap: <= floor(S(n)) NOVEL blobs/episode
+                    # deterministic sec.3 cap(n) throttle: the schedule recovers at most floor(S(n)) novel blobs
+                    # this episode; the rest waits for a future contact (a circulation haircut, NOT extra bytes).
+                    room = int(self._recon_cells(st["n"])) - len(st["served"])
+                    allowed = min(allowed, max(0, room))
                 if allowed <= 0:
                     continue
                 moved, served_ids = self._exchange(i, j, allowed, enter, exit_)
@@ -184,6 +213,8 @@ class Engine:
         self.offered_blobs += offered
         self.offered_airtime += self.budget.charged_airtime(offered, n) if offered else 0.0
         unmet = offered - served
+        if self._recon_on and unmet > 0 and served >= int(self._recon_cells(n)):
+            self.recon_capped_episodes += 1                # cap(n) bound this episode (internal metric only)
         if unmet > 0:                                      # classify UNMET blobs (blob-unit binding tallies)
             t0 = self.budget.t_setup_at(n)
             capacity = self.budget.effective_goodput(n) * max(0.0, dur - t0) / self.budget.blob_size

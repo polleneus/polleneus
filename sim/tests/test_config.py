@@ -39,6 +39,16 @@ def test_clustered_mobility_validates():
         base(mobility="clustered", speed_min=0.0, speed_max=1.0).validate()   # moving model needs speed>0
 
 
+def test_recon_fields_default_off_and_validate():
+    c = base()
+    assert c.recon_cell_bytes == 0.0 and c.recon_c0 == 0.0 and c.recon_k == 0.0   # default OFF
+    c.validate()                                                                   # ok at defaults
+    base(recon_cell_bytes=8.0, recon_c0=2.0, recon_k=0.5).validate()             # ok when ON
+    for field in ("recon_cell_bytes", "recon_c0", "recon_k"):
+        with pytest.raises(ValueError, match=field):
+            base(**{field: -1.0}).validate()
+
+
 def test_rng_substreams_independent_and_deterministic():
     c = base()
     a1 = c.rng(1).integers(0, 1_000_000, 5)

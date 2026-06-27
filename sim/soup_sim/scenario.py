@@ -113,6 +113,7 @@ def run_one(cfg) -> dict:
         "setup_starved_blobs": eng.setup_starved_blobs,
         "quantization_blobs": eng.quantization_blobs,
         "contention_blobs": eng.contention_blobs,
+        "recon_capped_episodes": eng.recon_capped_episodes,  # internal metric (cap(n) throttle; not on wire)
         "manifest": cfg.manifest(),
     }
 

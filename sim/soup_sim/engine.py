@@ -21,6 +21,7 @@ self.episodes. Addressing-blind: knows only blob {id, created_at, ttl, size}; me
 delivery via on_deliver(node, blob, now). one_hop (test mutant) disables forwarding.
 """
 from __future__ import annotations
+import math
 import numpy as np
 from .cell_list import neighbor_pairs
 from .geometry import contact_interval, in_range
@@ -60,6 +61,10 @@ class Engine:
         # slice-3 anonymity overlay: per-step position log (default off ⇒ bit-identical)
         self.record_positions = record_positions
         self.position_log: list = []
+        # P1 set-reconciliation cost (default off ⇒ NO new branch executes ⇒ bit-identical, no RNG touched).
+        # Flat density-scheduled airtime floor billed per funded episode; deterministic, no sampling.
+        self._recon_on = cfg.recon_cell_bytes > 0
+        self.recon_capped_episodes = 0                                   # internal metric (not on the wire)
         # slice-3 PR-2 defenses (default off ⇒ bit-identical): Poisson mixing + receive-before-originate
         self._mixing_on = cfg.mixing_lambda > 0                          # no RNG touched when off ⇒ bit-identical
         self.forward_delay: dict[tuple[int, int], float] = {}            # (node, blob_id) -> Exp(lambda) hold
@@ -83,6 +88,11 @@ class Engine:
         if self._mixing_on:                                    # Poisson mixing on -> hold before forwardable
             self.forward_delay[(node_idx, blob_id)] = float(
                 self.cfg.rng(5, int(blob_id), int(node_idx)).exponential(1.0 / self.cfg.mixing_lambda))
+
+    def _recon_cells(self, n: int) -> float:
+        """Scheduled cell count S(n) = recon_c0 + ceil(recon_k * n), a pure function of the public
+        local-density proxy n — independent of the symmetric difference and exact set sizes (inv 4)."""
+        return self.cfg.recon_c0 + math.ceil(self.cfg.recon_k * max(0, n))
 
     def run_until(self, t_end: float) -> None:
         dt = self.cfg.dt
@@ -130,15 +140,42 @@ class Engine:
                                   "setup_debt": self.budget.t_setup_at(n_contenders),
                                   "setup_floor": self.budget.t_setup_at(n_contenders),  # bill the RESERVED floor
                                   "n": n_contenders, "served": set(), "offered": set(),
-                                  "setup_billed": False}
+                                  "setup_billed": False,
+                                  # P1 reconciliation: a recon-debt amortized across funded steps like
+                                  # setup_debt (dt-invariant, never under-bills c0); recon_n freezes S(n)
+                                  # at first-bill so the schedule can't drift as st["n"] grows mid-episode.
+                                  "recon_debt": 0.0, "recon_billed": False, "recon_n": None,
+                                  "recon_capped": False}
             st = self.open[key]
             st["last_end"] = exit_
             st["n"] = max(st["n"], n_contenders)
             self.available_contact_time += (exit_ - enter)
             pay = min(exit_ - enter, st["setup_debt"])     # amortize the handshake floor once
             st["setup_debt"] -= pay
+            avail = exit_ - enter - pay                     # post-setup contact time accrued this step
             eff = self.budget.effective_goodput(n_contenders)
-            st["credit"] += (exit_ - enter - pay) * eff / self.budget.blob_size
+            st["credit"] += avail * eff / self.budget.blob_size
+            if self._recon_on and eff > 0.0 and not st["recon_billed"]:
+                # P1: flat density-scheduled reconciliation floor, billed per funded episode BEFORE any
+                # blob transfer (competes for the same airtime, even if 0 blobs move). Difference-independent
+                # (inv 4). Amortized as a recon-DEBT across funded steps EXACTLY like setup_debt, so the full
+                # c0 schedule is always eventually charged (no under-bill when the first step is short) and
+                # charged_airtime is dt-INVARIANT. Each step pays at most that step's post-setup contact time
+                # (avail) so utilization stays <= 1. S(n) is FROZEN at first-bill (recon_n) so the schedule
+                # can't drift as st["n"] grows. recon_billed flips only when the FULL debt is paid.
+                if st["recon_n"] is None:                   # first funded step: open the debt at S(recon_n)
+                    # NAMED OPTIMISTIC GAP: S(recon_n)/eff(recon_n) is frozen at the first funded step, so if
+                    # the crowd (n) grows mid-debt the schedule is UNDER-billed (cheaper than the realized
+                    # density). This is consistent with the once-per-episode frozen-schedule semantics; a
+                    # follow-up could re-price the unpaid debt at the current n. Direction is optimistic.
+                    st["recon_n"] = st["n"]
+                    st["recon_debt"] = self.cfg.recon_cell_bytes * self._recon_cells(st["recon_n"]) / eff
+                recon_pay = min(st["recon_debt"], avail)    # pay down at most this step's post-setup airtime
+                st["recon_debt"] -= recon_pay
+                self.charged_airtime += recon_pay           # same eff as accrual => <= usable airtime
+                st["credit"] -= recon_pay * eff / self.budget.blob_size
+                if st["recon_debt"] <= _EPS:
+                    st["recon_billed"] = True
             for (src, dst) in ((i, j), (j, i)):            # offered = distinct blobs the peer lacks (once/step)
                 st["offered"].update(bl.id for bl in self._offerable(src, self.buffers[dst].ids(), exit_))
             active.append((i, j, enter, exit_, st, eff))
@@ -149,9 +186,27 @@ class Engine:
             progressed = False
             for (i, j, enter, exit_, st, eff) in active:
                 allowed = int(st["credit"])
+                room = None
+                if self._recon_on:                         # circulation cap: <= floor(S(n)) NOVEL blobs/episode
+                    # deterministic sec.3 cap(n) throttle: the schedule recovers at most floor(S(n)) novel
+                    # blobs this episode; the rest waits for a future contact (a circulation haircut, NOT
+                    # extra bytes). SIMPLIFICATION vs the spec's cap(rho)=floor(S/overhead)-c0_reserve: we
+                    # take overhead=1 and c0_reserve=0 (the minisketch primary cost: 1 field element/cell,
+                    # the cheapest defensible upper bound) => cap = floor(S(n)). S(n) uses the FROZEN
+                    # recon_n (falls back to st["n"] only on the eff==0 path where nothing moves anyway).
+                    cap_n = st["recon_n"] if st["recon_n"] is not None else st["n"]
+                    room = int(self._recon_cells(cap_n)) - len(st["served"])
+                    allowed = min(allowed, max(0, room))
                 if allowed <= 0:
                     continue
                 moved, served_ids = self._exchange(i, j, allowed, enter, exit_)
+                if self._recon_on and room is not None and room > 0 and moved == room \
+                        and len(st["offered"]) > len(st["served"]) + moved:
+                    # cap GENUINELY bound: the exchange filled the cap (moved==room) AND deliverable offered
+                    # blobs still remain unserved after — so the cap, not the budget/backlog, clamped a
+                    # transfer that would otherwise have moved. (Set after _exchange, not on allowed>room:
+                    # allowed=int(credit) is the budget, not the deliverable backlog -> avoids false +ve.)
+                    st["recon_capped"] = True
                 if moved:
                     st["credit"] -= moved
                     st["served"].update(served_ids)
@@ -184,6 +239,8 @@ class Engine:
         self.offered_blobs += offered
         self.offered_airtime += self.budget.charged_airtime(offered, n) if offered else 0.0
         unmet = offered - served
+        if self._recon_on and st["recon_capped"]:          # set precisely in the fixpoint loop (no proxy)
+            self.recon_capped_episodes += 1                # cap(n) bound this episode (internal metric only)
         if unmet > 0:                                      # classify UNMET blobs (blob-unit binding tallies)
             t0 = self.budget.t_setup_at(n)
             capacity = self.budget.effective_goodput(n) * max(0.0, dur - t0) / self.budget.blob_size

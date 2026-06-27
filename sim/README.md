@@ -229,6 +229,49 @@ emitted (the headline is fused rank-1). The per-message estimator fused here is 
 best-of can), so K=1 is the single-event *reachability* rank-1 — **≤ PR-1's oracle-best-of headline**,
 i.e. the conservative (anonymity-favorable) direction.
 
+## Origination defenses (P2 — PR-2): venue-wide cover floor + probabilistic license
+PR-1/PR-2 measured the *cheap* defenses (mixing, hard gate) as **not credited**. This slice models what
+parent §10 actually sanctions against the source-localization adversary, with a **mixed-graph estimator
+that can SEE the cover** (the round-2 fix), all default-inert (`cover_rate=0`, license off ⇒ every prior
+number is bit-identical, zero new RNG on the off path):
+
+- **Venue-wide cover floor (the headline).** EVERY node emits byte-uniform **propagating** dummy roots
+  into the soup at Poisson rate `cover_rate`; the dummies are separate blob ids with distinct emitter
+  nodes that spread like any blob (real-vs-dummy hidden). So the first-sighting graph carries roots from
+  many distinct emitter NODES — a real origination becomes "one node among many plausible-originator
+  nodes" (genuine **position** cover, not the originator's own dummies).
+- **The MIXED-GRAPH source estimator.** Unlike the PR-1 estimator (handed one known blob's hearings),
+  this is given the union first-sighting graph of **all** roots (real + every node's dummies) and is
+  **not told which is real**. It scores each **distinct emitter NODE** as the candidate true-originator
+  (reusing the slice-3 reachability/first-spy inference over the real spread) and reports the **true
+  originator's rank-1 among those distinct emitter nodes**. This is **not the banned 1/K**: the candidate
+  set is distinct NODES (a node that emits many dummies appears once — no own-root dilution), and the
+  score is a real hear-time-gradient inference, so a floor the estimator can separate by timing gives no
+  credit; only genuine confusion of *which node* originated lowers the rank.
+- **Credit gate = the slice-3 controls + a NEW distinct-node co-location control.** Retains
+  must-localize (the **same** mixed-graph estimator must localize the true node cover-OFF), the TTL=∞
+  timing-only control (a drop that dies there was message-dropping), and the same-detected-set
+  intersection. **New:** a credited drop must come from **physically distinct candidate NODES** —
+  cover-ON must have grown the distinct-emitter set — so an originator's-own-root co-located tie (the v1
+  1/K trap, which would otherwise survive TTL=∞ and be falsely credited) is **rejected by construction**.
+- **Airtime cost (venue-wide).** The cover floor's dummies/min are reported and billed against the §11
+  budget — a floor that floods is **not free** and competes with real delivery.
+- **Probabilistic, time-bounded license** (`license_floor`>0, `license_max_latency_T`=T): origination
+  fires with probability floored >0 and ceiled to **always fire by T** — measured (post-hoc, no engine
+  perturbation) for **deadlock-freedom** (fires by T even fully isolated/jammed) + **cadence-invariance**
+  (a jammed target still fires by T ⇒ isolation-oracle closed). **Honest scope:** liveness only, **NOT a
+  leak reducer** (strictly weaker than the already-null hard gate) — no leak-drop claimed.
+
+**Measured result** (bounded run: n=45, f=0.7, 2 reps, `cover_rates`∈{0, 0.3, 0.8}): must-localize
+passes cover-OFF (mixed-graph rank-1 0.31, err 0.72 radii). The true-node rank-1 **moves** with cover —
+**0.49 (28 distinct emitters) → 0.37 (45 = all nodes)** — surviving the TTL=∞ control, so the gate
+**CREDITS a modest reduction** (distinct-node-controlled: 28→45 physically distinct candidates). But the
+honest caveats dominate: cover does **not** drive the estimator to the 1/45≈0.02 floor — the hear-time
+gradient still pins ~37% — and beyond saturation (all N emitting) more `cover_rate` buys **zero** extra
+protection at rising cost (846 → 2227 dummies/min, delivery 1.00 → 0.94). So the floor supplies *some*
+position cover but **cannot erase** source-localization, and the sparse/cost tension §10 named is real.
+Every number is an **UPPER BOUND** (single-event external-passive; intersection/insider deferred to PR-3).
+
 ## Clustered "gathering" mobility (slice 4 — PR-1)
 Every prior headline (delivery cliff, airtime knee, anonymity) was measured under **RWP open-field**
 mobility, flagged *optimistic* — but polleneus's real deployment is a **gathering** (a clustered

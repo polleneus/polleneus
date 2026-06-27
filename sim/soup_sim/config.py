@@ -55,6 +55,17 @@ class Config:
     mixing_lambda: float = 0.0         # Poisson mixing: Exp(lambda) forward hold per blob (0 ⇒ no hold)
     originate_gate_relays: int = 0     # receive-before-originate: relay >= G distinct foreign ids before emitting own
     originate_gate_time: float = 0.0   # ...and/or be alive >= T before emitting own
+    # P2 PR-2 origination defenses (all default OFF ⇒ engine bit-identical, zero new RNG on the off path).
+    # Venue-wide self-loop cover floor: EVERY node emits byte-uniform PROPAGATING dummy roots into the soup
+    # at this Poisson rate (per node, per measure-window-unit time). Dummies spread like any blob (sealed to
+    # the emitter's own key; real-vs-dummy hidden) so the first-sighting graph carries roots from many
+    # distinct emitter nodes. 0 ⇒ off (no dummies injected, no RNG drawn — bit-identical). (§10 cover floor.)
+    cover_rate: float = 0.0
+    # Probabilistic, time-bounded origination license (liveness, NOT a leak reducer). Origination fires with
+    # a per-step probability FLOORED at license_floor (>0 ⇒ never deadlocks) and CEILED to always fire by
+    # license_max_latency_T. Measured post-hoc for deadlock-freedom + cadence-invariance. Both 0 ⇒ off.
+    license_floor: float = 0.0         # per-step floor probability of releasing one's own origination (0 ⇒ off)
+    license_max_latency_T: float = 0.0  # hard ceiling: the origination ALWAYS fires by t0 + T (0 ⇒ off)
     # Slice-4 clustered "gathering" mobility (used only when mobility == "clustered")
     n_clusters: int = 1                # number of cluster centers (gathering zones)
     cluster_sigma: float = 0.0         # intra-cluster Gaussian spread (arena units)
@@ -131,6 +142,12 @@ class Config:
             raise ValueError("originate_gate_relays must be >= 0")
         if self.originate_gate_time < 0.0:
             raise ValueError("originate_gate_time must be >= 0")
+        if self.cover_rate < 0.0:
+            raise ValueError("cover_rate must be >= 0")
+        if not 0.0 <= self.license_floor <= 1.0:
+            raise ValueError("license_floor must be in [0, 1]")
+        if self.license_max_latency_T < 0.0:
+            raise ValueError("license_max_latency_T must be >= 0")
         if self.recon_cell_bytes < 0.0:
             raise ValueError("recon_cell_bytes must be >= 0")
         if self.recon_c0 < 0.0:

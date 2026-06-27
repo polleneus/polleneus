@@ -103,6 +103,40 @@ def defense_gate(baseline_rank1, defended_rank1, mustlocalize_ok, timing_only_ga
     return {"credited": True, "label": f"defense cuts exposure (rank-1 {baseline_rank1:.2f} -> {defended_rank1:.2f})"}
 
 
+# P2 PR-2: origination (venue-wide cover floor) defense gate
+MIN_COVER_DISTINCT_GROWTH = 1   # the cover floor must add >= this many NEW distinct emitter NODES vs cover-off
+ORIGINATION_DEFENSE_SCOPE_TAG = ("[cover-floor gain vs the single-event passive MIXED-GRAPH estimator "
+                                 "ONLY; NOT evaluated vs intersection (P2 PR-3)/insider; UPPER BOUND]")
+
+
+def origination_defense_gate(baseline_rank1, defended_rank1, mustlocalize_ok,
+                             distinct_emitters_cover_on, distinct_emitters_cover_off,
+                             timing_only_gain_survives, intersection_size=None) -> dict:
+    """Credit a venue-wide cover floor's reduction in originator NODE-localization only if it is REAL,
+    not an artifact. baseline_rank1 = the mixed-graph true-node rank-1 cover-OFF; defended_rank1 = the
+    same estimator cover-ON. Retains the slice-3 controls (must-localize, TTL=inf timing-only,
+    same-detected-set intersection) AND adds the P2 distinct-node co-location control:
+      * the credited drop must come from PHYSICALLY DISTINCT candidate emitter NODES — cover-ON must have
+        grown the distinct-emitter set (a floor of OTHER nodes' roots), never an originator's-own-root
+        co-located tie at one position (the v1 1/K trap, which would otherwise survive TTL=inf and be
+        falsely credited)."""
+    if intersection_size is not None and intersection_size < MIN_INTERSECTION_SIZE:
+        return {"credited": False, "label": f"inconclusive — intersection too small ({intersection_size} < {MIN_INTERSECTION_SIZE})"}
+    if not mustlocalize_ok:
+        return {"credited": False, "label": "inconclusive — mixed-graph estimator failed must-localize cover-OFF (a drop isn't meaningful)"}
+    # distinct-node co-location control FIRST: a drop with no growth in distinct candidate NODES is an
+    # own-root/co-located tie artifact (the v1 1/K trap), NOT position cover — reject before crediting.
+    if distinct_emitters_cover_on - distinct_emitters_cover_off < MIN_COVER_DISTINCT_GROWTH:
+        return {"credited": False, "label": f"NOT credited — co-located/own-root artifact (distinct emitter "
+                f"nodes {distinct_emitters_cover_off:.1f} -> {distinct_emitters_cover_on:.1f}, no distinct-node cover)"}
+    if defended_rank1 > baseline_rank1 * (1.0 - DEFENSE_MIN_DROP):
+        return {"credited": False, "label": f"no material gain (mixed-graph rank-1 {defended_rank1:.2f} vs cover-off {baseline_rank1:.2f})"}
+    if not timing_only_gain_survives:
+        return {"credited": False, "label": "NOT credited — gain dies at TTL=inf (message-dropping, not position cover)"}
+    return {"credited": True, "label": f"cover floor cuts originator node-localization "
+            f"(mixed-graph rank-1 {baseline_rank1:.2f} -> {defended_rank1:.2f} over distinct emitter nodes)"}
+
+
 def intersection_gate(fused_rank1, decoy_rank1, random_floor, mustlocalize_ok, n_samples,
                       fused_random_floor=None) -> dict:
     """Credit "intersection deanonymizes the persistent sender" only if the fused rank-1 crosses the

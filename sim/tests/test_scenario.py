@@ -36,6 +36,23 @@ def test_mean_ci_basic():
     assert abs(m - 0.5) < 1e-9 and lo < m < hi
 
 
+def test_mean_ci_clamp01_only_clamps_ratio_metrics():
+    """Regression: mean_ci hardcoded the upper bound as min(1.0, ...), which silently clamped
+    the CI of unbounded metrics (circulated_per_min, in the thousands) to 1.0. The default
+    (ratio metrics) must still clamp to [0,1]; clamp01=False must leave the upper bound alone."""
+    big = [3000.0, 4000.0, 5000.0]            # an unbounded count metric (e.g. circ/min)
+    # default clamp01=True clamps the upper bound to 1.0 (only correct for ratios)
+    _, _, hi_clamped = mean_ci(big, clamp01=True)
+    assert hi_clamped == 1.0
+    # clamp01=False must report the true upper bound, far above 1.0
+    m, lo, hi = mean_ci(big, clamp01=False)
+    assert abs(m - 4000.0) < 1e-9
+    assert hi > m > lo and hi > 1.0 and lo >= 0.0
+    # a ratio metric with clamp01=False still gets a non-negative lower bound
+    _, lo2, _ = mean_ci([0.0, 0.0, 0.1], clamp01=False)
+    assert lo2 >= 0.0
+
+
 def test_crossing_and_midpoint_recovers_synthetic_sigmoid():
     densities = list(np.linspace(2.0, 10.0, 17))
     d0 = 6.0

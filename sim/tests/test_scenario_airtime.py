@@ -44,6 +44,22 @@ def test_airtime_sweep_smoke_structure_and_determinism():
         assert 0.0 <= r["utilization_mean"] <= 1.0 + 1e-9
 
 
+def test_airtime_circ_per_min_ci_not_clamped_to_one():
+    """Regression for the mean_ci [0,1]-clamp bug at the INTEGRATION level (the unit test guards
+    mean_ci directly; this guards the airtime path where the bug actually surfaced). circulated_per_min
+    is an unbounded count rate (thousands-scale), so its ci_hi must never be clamped to 1.0 — the old
+    code produced inverted intervals like [3640, 1] (mean above its own upper bound)."""
+    out = airtime_sweep(tiny(), densities=[3.0, 6.0], reps=2)
+    saw_unbounded = False
+    for r in out["rows"]:
+        m, lo, hi = r["circulated_per_min_mean"], r["ci_lo"], r["ci_hi"]
+        assert lo <= m <= hi + 1e-9, f"inverted/clamped CI: mean {m} not within [{lo}, {hi}]"
+        if m > 1.0:
+            saw_unbounded = True
+            assert hi >= m and hi > 1.0, f"ci_hi {hi} clamped at/below 1.0 for circ/min mean {m}"
+    assert saw_unbounded, "vacuous: no circ/min row exceeded 1.0 in the tiny arena"
+
+
 @pytest.mark.slow   # realistic sweep (~minute-scale); excluded from default -m "not slow"
 def test_airtime_sweep_controls_and_determinism():
     dens = [3.0, 6.0, 9.0, 12.0, 16.0]

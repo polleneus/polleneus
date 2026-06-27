@@ -105,6 +105,7 @@ def run_one(cfg) -> dict:
         "stationary_ok": stationarity_ok(first, second, tol=0.15),
         # PR-2 airtime measurements
         "circulated_per_min": metrics.circulated_per_min(tx1 - tx0, cfg.measure_window),
+        "charged_airtime": eng.charged_airtime,       # absolute airtime billed (recon floor competes here)
         "utilization": metrics.utilization(eng.charged_airtime, eng.available_contact_time),
         "utilization_vs_offered": metrics.utilization_vs_offered(eng.charged_airtime, eng.offered_airtime),
         "t50": metrics.t50(),
@@ -282,6 +283,88 @@ def airtime_sweep(base_cfg, densities, reps):
     gate = binding_gate(knee, rows[ki]["binding"], a0_over, ct_over)
     return {"rows": rows, "alpha0_rows": a0_rows, "capttl_rows": ct_rows, "knee": knee, "gate": gate,
             "predicted_knee_contenders": 1.0 / base_cfg.beta if base_cfg.beta else None}
+
+
+def recon_compare_sweep(base_cfg, densities, reps, recon_cfg):
+    """Compare reconciliation OFF vs ON across a density sweep (spec §4 re-measure).
+
+    For each density, run a recon-OFF arm and a recon-ON arm (ON applies recon_cfg =
+    {recon_cell_bytes, recon_c0, recon_k}). Both arms use the SAME per-(density,rep) seeds
+    (_seed_for(master, di, rep), the _airtime_arm scheme) so they are PAIRED — identical mobility +
+    cohort — and the OFF arm is bit-identical to the plain airtime numbers. Deterministic by master_seed.
+
+    Per density returns, for BOTH arms: circ/min mean+CI (mean_ci, clamp01=False — circ/min is an
+    unbounded rate), served_blobs mean, charged_airtime mean, utilization mean, recon_capped_episodes
+    (sum over reps; always 0 for OFF), PLUS the haircut ratio circ_on_mean / circ_off_mean (the §4
+    headline; <1 means recon cost reduced circulation, ~1 means within reordering noise)."""
+    off_cfg = replace(base_cfg, recon_cell_bytes=0.0, recon_c0=0.0, recon_k=0.0)
+    on_cfg = replace(base_cfg, **recon_cfg)
+    rows = []
+    for di, d in enumerate(densities):
+        n = max(2, density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius))
+        arms = {}
+        for arm, cfg_arm in (("off", off_cfg), ("on", on_cfg)):
+            circ, served, charged, util, capped = [], [], [], [], 0
+            for rep in range(reps):
+                cfg = replace(cfg_arm, n=n, master_seed=_seed_for(base_cfg.master_seed, di, rep))
+                r = run_one(cfg)
+                circ.append(r["circulated_per_min"])
+                served.append(r["served_blobs"])
+                charged.append(r["charged_airtime"])
+                util.append(r["utilization"])
+                capped += r["recon_capped_episodes"]
+            m, lo, hi = mean_ci(circ, clamp01=False)   # circ/min is unbounded — never clamp upper to 1.0
+            arms[arm] = {
+                "circ_mean": m, "circ_ci_lo": lo, "circ_ci_hi": hi,
+                "served_mean": float(np.mean(served)),
+                "charged_mean": float(np.mean(charged)),
+                "util_mean": float(np.mean(util)),
+                "recon_capped_episodes": int(capped),
+            }
+        off, on = arms["off"], arms["on"]
+        haircut = (on["circ_mean"] / off["circ_mean"]) if off["circ_mean"] > 0 else float("nan")
+        rows.append({"density": d, "n": n, "off": off, "on": on, "haircut": haircut})
+    return rows
+
+
+def recon_sensitivity_band(base_cfg, density, reps, cell_bytes_list, k_list):
+    """Small 2-D (recon_cell_bytes x recon_k) sensitivity grid at ONE (saturated) density — the §4
+    2-parameter band, with β-knee discipline applied to BOTH uncalibrated axes. recon_c0 is taken from
+    base_cfg (a fixed per-episode floor). The OFF circ/min baseline is computed once (paired seeds) and
+    every (cell_bytes, k) cell reports its haircut = circ_on_mean / circ_off_mean. Deterministic.
+
+    Returns {"density", "n", "circ_off_mean", "cell_bytes_list", "k_list", "cells": [...]}, where each
+    cell is {"cell_bytes", "k", "circ_on_mean", "haircut", "recon_capped_episodes"}. Keep the grid small
+    (the engine is super-linear in crowd size)."""
+    n = max(2, density_to_n(density, base_cfg.width, base_cfg.height, base_cfg.radius))
+    # Precondition: a k=0 column with cell_bytes>0 needs base_cfg.recon_c0>0, else S(n)=0 (degenerate ON
+    # schedule) and Config.validate would raise mid-sweep. Fail early with a clear, actionable message.
+    if base_cfg.recon_c0 <= 0 and any(k == 0 for k in k_list) and any(cb > 0 for cb in cell_bytes_list):
+        raise ValueError("recon_sensitivity_band: base_cfg.recon_c0 must be > 0 to include a k=0 column "
+                         "(cell_bytes>0 with c0=0 and k=0 is a degenerate S(n)=0 schedule). "
+                         "Pass replace(base_cfg, recon_c0=<floor>).")
+
+    def _circ_mean(cfg_arm):
+        circ, capped = [], 0
+        for rep in range(reps):
+            cfg = replace(cfg_arm, n=n, master_seed=_seed_for(base_cfg.master_seed, 0, rep))
+            r = run_one(cfg)
+            circ.append(r["circulated_per_min"])
+            capped += r["recon_capped_episodes"]
+        return mean_ci(circ, clamp01=False)[0], int(capped)
+
+    off_cfg = replace(base_cfg, recon_cell_bytes=0.0, recon_c0=base_cfg.recon_c0, recon_k=0.0)
+    circ_off, _ = _circ_mean(off_cfg)
+    cells = []
+    for cb in cell_bytes_list:
+        for k in k_list:
+            on_cfg = replace(base_cfg, recon_cell_bytes=float(cb), recon_k=float(k))
+            circ_on, capped = _circ_mean(on_cfg)
+            haircut = (circ_on / circ_off) if circ_off > 0 else float("nan")
+            cells.append({"cell_bytes": float(cb), "k": float(k), "circ_on_mean": circ_on,
+                          "haircut": haircut, "recon_capped_episodes": capped})
+    return {"density": density, "n": n, "circ_off_mean": circ_off,
+            "cell_bytes_list": list(cell_bytes_list), "k_list": list(k_list), "cells": cells}
 
 
 def _anon_pos_at(log, t):

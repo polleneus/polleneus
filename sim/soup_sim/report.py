@@ -44,6 +44,56 @@ def airtime_to_csv_string(rows, manifest) -> str:
     return buf.getvalue()
 
 
+RECON_COMPARE_FIELDS = [
+    "density", "n",
+    "off_circ_mean", "off_ci_lo", "off_ci_hi", "off_served_mean", "off_charged_mean", "off_util_mean",
+    "on_circ_mean", "on_ci_lo", "on_ci_hi", "on_served_mean", "on_charged_mean", "on_util_mean",
+    "on_recon_capped_episodes", "haircut",
+]
+
+
+def recon_compare_to_csv_string(rows, manifest) -> str:
+    """One row per density: recon OFF arm + recon ON arm side-by-side + the haircut ratio
+    (circ_on_mean/circ_off_mean). Full param manifest travels per row (independently reproducible).
+    The OFF arm is bit-identical to the plain airtime numbers; the ON arm carries the recon schedule
+    in the manifest (param_recon_cell_bytes / param_recon_c0 / param_recon_k)."""
+    man = list(manifest.keys())
+    header = RECON_COMPARE_FIELDS + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for r in rows:
+        off, on = r["off"], r["on"]
+        w.writerow([
+            r["density"], r["n"],
+            off["circ_mean"], off["circ_ci_lo"], off["circ_ci_hi"], off["served_mean"],
+            off["charged_mean"], off["util_mean"],
+            on["circ_mean"], on["circ_ci_lo"], on["circ_ci_hi"], on["served_mean"],
+            on["charged_mean"], on["util_mean"],
+            on["recon_capped_episodes"], r["haircut"],
+        ] + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
+RECON_BAND_FIELDS = ["cell_bytes", "k", "circ_on_mean", "haircut", "recon_capped_episodes"]
+
+
+def recon_band_to_csv_string(out, manifest) -> str:
+    """One row per (cell_bytes, k) cell of the 2-D sensitivity band at a single saturated density.
+    A leading comment carries the density / n / OFF circ baseline; haircut = circ_on_mean/circ_off_mean
+    per cell. Full param manifest per row (recon_c0 is fixed from the base cfg; cell_bytes/k vary)."""
+    man = list(manifest.keys())
+    header = RECON_BAND_FIELDS + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    buf.write(f"# recon sensitivity band @ density={out['density']} n={out['n']} "
+              f"circ_off_mean={out['circ_off_mean']:.3f}\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for c in out["cells"]:
+        w.writerow([c[k] for k in RECON_BAND_FIELDS] + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
 ANON_FIELDS = ["f", "arm", "realized_coverage", "rank1_prob", "ci_lo", "ci_hi",
                "median_err_firsthear", "median_err_origin", "p90_err", "p95_err",
                "anon_set_upper_bound", "unconditional_rank1", "undetected_fraction", "beats_random"]

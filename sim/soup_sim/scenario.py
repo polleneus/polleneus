@@ -20,6 +20,7 @@ from .anonymity import (localization_error, rank_of, anonymity_set_size, quantil
                         mustlocalize_gate, exposure_gate, defense_gate, intersection_gate,
                         SCOPE_TAG, DEFENSE_SCOPE_TAG, INTERSECTION_SCOPE_TAG, MIN_RELAY_DENSITY)
 from .geometry import dist2 as _dist2
+from . import token as _token
 
 
 def density_to_n(d: float, w: float, h: float, r: float) -> int:
@@ -846,3 +847,117 @@ def midpoint_with_ci(rows, rng, n_boot: int = 200):
     else:
         lo = hi = point
     return {"midpoint": point, "ci": (lo, hi)}
+
+
+# ---------------------------------------------------------------------------------------------------
+# P2 PR-1: token rate-limit harness (spec §3/§4). A POST-HOC overlay over the recorded contact graph.
+# It runs the engine ONLY to record episodes (no token logic in the engine ⇒ OFF-path bit-identical);
+# the soup.token overlay then meters slots/token per acceptance regime. Deterministic by master_seed.
+# ---------------------------------------------------------------------------------------------------
+TOKEN_SCOPE_TAG = ("[TOKEN RATE-LIMIT = §9 anchored-nf + epidemic gossip; device-count residual & "
+                   "seen-nf gossip airtime NOT modelled (optimistic); nf is a per-token pseudonym "
+                   "(handshake-layer linkability). Every slots/token is a LOWER BOUND on leak.]")
+
+# Pre-registered must-demonstrate gate: BROKEN slots/token must reach at least this fraction of the
+# realized distinct-acceptor count D at the tested density (not a bare ">1", which is trivial).
+TOKEN_BROKEN_FRACTION = 0.99
+
+
+def _run_one_token(cfg) -> dict:
+    """Minimal engine run that records the contact graph (episodes) for the token overlay. No token
+    logic touches the engine — this is the SAME engine path as every other slice, so OFF is bit-
+    identical. Background soup is injected so contacts are real flooding contacts (the holder always
+    has a novel forward to offer = the worst-case spend model). Returns episodes + giant-component
+    fraction (a diameter/percolation proxy) + n."""
+    cfg.validate()
+    mob = make_mobility(cfg, cfg.rng(0))
+    metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
+    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i)) for i in range(cfg.n)]
+    budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
+                           model=cfg.airtime_model, beta=cfg.beta,
+                           t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
+    eng = Engine(cfg, mob, buffers, budget, cfg.rng(1), on_deliver=metrics.on_deliver)
+    eng.run_until(cfg.warmup)
+    for blob, src, dst in make_cohort(cfg, inject_time=cfg.warmup, rng=cfg.rng(2)):
+        metrics.register(blob, src, dst)
+        eng.inject(blob, src)
+    eng.run_until(cfg.warmup + cfg.measure_window + cfg.drain)
+    eng.finalize()
+    giant = largest_component_fraction(mob.positions, cfg.radius, cfg.width, cfg.height, cfg.boundary)
+    return {"episodes": list(eng.episodes), "n": cfg.n, "giant": float(giant)}
+
+
+def token_rate_limit_sweep(base_cfg, densities, reps, mode, holder="static", Q=0,
+                           gossip_delay=0.0, n_tokens=1):
+    """Per-density slots/token for ONE acceptance regime (spec §4). For each density, run the engine
+    (recording episodes), pick the worst-case holder (max distinct acceptors D), and meter slots/token
+    under `mode`. `holder` selects the adversary mobility: 'static' (the whole venue static, holder
+    contacts its fixed D neighbours) or 'mobile' (the venue RWP — the §3 worst case, the holder can
+    outrun the gossip front). Q = per-PHY quota; gossip_delay = optional per-hop latency; n_tokens =
+    tokens presented (exercises the Q backstop). Deterministic by master_seed (paired seeds per
+    density across modes, so amplification is computed on the SAME venues).
+
+    Returns rows: per density {density, n, mode, holder, mean slots/token + CI, D_mean, residual_mean,
+    max_slots_per_phy_mean, giant_mean (diameter/percolation proxy), broken_gate_ok}.
+    """
+    if holder not in ("static", "mobile"):
+        raise ValueError("holder must be static|mobile")
+    mobility = "static" if holder == "static" else "rwp"
+    rows = []
+    for di, d in enumerate(densities):
+        n = max(2, density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius))
+        spt, Ds, resid, maxphy, giants = [], [], [], [], []
+        for rep in range(reps):
+            cfg = replace(base_cfg, n=n, mobility=mobility,
+                          master_seed=_seed_for(base_cfg.master_seed, di, rep))
+            art = _run_one_token(cfg)
+            eps, nn = art["episodes"], art["n"]
+            h = _token.pick_holder(eps, nn, cfg.warmup)
+            t0 = _token.first_spend_time(eps, h, cfg.warmup)
+            m = _token.slots_for_token(eps, h, t0, mode, phy_session_quota=Q,
+                                       gossip_delay=gossip_delay, n_tokens=n_tokens)
+            spt.append(m["slots_per_token"])
+            Ds.append(m["distinct_acceptors"])
+            resid.append(m["residual_acceptors"])
+            maxphy.append(m["max_slots_per_phy"])
+            giants.append(art["giant"])
+        mean, lo, hi = mean_ci(spt, clamp01=False)        # slots/token is an unbounded count
+        D_mean = float(np.mean(Ds))
+        # Pre-registered gate (density-honest): BROKEN must reach >= TOKEN_BROKEN_FRACTION * D.
+        broken_gate_ok = (mode == "broken" and mean >= TOKEN_BROKEN_FRACTION * D_mean and D_mean >= 1.0)
+        rows.append({
+            "density": d, "n": n, "mode": mode, "holder": holder,
+            "slots_per_token_mean": mean, "ci_lo": lo, "ci_hi": hi,
+            "D_mean": D_mean, "residual_mean": float(np.mean(resid)),
+            "max_slots_per_phy_mean": float(np.mean(maxphy)),
+            "giant_mean": float(np.mean(giants)),
+            "broken_gate_ok": bool(broken_gate_ok),
+        })
+    return rows
+
+
+def token_amplification(base_cfg, densities, reps, holder="static", gossip_delay=0.0):
+    """The headline (spec §4): the amplification slots/token(BROKEN) ÷ slots/token(GOSSIP), with BOTH
+    terms pinned (slots = distinct novel forwards to distinct acceptors; the denominator is whatever
+    the gossip leaves, NOT hard-clamped to 1). Also returns the anchored arm to SHOW the win comes
+    from the gossip step (BROKEN ≈ ANCHORED ≫ GOSSIP, §9.3). Paired seeds ⇒ same venues across arms.
+
+    Returns {"broken": rows, "anchored": rows, "gossip": rows, "amplification": [per-density ratios],
+    "holder": holder, "scope_tag": TOKEN_SCOPE_TAG, "broken_gate_ok": all-densities gate}.
+    """
+    broken = token_rate_limit_sweep(base_cfg, densities, reps, "broken", holder=holder)
+    anchored = token_rate_limit_sweep(base_cfg, densities, reps, "anchored", holder=holder)
+    gossip = token_rate_limit_sweep(base_cfg, densities, reps, "gossip", holder=holder,
+                                    gossip_delay=gossip_delay)
+    amp = []
+    for b, g in zip(broken, gossip):
+        ratio = (b["slots_per_token_mean"] / g["slots_per_token_mean"]
+                 if g["slots_per_token_mean"] > 0 else float("inf"))
+        amp.append({"density": b["density"], "broken": b["slots_per_token_mean"],
+                    "anchored": next(a["slots_per_token_mean"] for a in anchored
+                                     if a["density"] == b["density"]),
+                    "gossip": g["slots_per_token_mean"], "amplification": ratio,
+                    "giant_mean": b["giant_mean"]})
+    return {"broken": broken, "anchored": anchored, "gossip": gossip, "amplification": amp,
+            "holder": holder, "scope_tag": TOKEN_SCOPE_TAG,
+            "broken_gate_ok": bool(all(r["broken_gate_ok"] for r in broken))}

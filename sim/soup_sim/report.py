@@ -181,6 +181,27 @@ def cluster_to_csv_string(out, manifest) -> str:
     return buf.getvalue()
 
 
+TOKEN_FIELDS = ["density", "n", "mode", "holder", "slots_per_token_mean", "ci_lo", "ci_hi",
+                "D_mean", "residual_mean", "max_slots_per_phy_mean", "giant_mean", "broken_gate_ok"]
+
+
+def token_to_csv_string(rows, manifest, scope_tag) -> str:
+    """One row per density for ONE regime arm of the token rate-limit sweep. The scope/honesty tag
+    travels as a leading comment AND a column on every row (a comment alone is dropped by dataframe
+    readers — every slots/token number must stay tagged as a LOWER BOUND on the leak). The full param
+    manifest (incl. param_token_rate_limit_mode / param_phy_session_quota / param_gossip_delay) travels
+    per row so a result is independently reproducible from the file alone."""
+    man = list(manifest.keys())
+    header = TOKEN_FIELDS + ["scope_tag"] + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    buf.write(f"# {scope_tag}\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for r in rows:
+        w.writerow([r.get(k) for k in TOKEN_FIELDS] + [scope_tag] + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
 def anonymity_plot(out, path) -> bool:
     """rank-1 probability vs coverage f per placement arm; scope tag in the title."""
     try:

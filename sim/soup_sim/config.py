@@ -65,6 +65,13 @@ class Config:
     recon_cell_bytes: float = 0.0      # bytes per scheduled cell (8 = minisketch; 0 ⇒ OFF, exactly free)
     recon_c0: float = 0.0              # per-episode floor cells (the dominant conservative term, Δ≈0 regime)
     recon_k: float = 0.0               # cells per unit local density n (the density-scheduled term)
+    # P2 PR-1 token rate-limit harness (spec §3). A POST-HOC overlay over the recorded contact graph;
+    # these fields do NOT touch the engine (no new branch, no new RNG draw) — the harness is a separate
+    # scenario function. Carried on Config only so they travel in the manifest and validate together.
+    # All default OFF ⇒ every existing slice is bit-identical and these knobs are inert.
+    token_rate_limit_mode: str = "off"  # "off" | "broken" | "anchored" | "gossip" (the acceptance regime)
+    phy_session_quota: int = 0          # per-PHY-session quota Q: <= Q slots/holder-PHY-session (0 ⇒ off)
+    gossip_delay: float = 0.0           # optional per-hop latency layered on the measured epidemic front (0 ⇒ none)
 
     def validate(self) -> None:
         if self.boundary not in ("torus", "walls"):
@@ -130,6 +137,13 @@ class Config:
             # footgun: recon ON with S(n)=c0+ceil(k*n)=0 => cap=floor(0)=0 => ALL novel transfers capped
             # to zero at ~zero airtime cost (circulation silently zeroed). Require a real schedule.
             raise ValueError("recon_cell_bytes > 0 requires recon_c0 > 0 or recon_k > 0 (a real schedule)")
+        if self.token_rate_limit_mode not in ("off", "broken", "anchored", "gossip"):
+            raise ValueError("token_rate_limit_mode must be off|broken|anchored|gossip, "
+                             f"got {self.token_rate_limit_mode!r}")
+        if self.phy_session_quota < 0:
+            raise ValueError("phy_session_quota must be >= 0")
+        if self.gossip_delay < 0.0:
+            raise ValueError("gossip_delay must be >= 0")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

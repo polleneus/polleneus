@@ -20,6 +20,7 @@ from .anonymity import (localization_error, rank_of, anonymity_set_size, quantil
                         mustlocalize_gate, exposure_gate, defense_gate, intersection_gate,
                         SCOPE_TAG, DEFENSE_SCOPE_TAG, INTERSECTION_SCOPE_TAG, MIN_RELAY_DENSITY)
 from .geometry import dist2 as _dist2
+from . import token as _token
 
 
 def density_to_n(d: float, w: float, h: float, r: float) -> int:
@@ -846,3 +847,201 @@ def midpoint_with_ci(rows, rng, n_boot: int = 200):
     else:
         lo = hi = point
     return {"midpoint": point, "ci": (lo, hi)}
+
+
+# ---------------------------------------------------------------------------------------------------
+# P2 PR-1: token rate-limit harness (spec §3/§4). A POST-HOC overlay over the recorded contact graph.
+# It runs the engine ONLY to record episodes (no token logic in the engine ⇒ OFF-path bit-identical);
+# the soup.token overlay then meters slots/token per acceptance regime. Deterministic by master_seed.
+# ---------------------------------------------------------------------------------------------------
+TOKEN_SCOPE_TAG = ("[TOKEN RATE-LIMIT = §9 anchored-nf + epidemic gossip; the rate-limit is a "
+                   "gossip-vs-spend RACE (works only when gossip outpaces the serialized spend rate; "
+                   "a static BURST holder leaks ~D); gossip_delay=0 is UNPHYSICAL (instantaneous "
+                   "front); device-count residual & seen-nf gossip airtime NOT modelled (optimistic); "
+                   "nf is a per-token pseudonym (handshake-layer linkability). Every slots/token is a "
+                   "LOWER BOUND on leak.]")
+
+# Pre-registered must-demonstrate gate: BROKEN slots/token must reach at least this fraction of the
+# realized distinct-acceptor count D at the tested density (not a bare ">1", which is trivial).
+TOKEN_BROKEN_FRACTION = 0.99
+# The gossip arm earns a "credited reduction" only if it cuts slots/token to <= this fraction of
+# BROKEN. The falsifiable gate (token_demonstrate_gate) requires this to hold in the gossip-WINS
+# regime AND to FAIL (gossip ~ broken ~ D) in the BURST regime — a real falsification, not a tautology.
+TOKEN_GOSSIP_WIN_FRACTION = 0.5
+
+
+def _run_one_token(cfg) -> dict:
+    """Minimal engine run that records the contact graph (episodes) for the token overlay. No token
+    logic touches the engine — this is the SAME engine path as every other slice, so OFF is bit-
+    identical. Background soup is injected so contacts are real flooding contacts (the holder always
+    has a novel forward to offer = the worst-case spend model). Returns episodes + giant-component
+    fraction (a diameter/percolation proxy) + n."""
+    cfg.validate()
+    mob = make_mobility(cfg, cfg.rng(0))
+    metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
+    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i)) for i in range(cfg.n)]
+    budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
+                           model=cfg.airtime_model, beta=cfg.beta,
+                           t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
+    eng = Engine(cfg, mob, buffers, budget, cfg.rng(1), on_deliver=metrics.on_deliver)
+    eng.run_until(cfg.warmup)
+    for blob, src, dst in make_cohort(cfg, inject_time=cfg.warmup, rng=cfg.rng(2)):
+        metrics.register(blob, src, dst)
+        eng.inject(blob, src)
+    eng.run_until(cfg.warmup + cfg.measure_window + cfg.drain)
+    eng.finalize()
+    giant = largest_component_fraction(mob.positions, cfg.radius, cfg.width, cfg.height, cfg.boundary)
+    return {"episodes": list(eng.episodes), "n": cfg.n, "giant": float(giant)}
+
+
+def token_rate_limit_sweep(base_cfg, densities, reps, mode, holder="static", Q=0,
+                           gossip_delay=0.0, n_tokens=1, token_spend_interval=0.0):
+    """Per-density slots/token for ONE acceptance regime (spec §4). For each density, run the engine
+    (recording episodes), pick the worst-case holder (max distinct acceptors D), and meter slots/token
+    under `mode`. `holder` selects the adversary mobility: 'static' (the whole venue static, holder
+    contacts its fixed D neighbours) or 'mobile' (the venue RWP — the §3 worst case, the holder can
+    outrun the gossip front). Q = per-PHY quota; gossip_delay = per-hop seen-nf front latency (0 is the
+    UNPHYSICAL instantaneous-front edge); token_spend_interval = serialized-handshake spacing between
+    spends (0 = burst); n_tokens = tokens presented (exercises the Q backstop). Deterministic by
+    master_seed (paired seeds per density across modes, so amplification is on the SAME venues).
+
+    Returns rows: per density {density, n, mode, holder, gossip_delay, token_spend_interval, mean
+    slots/token + CI, D_mean, residual_mean, max_slots_per_phy_mean, giant_mean, broken_at_D}.
+    `broken_at_D` is True only for BROKEN reaching >= TOKEN_BROKEN_FRACTION*D (a structural sanity
+    flag; the falsifiable verdict is token_demonstrate_gate, not this row flag)."""
+    if holder not in ("static", "mobile"):
+        raise ValueError("holder must be static|mobile")
+    mobility = "static" if holder == "static" else "rwp"
+    rows = []
+    for di, d in enumerate(densities):
+        n = max(2, density_to_n(d, base_cfg.width, base_cfg.height, base_cfg.radius))
+        spt, Ds, resid, maxphy, giants = [], [], [], [], []
+        for rep in range(reps):
+            cfg = replace(base_cfg, n=n, mobility=mobility,
+                          master_seed=_seed_for(base_cfg.master_seed, di, rep))
+            art = _run_one_token(cfg)
+            eps, nn = art["episodes"], art["n"]
+            h = _token.pick_holder(eps, nn, cfg.warmup)
+            t0 = _token.first_spend_time(eps, h, cfg.warmup)
+            m = _token.slots_for_token(eps, h, t0, mode, phy_session_quota=Q,
+                                       gossip_delay=gossip_delay, n_tokens=n_tokens,
+                                       token_spend_interval=token_spend_interval)
+            spt.append(m["slots_per_token"])
+            Ds.append(m["distinct_acceptors"])
+            resid.append(m["residual_acceptors"])
+            maxphy.append(m["max_slots_per_phy"])
+            giants.append(art["giant"])
+        mean, lo, hi = mean_ci(spt, clamp01=False)        # slots/token is an unbounded count
+        D_mean = float(np.mean(Ds))
+        broken_at_D = (mode == "broken" and mean >= TOKEN_BROKEN_FRACTION * D_mean and D_mean >= 1.0)
+        rows.append({
+            "density": d, "n": n, "mode": mode, "holder": holder,
+            "gossip_delay": gossip_delay, "token_spend_interval": token_spend_interval,
+            "slots_per_token_mean": mean, "ci_lo": lo, "ci_hi": hi,
+            "D_mean": D_mean, "residual_mean": float(np.mean(resid)),
+            "max_slots_per_phy_mean": float(np.mean(maxphy)),
+            "giant_mean": float(np.mean(giants)),
+            "broken_at_D": bool(broken_at_D),
+        })
+    return rows
+
+
+def token_race_sweep(base_cfg, density, reps, race_points, holder="static"):
+    """THE HEADLINE (spec §4): slots/token(gossip) as a function of the gossip-rate ÷ spend-rate ratio,
+    spanning BOTH regimes — ~1 when the seen-nf gossip outpaces the serialized spend rate (the rate-
+    limit works) and ~D when the holder bursts faster than gossip spreads (NO rate-limit). `race_points`
+    is a list of (gossip_delay, token_spend_interval) pairs; each row carries BOTH (the slots/token
+    number is meaningless without them). The BROKEN reference (= D) is computed once on the same venues
+    so each row also reports the amplification broken/gossip and the rate-ratio gossip_delay/interval.
+
+    Returns {"density", "n", "broken": slots/token(broken) mean (=D), "rows": [...], "holder",
+    "scope_tag"}. Each row: {gossip_delay, token_spend_interval, rate_ratio, slots_per_token_mean,
+    ci_lo, ci_hi, residual_mean, amplification, gossip_wins}."""
+    # Guard the HEADLINE-curve generator against the round-1 artifact: gossip_delay=0 is an unphysical
+    # instantaneous front (collapses slots/token to 1.0 even for a burst holder). The spec says delay=0
+    # "must never be the headline", so the curve generator refuses it rather than emit it unflagged.
+    bad = [gd for (gd, _si) in race_points if gd <= 0.0]
+    if bad:
+        raise ValueError(f"token_race_sweep: gossip_delay must be > 0 (unphysical instantaneous front); "
+                         f"got {bad}. Use a positive per-hop delay for the headline race curve.")
+    broken = token_rate_limit_sweep(base_cfg, [density], reps, "broken", holder=holder)[0]
+    D = broken["slots_per_token_mean"]
+    rows = []
+    for (gd, si) in race_points:
+        g = token_rate_limit_sweep(base_cfg, [density], reps, "gossip", holder=holder,
+                                   gossip_delay=gd, token_spend_interval=si)[0]
+        spt = g["slots_per_token_mean"]
+        amp = (D / spt) if spt > 0 else float("inf")
+        rate_ratio = (gd / si) if si > 0 else float("inf")   # gossip per-hop / spend spacing
+        rows.append({
+            "gossip_delay": gd, "token_spend_interval": si, "rate_ratio": rate_ratio,
+            "slots_per_token_mean": spt, "ci_lo": g["ci_lo"], "ci_hi": g["ci_hi"],
+            "residual_mean": g["residual_mean"], "amplification": amp,
+            # gossip "wins" (rate-limit real) iff it credits a reduction to <= TOKEN_GOSSIP_WIN_FRACTION*D.
+            "gossip_wins": bool(spt <= TOKEN_GOSSIP_WIN_FRACTION * D),
+        })
+    return {"density": density, "n": broken["n"], "broken": D, "rows": rows,
+            "holder": holder, "scope_tag": TOKEN_SCOPE_TAG}
+
+
+def token_demonstrate_gate(base_cfg, density, reps, gossip_delay, token_spend_interval,
+                           holder="static"):
+    """The FALSIFIABLE must-demonstrate gate (spec §4) — designed to FAIL if the model is mis-wired,
+    NOT a tautology. At ONE physical (gossip_delay>0, token_spend_interval>0) operating point it
+    requires ALL of:
+      (1) BROKEN ~ D (the attack is real: >= TOKEN_BROKEN_FRACTION * D);
+      (2) in the GOSSIP-WINS regime (gossip beats the spend rate) the gossip arm credits a reduction
+          (slots/token <= TOKEN_GOSSIP_WIN_FRACTION * broken);
+      (3) in the BURST regime (token_spend_interval=0, same gossip_delay) the gossip arm does NOT
+          reduce (slots/token ~ broken ~ D) — the static burst holder defeats the gossip.
+    A mis-wired overlay (e.g. gossip ignoring spend times, or always collapsing to 1) fails (2) or (3).
+    gossip_delay=0 is rejected as unphysical. Returns the verdict dict (ok + the three sub-checks)."""
+    if gossip_delay <= 0.0:
+        raise ValueError("token_demonstrate_gate: gossip_delay must be > 0 "
+                         "(gossip_delay=0 is the unphysical instantaneous-front edge)")
+    if token_spend_interval <= 0.0:
+        raise ValueError("token_demonstrate_gate: token_spend_interval must be > 0 "
+                         "(the gossip-wins operating point needs a serialized spend rate)")
+    broken = token_rate_limit_sweep(base_cfg, [density], reps, "broken", holder=holder)[0]
+    win = token_rate_limit_sweep(base_cfg, [density], reps, "gossip", holder=holder,
+                                 gossip_delay=gossip_delay, token_spend_interval=token_spend_interval)[0]
+    burst = token_rate_limit_sweep(base_cfg, [density], reps, "gossip", holder=holder,
+                                   gossip_delay=gossip_delay, token_spend_interval=0.0)[0]
+    D = broken["slots_per_token_mean"]
+    c1 = bool(broken["broken_at_D"])
+    c2 = bool(win["slots_per_token_mean"] <= TOKEN_GOSSIP_WIN_FRACTION * D and D >= 1.0)
+    c3 = bool(burst["slots_per_token_mean"] >= TOKEN_BROKEN_FRACTION * D)   # burst defeats gossip -> ~D
+    return {
+        "ok": bool(c1 and c2 and c3),
+        "broken_is_D": c1, "gossip_wins_when_serialized": c2, "gossip_loses_when_burst": c3,
+        "broken": D, "gossip_win_slots": win["slots_per_token_mean"],
+        "gossip_burst_slots": burst["slots_per_token_mean"],
+        "gossip_delay": gossip_delay, "token_spend_interval": token_spend_interval,
+        "density": density, "holder": holder, "scope_tag": TOKEN_SCOPE_TAG,
+    }
+
+
+def token_amplification(base_cfg, density, reps, gossip_delay, token_spend_interval, holder="static"):
+    """The amplification slots/token(BROKEN) ÷ slots/token(GOSSIP) at ONE PHYSICAL operating point.
+    REQUIRES gossip_delay > 0 (gossip_delay=0 is the unphysical instantaneous-front edge and is
+    rejected) and carries BOTH gossip_delay AND token_spend_interval on the result (the ratio is
+    meaningless without them, spec §4). BROKEN ≈ ANCHORED shows the win is the GOSSIP step; the
+    denominator is whatever the gossip leaves (NOT hard-clamped to 1). Paired seeds ⇒ same venues."""
+    if gossip_delay <= 0.0:
+        raise ValueError("token_amplification: gossip_delay must be > 0 "
+                         "(gossip_delay=0 is the unphysical instantaneous-front edge, excluded "
+                         "from the headline per spec §4)")
+    broken = token_rate_limit_sweep(base_cfg, [density], reps, "broken", holder=holder,
+                                    token_spend_interval=token_spend_interval)[0]
+    anchored = token_rate_limit_sweep(base_cfg, [density], reps, "anchored", holder=holder,
+                                      token_spend_interval=token_spend_interval)[0]
+    gossip = token_rate_limit_sweep(base_cfg, [density], reps, "gossip", holder=holder,
+                                    gossip_delay=gossip_delay,
+                                    token_spend_interval=token_spend_interval)[0]
+    b, g = broken["slots_per_token_mean"], gossip["slots_per_token_mean"]
+    ratio = (b / g) if g > 0 else float("inf")
+    return {"density": density, "n": broken["n"], "holder": holder,
+            "gossip_delay": gossip_delay, "token_spend_interval": token_spend_interval,
+            "broken": b, "anchored": anchored["slots_per_token_mean"], "gossip": g,
+            "amplification": ratio, "giant_mean": broken["giant_mean"],
+            "scope_tag": TOKEN_SCOPE_TAG}

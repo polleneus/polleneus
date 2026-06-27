@@ -55,19 +55,27 @@ supply this quantity and is not reused for it. Three regimes:
   the holder physically moves to fresh neighborhoods it has not yet hit. **This regime ≈ BROKEN for a
   static holder by design** — confirming §9.3 that the anchoring *alone* buys little; the win is the
   gossip.
-- **ANCHORED + GOSSIP (the fix):** the seen-`nf` set **propagates epidemically on the engine's own
-  contact/diffusion dynamics** (the same interval-reachability flood that carries blobs — §9.3 "same
-  uniform flood") — **NOT** a fixed scalar delay. An acceptor rejects `nf` once the gossip front carrying
-  it has reached that acceptor. So slots/token → **≈ 1 + a measured residual** = the slots spendable in
-  the window **between an `nf`'s first spend and its epidemic arrival at each prospective acceptor.** A
-  per-hop latency knob `gossip_delay` may be layered on top, but the dominant term is the **measured
-  diffusion time on the contact graph**, which **grows with venue diameter, falls with density, and can
-  exceed the token TTL / seen-window W** — and in a **sparse/fragmented venue (below the measured
-  percolation threshold d_c ≈ 4.5) an `nf` may NEVER reach a disconnected pocket**, so the residual there
-  is **unbounded by gossip and bounded only by the per-PHY quota Q.** **Worst case = a MOBILE holder that
-  outruns the gossip front:** by moving to fresh neighborhoods faster than `nf` propagates, it leaks more
-  slots than a static holder — so the measurement **must include a mobile adversary**, not only a static
-  one (a static-seed measurement under-states the worst-case leak).
+- **ANCHORED + GOSSIP (the fix) — and the RACE that decides whether it works.** The seen-`nf` set
+  **propagates epidemically on the engine's own contact dynamics** (the same flood that carries blobs,
+  §9.3) — **NOT** a fixed scalar delay. An acceptor rejects `nf` once the gossip front has reached it.
+  **But whether the front beats the holder is a RACE between two physical rates** (the central honest
+  finding, design-review round 2): the holder relays via **serialized BLE handshakes** (one radio,
+  shared channels, ~`t_setup` each → spends are spaced by a **`token_spend_interval`**, NOT
+  instantaneous), and the seen-`nf` front propagates at its own per-hop gossip rate. So:
+  - **slots/token → ≈ 1 ONLY when the gossip front outpaces the spend rate** (`gossip` propagation per
+    acceptor ≪ `token_spend_interval`). The rate-limit is real **only in this regime.**
+  - **slots/token → D (NO rate-limit) for a BURST holder** that spends to its co-present neighbors faster
+    than `nf` can spread (`token_spend_interval → 0`, or any per-hop `gossip_delay` ≳ the interval). A
+    static holder surrounded by D neighbors it can spend to near-simultaneously **defeats the gossip
+    entirely** — §9.3's "D → 1" is an **instantaneous-gossip idealization**, not a physical guarantee.
+  - **`gossip_delay = 0` is an UNPHYSICAL optimistic edge** (instantaneous front) and must **never** be
+    the headline; the deliverable is **slots/token as a function of the gossip-rate ÷ spend-rate ratio**,
+    spanning the win regime and the no-rate-limit regime.
+  - The diffusion time also **grows with venue diameter** and in a **fragmented venue (below d_c ≈ 4.5)
+    an `nf` may NEVER reach a disconnected pocket** (residual bounded only by the per-PHY quota Q). A
+    **MOBILE** holder that moves to fresh neighborhoods faster than the front leaks more than a static
+    one. The measurement must include both burst and serialized spending, and both static and mobile
+    holders — the static-burst case is the honest worst case the headline must not hide.
 - **Per-PHY-session quota `Q`** (orthogonal, all regimes): even presenting **many** tokens, slots granted
   to one PHY-radio-session ≤ `Q` — the §9.5 fail-closed backstop. The harness must exercise the
   many-tokens case so Q's bound (and the residual it leaves) is exposed, not assumed.
@@ -80,19 +88,49 @@ every existing slice bit-identical).
 
 ## 4. What we measure
 
-- **Headline (parent §9.3):** slots/token ≈ **D (BROKEN ≈ ANCHORED-no-gossip)** → **≈ 1 + residual
-  (ANCHORED+GOSSIP)**. Reported as the amplification `slots/token(BROKEN) ÷ slots/token(ANCHORED+GOSSIP)`
-  with **both terms' definitions pinned** (slots = distinct novel forwards to distinct acceptors; the
-  denominator is *not* hard-clamped to 1 — it is whatever the gossip leaves). The credited win is shown
-  to come from the **GOSSIP** step (BROKEN ≈ ANCHORED-no-gossip ≫ ANCHORED+GOSSIP).
-- **The honest residual = a number, not a hand-wave:** the epidemic-propagation residual vs density and
-  venue diameter, with the sparse/fragmented case (`nf` never propagates → residual bounded only by `Q`)
-  explicitly surfaced. This is the operational meaning of §9.3's "modulo gossip-propagation delay."
+- **Headline = the RACE curve, NOT a single number:** slots/token(ANCHORED+GOSSIP) **as a function of
+  the gossip-rate ÷ spend-rate ratio** (`gossip_delay` / per-hop propagation vs `token_spend_interval`),
+  spanning **both** regimes: ≈ **1** when gossip outpaces spends (the rate-limit works) and ≈ **D** when
+  the holder bursts faster than gossip spreads (NO rate-limit). The amplification
+  `slots(BROKEN) ÷ slots(ANCHORED+GOSSIP)` is reported **with `gossip_delay` AND `token_spend_interval`
+  on every row** (it is meaningless without them), and **`gossip_delay = 0` is excluded from the headline
+  as an unphysical optimistic edge.** The credited win (when it exists) comes from the GOSSIP step
+  (BROKEN ≈ ANCHORED-no-gossip), but the honest message is that **the win is conditional on gossip beating
+  the spend rate — which it does not for a static burst holder.**
+- **The honest residual = a number, not a hand-wave:** the propagation residual vs the rate-ratio,
+  density, and venue diameter, with (a) the **static-burst case where slots/token → D (gossip gives
+  nothing)** and (b) the sparse/fragmented case (`nf` never propagates → residual bounded only by `Q`)
+  both explicitly surfaced. This is the operational meaning of §9.3's "modulo gossip-propagation delay" —
+  and the honest correction that §9.3's "D → 1" is an instantaneous-gossip idealization.
 - **Quota backstop:** max slots/PHY-session ≤ `Q` in **every** regime even under many tokens.
 - **Must-demonstrate-attack gate (pre-registered, density-honest):** BROKEN must yield slots/token
   **≥ a pre-registered fraction of the realized distinct-acceptor count at the tested density** (not a
   bare "> 1", which is trivial) — else the "fix helps" claim is vacuous (mirrors the anonymity slices'
   must-localize discipline).
+
+### Measured result (bounded sweep, static holder, density 6 — `token_race_sweep`)
+
+BROKEN (no rate-limit) = **D = 13 slots/token**. The gossip arm as a function of the
+**rate-ratio = gossip_delay ÷ token_spend_interval**:
+
+| rate-ratio (gossip per-hop ÷ spend spacing) | slots/token | regime |
+|---|---|---|
+| ≤ 0.5 (gossip outpaces spends) | **1.0** | rate-limit works |
+| 1.0 | 1.3 | works |
+| 2.0 | 2.7 | partial |
+| 4.0 | 4.7 | partial |
+| **burst** (`token_spend_interval = 0`) | **13.0 = D** | **NO rate-limit** |
+
+**The honest headline (corrects §9.3):** the token-anchored nullifier + gossip delivers the "≈ 1
+slot/token" rate-limit **only when seen-`nf` gossip keeps pace with the holder's serialized spend rate
+(rate-ratio ≲ 1)**; it degrades through a partial regime; and against a **burst** holder that spends to
+its co-present neighbors faster than `nf` can spread, it provides **essentially no rate-limit
+(slots/token → D)**. §9.3's unconditional "D → 1 venue-wide" is an **instantaneous-gossip idealization**;
+the physical guarantee is **conditional on the gossip-vs-spend race**, and the static-burst case is the
+worst case the headline must not hide. *(Mobility raises the **absolute** leak — a mobile holder meets
+far more acceptors, D ≈ 75–149 vs 8–14 — but a **smaller** residual fraction, since its spends spread
+over a trajectory the front can keep pace with; "mobile evades more" is false as a fraction.)* This
+**qualifies the §9.3 public anti-flood claim** and is carried to release-blockers at campaign close-out.
 
 ## 5. Invariant & honesty check
 

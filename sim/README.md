@@ -308,7 +308,8 @@ defense/intersection gates) · `report` (CSV + plot).
 | clustered "gathering" mobility (vs RWP open-field) | — | slice-4: **optimism-REMOVING** — real crowds cluster; clustered delivery ≤ RWP at the same node count N (clustering raises the realized degree) |
 | clustered: static clusters (no gather→disperse) | — | abstraction; a forming/dispersing crowd is transient (named follow-up) |
 | clustered: leak=1 recovers RWP | — | correctness sanity gate, not a bias |
-| crypto / tokens | §5/§9 | **not modeled** (deferred) |
+| crypto | §5 | **not modeled** (deferred) |
+| tokens / anti-flood rate-limit | §9 | §9 rate-limit **modeled** (anchored-`nf` + epidemic seen-`nf` gossip, post-hoc overlay): the rate-limit is a **gossip-vs-spend RACE** — works (slots/token→~1) only when gossip outpaces the serialized spend rate; a **static burst holder leaks ~D (no rate-limit)**, qualifying §9.3's "D→1" as an instantaneous-gossip idealization. **Device-count residual (cloud/botnet + K-radio farm) + seen-`nf` gossip airtime NOT modeled → optimistic**; `nf` is a per-token pseudonym (handshake-layer linkability); `gossip_delay=0` = unphysical instantaneous front. Every number an UPPER BOUND on the rate-limit |
 | delivery | — | arrival == delivery (ignores read-window / FS) → **upper bound** |
 
 ## Caveats (idealizations — all bias delivery UP)

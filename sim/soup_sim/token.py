@@ -24,11 +24,19 @@ Three acceptance regimes decide whether each opportunity actually GRANTS a slot:
              yet hit (it never re-meets an acceptor, so the local set is irrelevant) -> the
              anchoring ALONE buys little (spec §9.3). [Modelled identically to broken because a
              distinct acceptor is by construction met once; see _spend_events.]
-  gossip   : the seen-nf set PROPAGATES epidemically on the engine's own contact dynamics. nf is
-             BORN at its first spend (t0, holder position). A node learns nf when the gossip front
-             reaches it from the set of nf-knowers AFTER t0 (acquisition-time causality on the SAME
-             contacts that move blobs). An acceptor that ALREADY knows nf at spend time rejects
-             (no slot). slots/token -> 1 + residual = spends accepted before nf's front arrives.
+  gossip   : the seen-nf set PROPAGATES epidemically on the engine's own contact dynamics, and
+             whether it works is a RACE (spec §3/§4, design-review round 2) between TWO physical
+             rates: (a) the holder relays via SERIALIZED BLE handshakes (one radio, ~t_setup each),
+             so consecutive spends are spaced by `token_spend_interval`; (b) the seen-nf front
+             spreads at its own per-hop `gossip_delay`. An acceptor rejects nf once the front has
+             reached it. So:
+               - slots/token -> ~1 ONLY when the front OUTPACES the spend rate (gossip wins);
+               - slots/token -> ~D (NO rate-limit) for a BURST holder (token_spend_interval -> 0, or
+                 gossip_delay >~ the interval): a static holder spends to its D co-present neighbours
+                 ~simultaneously and the gossip can never catch up. §9.3's "D -> 1" is an
+                 INSTANTANEOUS-GOSSIP idealization (gossip_delay = 0), not a physical guarantee.
+             The headline is the slots/token curve over the gossip-rate / spend-rate ratio, NOT a
+             single delay=0 number (which is unphysical and excluded from the headline).
 
 Epidemic nf propagation uses the engine's contact dynamics directly (a multi-source forward
 infection over self.episodes), seeded at the token's MID-RUN first-spend time. It deliberately
@@ -78,11 +86,20 @@ def forward_infection(episodes, seeds: dict[int, float], gossip_delay: float = 0
     return inf
 
 
-def _spend_events(episodes, holder: int, t0: float):
-    """Token spend opportunities for `holder`: the FIRST contact with each DISTINCT other node at
-    or after t0, in increasing spend-time order. spend_time = max(entry, t0) (the holder cannot
-    spend before the token is live). Returns [(acceptor, spend_time), ...]; distinct acceptors only
-    (a re-meet of the same acceptor is NOT a new distinct-acceptor slot)."""
+def _spend_events(episodes, holder: int, t0: float, token_spend_interval: float = 0.0):
+    """Serialized token spend events for `holder`: the FIRST contact with each DISTINCT other node at
+    or after t0 (a re-meet is NOT a new distinct-acceptor slot), SERIALIZED by the BLE-handshake spend
+    rate. Returns [(acceptor, spend_time), ...] in increasing spend-time order.
+
+    Two stages:
+      1. contact_time[Y] = max(earliest holder-Y contact entry, t0) — the physical first opportunity.
+      2. SERIALIZE (the core spend-rate model): the holder has one radio and pays ~t_setup per
+         handshake, so it cannot spend to two acceptors at the same instant. Walking opportunities in
+         contact-time order, the actual spend time is
+             spend_time[k] = max(contact_time[k], spend_time[k-1] + token_spend_interval).
+         With token_spend_interval = 0 this is the OLD instantaneous burst (all co-present spends at
+         ~t0); with interval > 0 the spends spread out so the seen-nf gossip front can RACE to later
+         acceptors and reject them. The serialization is monotone, so the list stays time-ordered."""
     first: dict[int, float] = {}
     for (i, j, entry, exit_) in episodes:
         for a, b in ((i, j), (j, i)):
@@ -93,7 +110,15 @@ def _spend_events(episodes, holder: int, t0: float):
             ts = max(entry, t0)
             if b not in first or ts < first[b]:
                 first[b] = ts
-    return sorted(first.items(), key=lambda kv: (kv[1], kv[0]))
+    ordered = sorted(first.items(), key=lambda kv: (kv[1], kv[0]))
+    if token_spend_interval <= 0.0:
+        return ordered                            # burst: no serialization (bit-identical to before)
+    spends, prev = [], -_INF
+    for (Y, ts) in ordered:                       # serialize: >= token_spend_interval apart, in order
+        st = max(ts, prev + token_spend_interval)
+        spends.append((Y, st))
+        prev = st
+    return spends
 
 
 def pick_holder(episodes, n: int, warmup: float) -> int:
@@ -122,21 +147,25 @@ def first_spend_time(episodes, holder: int, warmup: float) -> float:
 
 def slots_for_token(episodes, holder: int, t0: float, mode: str,
                     phy_session_quota: int = 0, gossip_delay: float = 0.0,
-                    n_tokens: int = 1) -> dict:
+                    n_tokens: int = 1, token_spend_interval: float = 0.0) -> dict:
     """Meter slots/token for ONE holder spending `n_tokens` identical-policy tokens.
 
     broken/anchored: each distinct acceptor is met once, so it grants exactly one slot -> slots/token
-    = D. gossip: run the SEQUENTIAL epidemic (_gossip_accept) -> only acceptors the seen-nf front has
-    not yet reached at spend time grant a slot, so slots/token = 1 + residual.
+    = D. This is PROVABLE by construction under distinct-acceptor accounting (every distinct acceptor
+    is, by definition, met for the first time once, with a fresh local seen-set) — NOT an emergent
+    measurement; the spend serialization changes only spend TIMES, never the broken/anchored count.
+    gossip: run the SEQUENTIAL epidemic RACE (_gossip_accept) on the SERIALIZED spend times -> only
+    acceptors the seen-nf front has not yet reached at spend time grant a slot, so slots/token spans
+    ~1 (gossip outpaces the spend rate) to ~D (a burst holder defeats the gossip).
 
     Per-PHY quota Q (orthogonal, §9.5): one holder-PHY-session is granted <= Q slots TOTAL no matter
-    how many tokens it presents. slots/token is reported per token (one accepting acceptor = 1 slot);
-    max_slots_per_phy = min(n_tokens, Q) when Q>0 (the §9.5 fail-closed backstop), else n_tokens (one
-    PHY session leaks n_tokens unbounded).
+    how many tokens it presents. max_slots_per_phy = min(n_tokens, Q) when Q>0 — an EXACT-BY-
+    CONSTRUCTION bound (the fail-closed §9.5 backstop), not an emergent measurement; with Q off it is
+    n_tokens (one PHY session leaks n_tokens unbounded).
 
     Returns {distinct_acceptors (=D), slots_per_token, max_slots_per_phy, residual_acceptors}.
     """
-    spends = _spend_events(episodes, holder, t0)
+    spends = _spend_events(episodes, holder, t0, token_spend_interval)
     D = len(spends)
     if D == 0:
         return {"distinct_acceptors": 0, "slots_per_token": 0.0,
@@ -145,7 +174,8 @@ def slots_for_token(episodes, holder: int, t0: float, mode: str,
     # accepted[Y] = whether acceptor Y grants a slot for ONE token under the regime.
     if mode in ("broken", "anchored"):
         # Each distinct acceptor is met once, so its local seen-set is always fresh on first contact
-        # -> it accepts. (anchored == broken for a once-met acceptor; the win is the gossip, §9.3.)
+        # -> it accepts. anchored == broken for a once-met acceptor is PROVABLE under distinct-acceptor
+        # accounting (not an emergent finding); the win is the gossip, §9.3.
         accepted = {Y: True for (Y, _ts) in spends}
     elif mode == "gossip":
         accepted = _gossip_accept(episodes, holder, spends, gossip_delay)

@@ -71,7 +71,11 @@ class Config:
     # All default OFF ⇒ every existing slice is bit-identical and these knobs are inert.
     token_rate_limit_mode: str = "off"  # "off" | "broken" | "anchored" | "gossip" (the acceptance regime)
     phy_session_quota: int = 0          # per-PHY-session quota Q: <= Q slots/holder-PHY-session (0 ⇒ off)
-    gossip_delay: float = 0.0           # optional per-hop latency layered on the measured epidemic front (0 ⇒ none)
+    gossip_delay: float = 0.0           # per-hop latency of the seen-nf gossip front (0 ⇒ UNPHYSICAL instantaneous)
+    token_spend_interval: float = 0.0   # serialized-BLE-handshake spacing between consecutive spends (0 ⇒ burst:
+    #   all of a static holder's co-present spends fire at ~t0, so gossip can never beat them — the no-rate-limit
+    #   worst case). >0 spreads spends so the gossip front can RACE to later acceptors. The §4 headline is the
+    #   slots/token RACE over the gossip-rate (gossip_delay) ÷ spend-rate (token_spend_interval) ratio.
 
     def validate(self) -> None:
         if self.boundary not in ("torus", "walls"):
@@ -144,6 +148,8 @@ class Config:
             raise ValueError("phy_session_quota must be >= 0")
         if self.gossip_delay < 0.0:
             raise ValueError("gossip_delay must be >= 0")
+        if self.token_spend_interval < 0.0:
+            raise ValueError("token_spend_interval must be >= 0")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

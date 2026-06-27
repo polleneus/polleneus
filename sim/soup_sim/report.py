@@ -181,16 +181,18 @@ def cluster_to_csv_string(out, manifest) -> str:
     return buf.getvalue()
 
 
-TOKEN_FIELDS = ["density", "n", "mode", "holder", "slots_per_token_mean", "ci_lo", "ci_hi",
-                "D_mean", "residual_mean", "max_slots_per_phy_mean", "giant_mean", "broken_gate_ok"]
+TOKEN_FIELDS = ["density", "n", "mode", "holder", "gossip_delay", "token_spend_interval",
+                "slots_per_token_mean", "ci_lo", "ci_hi", "D_mean", "residual_mean",
+                "max_slots_per_phy_mean", "giant_mean", "broken_at_D"]
 
 
 def token_to_csv_string(rows, manifest, scope_tag) -> str:
     """One row per density for ONE regime arm of the token rate-limit sweep. The scope/honesty tag
     travels as a leading comment AND a column on every row (a comment alone is dropped by dataframe
-    readers — every slots/token number must stay tagged as a LOWER BOUND on the leak). The full param
-    manifest (incl. param_token_rate_limit_mode / param_phy_session_quota / param_gossip_delay) travels
-    per row so a result is independently reproducible from the file alone."""
+    readers — every slots/token number must stay tagged as a LOWER BOUND on the leak). gossip_delay AND
+    token_spend_interval travel on EVERY row (a slots/token gossip number is meaningless without the
+    race operating point). The full param manifest travels per row so a result is independently
+    reproducible from the file alone."""
     man = list(manifest.keys())
     header = TOKEN_FIELDS + ["scope_tag"] + [f"param_{k}" for k in man]
     buf = io.StringIO()
@@ -199,6 +201,28 @@ def token_to_csv_string(rows, manifest, scope_tag) -> str:
     w.writerow(header)
     for r in rows:
         w.writerow([r.get(k) for k in TOKEN_FIELDS] + [scope_tag] + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
+TOKEN_RACE_FIELDS = ["gossip_delay", "token_spend_interval", "rate_ratio", "slots_per_token_mean",
+                     "ci_lo", "ci_hi", "residual_mean", "amplification", "gossip_wins"]
+
+
+def token_race_to_csv_string(out, manifest, scope_tag) -> str:
+    """The §4 HEADLINE race curve: one row per (gossip_delay, token_spend_interval) point, slots/token
+    spanning ~1 (gossip wins) to ~D (burst defeats gossip). A leading comment carries density / n /
+    broken (= D) reference; the scope tag travels as a comment AND a column. gossip_delay and
+    token_spend_interval are on every row (the number is meaningless without them)."""
+    man = list(manifest.keys())
+    header = TOKEN_RACE_FIELDS + ["broken_D", "scope_tag"] + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    buf.write(f"# token rate-limit RACE @ density={out['density']} n={out['n']} broken(=D)={out['broken']:.2f} "
+              f"holder={out['holder']}\n# {scope_tag}\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for r in out["rows"]:
+        w.writerow([r.get(k) for k in TOKEN_RACE_FIELDS] + [out["broken"], scope_tag]
+                   + [manifest[k] for k in man])
     return buf.getvalue()
 
 

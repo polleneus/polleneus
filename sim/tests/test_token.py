@@ -124,6 +124,13 @@ def test_unit_spend_never_exceeds_contact_exit():
     spends = tok._spend_events(short, 0, 0.0, token_spend_interval=5.0)
     assert all(st <= 3.0 + 1e-9 for (_Y, st) in spends), f"spend after exit_: {spends}"
     assert [Y for (Y, _st) in spends] == [1, 2, 3]        # every acceptor still kept (radio reach unreduced)
+    # Capping can make assigned times non-monotone (a short-window acceptor capped earlier than an
+    # earlier-listed one); _spend_events MUST return them in increasing TIME order so _gossip_accept
+    # processes rejections correctly (else it over-counts leak). Pin the verification's counterexample:
+    mixed = [(0, 1, 0.0, 100.0), (0, 2, 0.0, 100.0), (0, 3, 0.0, 10.0)]   # node 3 has a short window
+    sp = tok._spend_events(mixed, 0, 0.0, token_spend_interval=50.0)       # would assign 0, 50, capped 10
+    times = [st for (_Y, st) in sp]
+    assert times == sorted(times), f"spend list not time-ordered after capping: {sp}"
 
 
 def test_unit_gossip_race_burst_to_serialized():

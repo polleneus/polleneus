@@ -99,7 +99,9 @@ def _spend_events(episodes, holder: int, t0: float, token_spend_interval: float 
              spend_time[k] = max(contact_time[k], spend_time[k-1] + token_spend_interval).
          With token_spend_interval = 0 this is the OLD instantaneous burst (all co-present spends at
          ~t0); with interval > 0 the spends spread out so the seen-nf gossip front can RACE to later
-         acceptors and reject them. The serialization is monotone, so the list stays time-ordered."""
+         acceptors and reject them. Each spend is capped at its acceptor's exit_ (a spend cannot occur
+         after the contact closes); the returned list is then RE-SORTED by spend time so downstream
+         (_gossip_accept) can rely on increasing-time order even when capping breaks monotonicity."""
     # Track the first usable contact's [entry, exit_] per distinct acceptor (a spend must land INSIDE
     # the contact window — a serialized spend cannot occur after the holder and Y are out of range).
     first: dict[int, tuple[float, float]] = {}
@@ -127,6 +129,11 @@ def _spend_events(episodes, holder: int, t0: float, token_spend_interval: float 
         st = min(max(ts, prev + token_spend_interval), ex)
         spends.append((Y, st))
         prev = st
+    # Re-sort by spend TIME: capping at exit_ can make assigned times non-monotone (a later-starting
+    # acceptor with a short window can be capped to an earlier time than an earlier-starting one).
+    # Downstream _gossip_accept MUST walk spends in increasing time order (else it misses rejections and
+    # over-counts leak), so we restore that contract here. The assigned times are unchanged.
+    spends.sort(key=lambda kv: (kv[1], kv[0]))
     return spends
 
 

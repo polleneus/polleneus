@@ -115,6 +115,17 @@ def test_unit_spend_serialization_spaces_spends():
     assert tok._spend_events(DENSE, 0, 0.0, 5.0) == [(1, 0.0), (2, 5.0), (3, 10.0)]     # serialized
 
 
+def test_unit_spend_never_exceeds_contact_exit():
+    """Round-2 fix: a serialized spend is CAPPED at the acceptor's contact exit_ (the holder cannot spend
+    after it is out of range). Short windows -> later spends clamp to exit_ instead of chaining unphysically
+    into the future (which had handed the gossip front extra time to reject, understating leak ~3x)."""
+    # three acceptors, each in a SHORT window [0,3]; interval 5 would chain spends to 0,5,10 (past exit_=3)
+    short = [(0, 1, 0.0, 3.0), (0, 2, 0.0, 3.0), (0, 3, 0.0, 3.0)]
+    spends = tok._spend_events(short, 0, 0.0, token_spend_interval=5.0)
+    assert all(st <= 3.0 + 1e-9 for (_Y, st) in spends), f"spend after exit_: {spends}"
+    assert [Y for (Y, _st) in spends] == [1, 2, 3]        # every acceptor still kept (radio reach unreduced)
+
+
 def test_unit_gossip_race_burst_to_serialized():
     """THE RACE (spec §3/§4) on a static dense clique at a PHYSICAL gossip_delay>0:
        - BURST (interval=0): all spends fire at ~t0, gossip can't catch up -> slots/token = D (no limit);

@@ -957,6 +957,13 @@ def token_race_sweep(base_cfg, density, reps, race_points, holder="static"):
     Returns {"density", "n", "broken": slots/token(broken) mean (=D), "rows": [...], "holder",
     "scope_tag"}. Each row: {gossip_delay, token_spend_interval, rate_ratio, slots_per_token_mean,
     ci_lo, ci_hi, residual_mean, amplification, gossip_wins}."""
+    # Guard the HEADLINE-curve generator against the round-1 artifact: gossip_delay=0 is an unphysical
+    # instantaneous front (collapses slots/token to 1.0 even for a burst holder). The spec says delay=0
+    # "must never be the headline", so the curve generator refuses it rather than emit it unflagged.
+    bad = [gd for (gd, _si) in race_points if gd <= 0.0]
+    if bad:
+        raise ValueError(f"token_race_sweep: gossip_delay must be > 0 (unphysical instantaneous front); "
+                         f"got {bad}. Use a positive per-hop delay for the headline race curve.")
     broken = token_rate_limit_sweep(base_cfg, [density], reps, "broken", holder=holder)[0]
     D = broken["slots_per_token_mean"]
     rows = []

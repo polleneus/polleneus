@@ -100,7 +100,9 @@ def _spend_events(episodes, holder: int, t0: float, token_spend_interval: float 
          With token_spend_interval = 0 this is the OLD instantaneous burst (all co-present spends at
          ~t0); with interval > 0 the spends spread out so the seen-nf gossip front can RACE to later
          acceptors and reject them. The serialization is monotone, so the list stays time-ordered."""
-    first: dict[int, float] = {}
+    # Track the first usable contact's [entry, exit_] per distinct acceptor (a spend must land INSIDE
+    # the contact window — a serialized spend cannot occur after the holder and Y are out of range).
+    first: dict[int, tuple[float, float]] = {}
     for (i, j, entry, exit_) in episodes:
         for a, b in ((i, j), (j, i)):
             if a != holder:
@@ -108,14 +110,21 @@ def _spend_events(episodes, holder: int, t0: float, token_spend_interval: float 
             if exit_ < t0 - _EPS:                 # contact ended before the token was live: no spend
                 continue
             ts = max(entry, t0)
-            if b not in first or ts < first[b]:
-                first[b] = ts
-    ordered = sorted(first.items(), key=lambda kv: (kv[1], kv[0]))
+            if b not in first or ts < first[b][0]:
+                first[b] = (ts, exit_)
+    ordered = sorted(first.items(), key=lambda kv: (kv[1][0], kv[0]))   # by contact-start time
     if token_spend_interval <= 0.0:
-        return ordered                            # burst: no serialization (bit-identical to before)
+        return [(Y, ts) for (Y, (ts, _ex)) in ordered]   # burst: no serialization (bit-identical to before)
+    # Serialize at >= token_spend_interval apart, but CAP each spend at its acceptor's exit_ (a spend can
+    # never occur after the holder and Y are out of range). st = min(max(contact_start, prev+interval),
+    # exit_Y). This fixes the round-2 bug: the OLD code chained spend_times unboundedly into the future
+    # (far past exit_), handing the seen-nf gossip front unphysical extra time to reach and REJECT later
+    # acceptors -> understating leak (~3x on the mobile arm). Capping at exit_ is the LATEST physical spend
+    # time (most gossip time that is still physical -> a conservative LOWER bound on slots leaked, never an
+    # over-count). Every acceptor is kept (the radio's reach is not artificially reduced).
     spends, prev = [], -_INF
-    for (Y, ts) in ordered:                       # serialize: >= token_spend_interval apart, in order
-        st = max(ts, prev + token_spend_interval)
+    for (Y, (ts, ex)) in ordered:
+        st = min(max(ts, prev + token_spend_interval), ex)
         spends.append((Y, st))
         prev = st
     return spends

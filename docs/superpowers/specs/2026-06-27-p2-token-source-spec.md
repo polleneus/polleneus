@@ -108,18 +108,20 @@ every existing slice bit-identical).
   bare "> 1", which is trivial) — else the "fix helps" claim is vacuous (mirrors the anonymity slices'
   must-localize discipline).
 
-### Measured result (bounded sweep, static holder, density 6 — `token_race_sweep`)
+### Measured result (reproducible: committed `sweep_cfg` fixture, static holder, density 6, seed 7, reps 5)
 
-BROKEN (no rate-limit) = **D = 13 slots/token**. The gossip arm as a function of the
-**rate-ratio = gossip_delay ÷ token_spend_interval**:
+BROKEN (no rate-limit) = **D = 11 slots/token** (n = 38). The gossip arm as a function of the
+**rate-ratio = gossip_delay ÷ token_spend_interval** (`token_race_sweep`):
 
 | rate-ratio (gossip per-hop ÷ spend spacing) | slots/token | regime |
 |---|---|---|
-| ≤ 0.5 (gossip outpaces spends) | **1.0** | rate-limit works |
-| 1.0 | 1.3 | works |
-| 2.0 | 2.7 | partial |
-| 4.0 | 4.7 | partial |
-| **burst** (`token_spend_interval = 0`) | **13.0 = D** | **NO rate-limit** |
+| 0.12 – 0.25 (gossip outpaces spends) | **1.0** | rate-limit works (mint-only floor) |
+| 0.5 – 1.0 | 1.4 | works |
+| 2.0 | 2.6 | partial |
+| 4.0 | 4.8 | partial |
+| **burst** (`token_spend_interval = 0`) | **11.0 = D** | **NO rate-limit** |
+
+*(Reproduce: `token_race_sweep(sweep_cfg(), density=6.0, reps=5, race_points=[(0.5,4),(0.5,2),(1,2),(2,2),(2,1),(4,1),(1,0)], holder="static")`; exact arena in `sim/tests/test_token.py::sweep_cfg`. `gossip_delay=0` is excluded as an unphysical instantaneous front.)*
 
 **The honest headline (corrects §9.3):** the token-anchored nullifier + gossip delivers the "≈ 1
 slot/token" rate-limit **only when seen-`nf` gossip keeps pace with the holder's serialized spend rate
@@ -127,10 +129,18 @@ slot/token" rate-limit **only when seen-`nf` gossip keeps pace with the holder's
 its co-present neighbors faster than `nf` can spread, it provides **essentially no rate-limit
 (slots/token → D)**. §9.3's unconditional "D → 1 venue-wide" is an **instantaneous-gossip idealization**;
 the physical guarantee is **conditional on the gossip-vs-spend race**, and the static-burst case is the
-worst case the headline must not hide. *(Mobility raises the **absolute** leak — a mobile holder meets
-far more acceptors, D ≈ 75–149 vs 8–14 — but a **smaller** residual fraction, since its spends spread
-over a trajectory the front can keep pace with; "mobile evades more" is false as a fraction.)* This
-**qualifies the §9.3 public anti-flood claim** and is carried to release-blockers at campaign close-out.
+worst case the headline must not hide.
+
+**Mobility (two distinct worst-case axes):** a **mobile** holder leaks a much larger **absolute**
+residual (it meets far more acceptors, D ≈ 75–149 vs 8–14). Its residual **fraction** depends on the
+rate-ratio: when gossip is **fast** relative to spends (rate-ratio ≲ 1) the static holder leaks a larger
+*fraction* (its few co-present acceptors are spent before the front catches them); when gossip is **slow**
+(rate-ratio ≳ 2) the **mobile holder evades more** even as a fraction (it reaches fresh pockets ahead of
+the front). So "mobile always evades more" is false — it is true only in the slow-gossip regime, and
+mobile is unconditionally worse for *total* leak. *(All spend times are capped at the acceptor's contact
+`exit_` — a serialized spend can never occur after the holder is out of range; this corrects a round-2
+bug where unphysically-late spends gave the gossip front extra time, understating the mobile leak ~3×.)*
+This **qualifies the §9.3 public anti-flood claim** and is carried to release-blockers at campaign close-out.
 
 ## 5. Invariant & honesty check
 

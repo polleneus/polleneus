@@ -92,6 +92,38 @@ class Config:
     #   all of a static holder's co-present spends fire at ~t0, so gossip can never beat them — the no-rate-limit
     #   worst case). >0 spreads spends so the gossip front can RACE to later acceptors. The §4 headline is the
     #   slots/token RACE over the gossip-rate (gossip_delay) ÷ spend-rate (token_spend_interval) ratio.
+    # P3 PR-1 clock-independent expiry (spec 2026-06-28; SCOPED-DOWN after code+security review). The SHIPPED
+    # mechanisms are: H (clearance), B (spread cap), and an EXPIRY-ONLY clock with an EXPLICIT clock_trusted
+    # input (driven by `blackout`). ALL default-inert ⇒ every existing slice is bit-identical:
+    # H=None+B=None+sigma=0+blackout=False ⇒ engine takes the legacy expire(t) path and draws NO new RNG
+    # (namespaces 10/11 untouched). See engine.py for the expiry predicate.
+    hold_budget: float | None = None        # H: LOCAL hold-budget. A node drops a held blob when
+    #   (local_now − local_receipt) >= H. Elapsed-since-receipt is OFFSET-INVARIANT (clock skew cancels) ⇒
+    #   the clock-independent expiry that clears the soup. None ⇒ off (no hold-budget drop). NOT hop-energy.
+    hop_energy_init: int | None = None      # B: anti-amplification SPREAD cap (separate from H). Origin starts
+    #   at B; a receiver stores energy = source_energy−1; a copy that would arrive at 0 is not stored. Bounds
+    #   the spread RADIUS (~B hops), does NOT clear the soup. None ⇒ off (energy carried-but-ignored, as today).
+    clock_skew_sigma: float = 0.0           # per-node RTC offset ~ Normal(0, sigma), drawn from disjoint
+    #   namespace cfg.rng(10,i), gated on sigma>0. The offset enters ONLY the expiry comparison — never
+    #   contact/causality/acquisition/measurement timing (those stay TRUE global time). 0 ⇒ off (perfect clock).
+    blackout: bool = False                  # EXPLICIT clock-trust input: no NTP / no trusted absolute clock ⇒
+    #   ALL nodes clock_untrusted (origin-TTL path dropped network-wide; clearance falls to H). Also enables
+    #   future-dated creation-ts (see blackout_future_max). This is the ONLY live driver of clock_trusted.
+    blackout_future_max: float = 0.0        # if blackout, forge created_at into the future by U(0, this) drawn
+    #   from disjoint namespace cfg.rng(11,id); causality still uses the TRUE origination time. Justification:
+    #   a future-dated created_at (a) defeats the absolute origin-TTL test even on a trusted clock and (b)
+    #   evades the oldest-by-created eviction (it looks YOUNGEST) — the point being that H, which keys on the
+    #   TRUE receipt time not created_at, still clears it. 0 ⇒ no forging.
+    # --- DEFERRED (open problem; NOT wired to live behavior; carried only for the manifest + the §4 bound) ---
+    clock_trust_threshold: float | None = None  # DEFERRED. Intended as the tolerated-offset bound for the
+    #   monotonicity residual gate (a slow clock within ±threshold can extend life up to TTL+threshold). The
+    #   gossip-median auto-flag that would USE it is DEFERRED: median-of-created_at tracks the center-of-mass of
+    #   message AGES, not "now", so |local_now − median| grows with elapsed time even for a perfect clock ⇒ it
+    #   spuriously flags untrusted. A robust passive clock-trust signal from the sealed created_at stream is an
+    #   OPEN PROBLEM. Not read by the engine; clearance (H) does not depend on it.
+    creation_ts_clamp: float | None = None  # DEFERRED. A coarse admission-time future-clamp depended on the same
+    #   broken median (and false-rejects honest-fresh mail on a lagging median), so it is NOT wired. Residual:
+    #   a forged-future created_at on a TRUSTED clock is cleared anyway by H (H uses the true receipt time).
 
     def validate(self) -> None:
         if self.boundary not in ("torus", "walls"):
@@ -174,6 +206,19 @@ class Config:
             raise ValueError("gossip_delay must be >= 0")
         if self.token_spend_interval < 0.0:
             raise ValueError("token_spend_interval must be >= 0")
+        # P3 clock-independent expiry knobs (None ⇒ off; otherwise must be a sane magnitude)
+        if self.hold_budget is not None and self.hold_budget <= 0.0:
+            raise ValueError("hold_budget (H) must be > 0 when set (None ⇒ off)")
+        if self.hop_energy_init is not None and self.hop_energy_init < 1:
+            raise ValueError("hop_energy_init (B) must be >= 1 when set (None ⇒ off)")
+        if self.clock_skew_sigma < 0.0:
+            raise ValueError("clock_skew_sigma must be >= 0")
+        if self.clock_trust_threshold is not None and self.clock_trust_threshold < 0.0:
+            raise ValueError("clock_trust_threshold must be >= 0 when set (None ⇒ off)")
+        if self.creation_ts_clamp is not None and self.creation_ts_clamp < 0.0:
+            raise ValueError("creation_ts_clamp must be >= 0 when set (None ⇒ off)")
+        if self.blackout_future_max < 0.0:
+            raise ValueError("blackout_future_max must be >= 0")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

@@ -22,6 +22,7 @@ delivery via on_deliver(node, blob, now). one_hop (test mutant) disables forward
 """
 from __future__ import annotations
 import math
+from dataclasses import replace
 import numpy as np
 from .cell_list import neighbor_pairs
 from .geometry import contact_interval, in_range
@@ -71,10 +72,35 @@ class Engine:
         self.relayed: dict[int, set] = {}                                # node -> set of distinct foreign ids forwarded
         self.gated_origins: set = set()                                  # blob ids subject to the originate-gate
         #   (only MEASURED cohort originations; background soup flows freely so the gate can't deadlock)
+        # P3 clock-independent expiry (spec 2026-06-28). ALL default-inert ⇒ the legacy expire(t) path runs and
+        # NO new RNG is drawn (namespaces 10/11 untouched) ⇒ every existing slice is bit-identical.
+        self._H = cfg.hold_budget                       # local hold-budget (clearance); None ⇒ off
+        self._B = cfg.hop_energy_init                   # hop-energy spread cap (separate); None ⇒ off
+        self._offset_on = cfg.clock_skew_sigma > 0.0    # per-node RTC offset (EXPIRY-ONLY)
+        # clock_trusted is an EXPLICIT input, NOT auto-derived: the clock is trusted unless blackout is set.
+        # (The gossip-median auto-flag was DEFERRED — median-of-created_at tracks message-age center-of-mass,
+        #  not "now", so |local_now − median| grows with elapsed time even for a perfect clock. A robust
+        #  passive clock-trust signal from the sealed created_at stream is an open problem; see config.py.
+        #  Clearance via H never depends on it.)
+        self._blackout = bool(cfg.blackout)
+        self._future_on = self._blackout and cfg.blackout_future_max > 0.0
+        # the extended expiry sweep runs iff an expiry knob is engaged (else the legacy call → bit-identical)
+        self._expiry_ext = (self._H is not None or self._offset_on or self._blackout)
+        # per-node RTC offset: drawn from DISJOINT namespace 10, gated on sigma>0 (no RNG drawn when off)
+        self.clock_offset = ([float(cfg.rng(10, i).normal(0.0, cfg.clock_skew_sigma)) for i in range(cfg.n)]
+                             if self._offset_on else None)
 
     def inject(self, blob, node_idx, gated=False) -> None:
+        cfg = self.cfg
+        if self._B is not None and blob.hop_energy is None:   # origin starts at full hop-energy B
+            blob = replace(blob, hop_energy=self._B)
+        receipt_t = blob.created_at                            # legacy: acquired = created_at (UNCHANGED off-path)
+        if self._future_on:                                   # blackout: forge a FUTURE wire-ts, keep TRUE causality
+            receipt_t = self.t                                #   acquisition = true origination (delivery graph intact)
+            fwd = float(cfg.rng(11, int(blob.id)).uniform(0.0, cfg.blackout_future_max))
+            blob = replace(blob, created_at=self.t + fwd)     #   forged created_at defeats the absolute origin-TTL test
         self.origin.setdefault(blob.id, node_idx)
-        self.acquired[(node_idx, blob.id)] = blob.created_at  # origin holds it from creation
+        self.acquired[(node_idx, blob.id)] = receipt_t        # CAUSALITY: true origination time, NEVER the forged ts
         if gated:                                             # subject to the receive-before-originate gate
             self.gated_origins.add(blob.id)
         self._draw_mix_delay(node_idx, blob.id)
@@ -88,6 +114,17 @@ class Engine:
         if self._mixing_on:                                    # Poisson mixing on -> hold before forwardable
             self.forward_delay[(node_idx, blob_id)] = float(
                 self.cfg.rng(5, int(blob_id), int(node_idx)).exponential(1.0 / self.cfg.mixing_lambda))
+
+    # --- P3 clock-independent expiry helpers (all no-ops / true-time on the default-inert path) -------------
+    def _offset(self, nd: int) -> float:
+        """Node nd's RTC offset; 0.0 when the clock model is off. EXPIRY-ONLY (never causality/measurement)."""
+        return self.clock_offset[nd] if self.clock_offset is not None else 0.0
+
+    def _clock_trusted(self, nd: int, now: float) -> bool:
+        """clock_trusted gate for the origin-TTL path — an EXPLICIT input, not auto-derived. Trusted unless
+        blackout (no NTP / no trusted absolute clock). The deferred passive auto-flag is NOT in this path, so
+        clearance (H) can never be defeated by a mis-estimated clock-trust signal."""
+        return not self._blackout
 
     def _recon_cells(self, n: int) -> float:
         """Scheduled cell count S(n) = recon_c0 + ceil(recon_k * n), a pure function of the public
@@ -180,7 +217,14 @@ class Engine:
                 st["offered"].update(bl.id for bl in self._offerable(src, self.buffers[dst].ids(), exit_))
             active.append((i, j, enter, exit_, st, eff))
         for nd in expire_nodes:                            # sweep dead blobs regardless of airtime
-            self.buffers[nd].expire(t)
+            if self._expiry_ext:                           # P3 clock-independent expiry (H / clock / blackout)
+                receipt = ({bid: self.acquired.get((nd, bid)) for bid in self.buffers[nd].ids()}
+                           if self._H is not None else None)
+                self.buffers[nd].expire(t, hold_budget=self._H, receipt=receipt,
+                                        clock_trusted=self._clock_trusted(nd, t),
+                                        clock_offset=self._offset(nd))
+            else:
+                self.buffers[nd].expire(t)                  # legacy path → bit-identical
         progressed = True                                  # FIXPOINT: complete in-step multi-hop chains
         while progressed:
             progressed = False
@@ -297,15 +341,25 @@ class Engine:
                 break
             db = self.buffers[dst]
             for blob in select_offers(self._offerable(src, db.ids(), exit_), set(), remaining, self.rng):
+                out_blob = blob
+                if self._B is not None:                            # hop-energy spread cap: receiver = source_energy-1
+                    se = blob.hop_energy
+                    if se is not None and se - 1 <= 0:             # a copy that would arrive at energy 0 is NOT stored
+                        # NOTE: the energy cap is applied HERE (storage), not in _offerable, so a frontier
+                        # copy declined at energy 0 was still tallied as "offered" — the offered_blobs metric
+                        # slightly OVER-counts under a binding B. Clearance/spread are unaffected (it never
+                        # gets stored/forwarded); only the airtime offered-set bookkeeping is loose under B.
+                        continue
+                    out_blob = replace(blob, hop_energy=(se - 1) if se is not None else None)
                 # causal + mixing: not before src acquired it AND its forward-hold elapsed
                 deliver_t = max(enter, self.acquired[(src, blob.id)] + self.forward_delay.get((src, blob.id), 0.0))
-                if db.offer(blob, deliver_t) == "Accepted":
+                if db.offer(out_blob, deliver_t) == "Accepted":
                     self.acquired[(dst, blob.id)] = deliver_t
                     self._draw_mix_delay(dst, blob.id)                 # dst now holds it -> its own mixing hold
                     if self.origin.get(blob.id) != src:               # src relayed a FOREIGN id (gate accounting)
                         self.relayed.setdefault(src, set()).add(blob.id)
                     self.transmissions += 1
-                    self.on_deliver(dst, blob, deliver_t)
+                    self.on_deliver(dst, out_blob, deliver_t)
                     remaining -= 1
                     moved += 1
                     served_ids.append(blob.id)

@@ -110,9 +110,17 @@ Parent §P6: multi-OS transport conformance harness; adversarial-eviction CI gat
 CI** (an offline-first tool must build/test with no network); the simulator's percolation +
 airtime + anonymity gates kept green as the model evolves.
 
-- **Status:** the simulator's own gates (percolation oracle, airtime publish-gate, anonymity
-  must-localize/exposure/defense/intersection gates) are green in-repo. The **client-side** transport
-  conformance + adversarial-eviction + internet-disabled CI are OPEN (no client yet).
+- **Status (P6):** the simulator's **fast** gates (percolation oracle, airtime publish-gate, anonymity
+  must-localize/exposure/defense/intersection gates) are green and run via `pytest` in-repo (242 passing).
+  **Internet-disabled is ENFORCED as a runtime GUARD** for the simulator: an in-repo gate
+  (`test_offline_first.py`) rebinds the socket connection entry points around a real run on **every `pytest`**
+  — a regression guard over the common socket stack (in-process; not a supply-chain proof). The **GitHub
+  Actions auto-run** (`ci.yml` per-push + `gates-nightly.yml` for the heavy `-m slow` sweeps, timing
+  UNVERIFIED) is **authored but its commit is PENDING the `polleneus-dev` token gaining `workflow` scope** (a
+  user credential change). The **client-side** transport conformance + adversarial-eviction + client
+  internet-disabled CI remain **OPEN** (no client yet); the **USRP PHY** + **source-estimator** field audits
+  remain **OWED** (hardware). Protocols for all of these are written in
+  [p6-continuous-verification-spec.md §4](specs/2026-06-28-p6-continuous-verification-spec.md).
 
 ---
 

@@ -181,6 +181,56 @@ def static_delivery_sweep(base_cfg, degrees, reps: int) -> list[dict]:
     return rows
 
 
+FERRYING_REGIME_TAG = ("[UPPER BOUND — RWP open-field full re-mixing, no airtime cost on this path; "
+                       "real constrained/clustered mobility delivers LESS and needs a LARGER budget]")
+
+
+def ferrying_budget_sweep(base_cfg, densities, budgets, reps: int) -> dict:
+    """P4 PR-1 — the cold-start ferrying lift. For each SUB-THRESHOLD density d and time budget T (the blob's
+    ttl == measure_window == T = the P3 hold-budget made into the controllable knob), run the mobile engine
+    (store-carry-forward = blind ferrying) and report delivery(d,T) + mean latency, against the engine-free
+    STATIC component-reachability bound static_bound(d) (which collapses below d_c~=4.51). The lift =
+    delivery − static_bound shows that mobility delivers BELOW the static percolation threshold, governed by
+    the TIME BUDGET, at a latency cost. UPPER BOUND (RWP). Bounded: cold-start ⇒ small N ⇒ cheap.
+    """
+    w, h, r = base_cfg.width, base_cfg.height, base_cfg.radius
+    rows = []
+    for di, d in enumerate(densities):
+        n = max(2, density_to_n(d, w, h, r))
+        # STATIC bound: snapshot component-reachability over a Poisson ensemble (engine-free, cheap)
+        static_vals = []
+        for rep in range(reps):
+            rng = np.random.default_rng(np.random.SeedSequence([base_cfg.master_seed, 7777, di, rep]))
+            pos = placement(n, w, h, rng)
+            static_vals.append(same_component_pair_fraction(pos, r, w, h, base_cfg.boundary))
+        static_bound = float(np.mean(static_vals))
+        per_budget = {}
+        for bi, T in enumerate(budgets):
+            ratios, lats = [], []
+            for rep in range(reps):
+                cfg = replace(base_cfg, n=n, ttl=float(T), measure_window=float(T), warmup=0.0,
+                              master_seed=_seed_for(base_cfg.master_seed, di * 1000 + bi, rep))
+                rr = run_one(cfg)
+                ratios.append(rr["delivery_ratio"])
+                lats.extend(rr["latencies"])
+            m, lo, hi = mean_ci(ratios)
+            # t50 = median of the POOLED delivered latencies. NB delivered-only (survivorship: never-delivered
+            # pairs excluded) AND right-censored at T (a latency can't exceed the budget) -> a LOWER bound on
+            # the true ferrying delay. Reported instead of the mean, which the same censoring inflates upward.
+            per_budget[float(T)] = {
+                "delivery_mean": m, "ci_lo": lo, "ci_hi": hi,
+                "t50": float(np.median(lats)) if lats else float("nan"),   # delivered-only, censored at T
+                "lift": m - static_bound, "per_rep": ratios,
+            }
+        # The honest deliverable (NOT the saturated 1.0 ceiling, which is ergodic-mixing-trivial for any d>0):
+        # the SMALLEST budget reaching 50% delivery. It rises as density falls (and -> the largest budget /
+        # None when the venue is too thin to reach 50% within the swept range).
+        b2half = next((float(T) for T in budgets if per_budget[float(T)]["delivery_mean"] >= 0.5), None)
+        rows.append({"density": d, "n": n, "static_bound": static_bound,
+                     "budget_to_half": b2half, "per_budget": per_budget})
+    return {"rows": rows, "budgets": [float(T) for T in budgets], "regime_tag": FERRYING_REGIME_TAG}
+
+
 CLUSTER_REGIME_TAG = "[MOBILITY REGIME = clustered gathering; uniform/RWP is the optimistic baseline]"
 
 

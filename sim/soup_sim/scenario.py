@@ -419,7 +419,7 @@ def _run_one_anonymity(cfg):
     cfg.validate()
     mob = make_mobility(cfg, cfg.rng(0))
     metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
-    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i)) for i in range(cfg.n)]
+    buffers = [NodeBuffer(cfg.buffer_cap, seen_window(cfg), cfg.rng(3, i)) for i in range(cfg.n)]
     budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
                            model=cfg.airtime_model, beta=cfg.beta,
                            t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
@@ -477,7 +477,7 @@ def _run_one_anonymity_tracked(cfg, k_max, n_tracked, stride):
     cfg.validate()
     mob = make_mobility(cfg, cfg.rng(0))
     metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
-    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i)) for i in range(cfg.n)]
+    buffers = [NodeBuffer(cfg.buffer_cap, seen_window(cfg), cfg.rng(3, i)) for i in range(cfg.n)]
     budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
                            model=cfg.airtime_model, beta=cfg.beta,
                            t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)
@@ -1177,7 +1177,7 @@ def _run_one_token(cfg) -> dict:
     cfg.validate()
     mob = make_mobility(cfg, cfg.rng(0))
     metrics = Metrics(cfg, cfg.warmup, cfg.measure_window)
-    buffers = [NodeBuffer(cfg.buffer_cap, cfg.ttl + cfg.seen_margin, cfg.rng(3, i)) for i in range(cfg.n)]
+    buffers = [NodeBuffer(cfg.buffer_cap, seen_window(cfg), cfg.rng(3, i)) for i in range(cfg.n)]
     budget = AirtimeBudget(cfg.throughput_ideal, cfg.alpha, cfg.t_setup, cfg.p_fail, cfg.blob_size,
                            model=cfg.airtime_model, beta=cfg.beta,
                            t_setup_slope=cfg.t_setup_slope, n_channels=cfg.n_channels)

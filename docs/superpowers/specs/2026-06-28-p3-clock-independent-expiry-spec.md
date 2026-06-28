@@ -49,18 +49,17 @@ absolute test `local_now ≥ creation-ts+TTL` does not. So we separate **two gen
 - **Sender-TTL path (respect the sender's intent when the clock is trustable).** When `clock_trusted`, a
   node also expires at `local_now ≥ creation-ts + TTL` (the sender's authoritative, ≤7 d limit). This is
   **in addition to** R2; the hold-budget `H` is the floor that holds when the clock is *not* trusted.
-- **Gossip-median mesh clock — a clock-TRUST / premature-deletion guard (NOT a clearance mechanism).**
-  Each phone estimates a **trimmed-median of `creation-ts` values observed in its own relay/trial-decrypt
-  stream** (no origin oracle — sealed-sender exposes only per-blob `created_at`), and sets itself
-  **`clock_untrusted` from the OBSERVABLE `|local_now − gossip_median| > clock_trust_threshold`** (never a
-  ground-truth offset it cannot see). When untrusted it **drops the sender-TTL path and relies on `H`**
-  (which clears regardless). It also drives the §5 ratchet clock. Clearance never depends on it.
-- **Creation-ts future-clamp — a COARSE backstop against EXTREME future-dating only.** A node clamps a
-  blob whose `creation-ts` is implausibly far ahead of its gossip-median (used only to stop a forged-far-
-  future ts from defeating the *sender-TTL* path). It is deliberately **loose** (so a lagging-median /
-  cold-start node never false-rejects honest-fresh mail); moderate forgery is bounded not by the clamp but
-  by the clock-independent hold-budget `H`. Clamping is **admission control at `offer()`** (adjust/reject
-  on receipt), **not** a per-step expiry condition.
+- **`clock_trusted` is an EXPLICIT input (build-review round 1).** In the sim it is a configured operating
+  mode (`blackout` ⇒ untrusted; default trusted) — when untrusted a node **drops the sender-TTL path and
+  relies on `H`** (which clears regardless). Clearance never depends on a clock-trust *estimate*.
+- **Gossip-median mesh clock + creation-ts future-clamp — DEFERRED (open problem; NOT shipped as working).**
+  *Build review round 1 found the obvious passive estimator is structurally non-functional: a
+  trimmed-median of observed `created_at` tracks the center-of-mass of message **ages**, not wall-clock
+  "now", so `|local_now − median|` grows with elapsed time and flags even a perfect clock as untrusted; and
+  the max/freshest `created_at` is forgeable.* A robust **passive** clock-trust signal from the sealed
+  `created_at` stream is therefore an **open problem**, deferred to a later PR. It is gated OFF and not
+  relied upon; **the clearance guarantee (`H`) does not need it.** (A real client still needs *some*
+  clock-trust signal to decide `clock_trusted` — flagged as the open follow-up, not solved here.)
 - **Expiry predicate (R2 is the unconditional ceiling):**
   `expired = (local_now − local_receipt_time ≥ H) OR (clock_trusted AND local_now ≥ creation-ts+TTL)`.
   The hold-budget `H` fires regardless of clock; the sender-TTL path only when trusted. Both only ever
@@ -123,10 +122,11 @@ clamp/median off ⇒ perfect global clock + carried-but-ignored energy = today. 
   nodes over-retain (drop by `H` regardless of clock), but a *malicious* holder keeping a blob alive is
   **unpreventable** in an open flood — claimed plainly, no false impossibility; (2) the sender-TTL path can
   *extend* an honest blob's life by up to `clock_trust_threshold` (bounded residual, not zero); (3)
-  premature deletion from a backdated ts / fast clock is **not fixed** here and is stated; (4) the
-  gossip-median is a *clock-trust/premature-deletion guard*, **not** the clearance mechanism (clearance is
-  `H`, which needs no median); (5) the future-clamp is a *coarse* extreme-forgery backstop on the sender-TTL
-  path only, deliberately loose.
+  premature deletion from a backdated ts / fast clock is **not fixed** here and is stated; (4) `clock_trusted`
+  is an explicit operating-mode input — a working **passive** clock-trust estimator is **DEFERRED as an open
+  problem** (the median-of-`created_at` approach is non-functional; clearance does not depend on it); (5) the
+  future-clamp is likewise deferred (it depended on the median) — forged-future on a *trusted* clock is a
+  residual that `H` still clears.
 - **Forward-looking honesty (for P5):** the clock this PR produces is **biasable toward the future**; the
   P5 time-ratchet **must bound forward jumps / require corroboration before deleting keys**, or a
   timestamp flood could destroy unread mail. Flagged now so P5 inherits the caveat.

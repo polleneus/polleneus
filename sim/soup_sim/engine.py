@@ -77,19 +77,18 @@ class Engine:
         self._H = cfg.hold_budget                       # local hold-budget (clearance); None ⇒ off
         self._B = cfg.hop_energy_init                   # hop-energy spread cap (separate); None ⇒ off
         self._offset_on = cfg.clock_skew_sigma > 0.0    # per-node RTC offset (EXPIRY-ONLY)
-        self._gossip_on = cfg.clock_trust_threshold is not None
-        self._clamp_on = cfg.creation_ts_clamp is not None
+        # clock_trusted is an EXPLICIT input, NOT auto-derived: the clock is trusted unless blackout is set.
+        # (The gossip-median auto-flag was DEFERRED — median-of-created_at tracks message-age center-of-mass,
+        #  not "now", so |local_now − median| grows with elapsed time even for a perfect clock. A robust
+        #  passive clock-trust signal from the sealed created_at stream is an open problem; see config.py.
+        #  Clearance via H never depends on it.)
         self._blackout = bool(cfg.blackout)
         self._future_on = self._blackout and cfg.blackout_future_max > 0.0
-        # the extended expiry sweep runs iff any P3 expiry knob is engaged (else the legacy call → bit-identical)
-        self._expiry_ext = (self._H is not None or self._offset_on or self._gossip_on
-                            or self._clamp_on or self._blackout)
+        # the extended expiry sweep runs iff an expiry knob is engaged (else the legacy call → bit-identical)
+        self._expiry_ext = (self._H is not None or self._offset_on or self._blackout)
         # per-node RTC offset: drawn from DISJOINT namespace 10, gated on sigma>0 (no RNG drawn when off)
         self.clock_offset = ([float(cfg.rng(10, i).normal(0.0, cfg.clock_skew_sigma)) for i in range(cfg.n)]
                              if self._offset_on else None)
-        # gossip-median: per-node OBSERVED created_at stream (tracked only when median/clamp engaged)
-        self._track_created = self._gossip_on or self._clamp_on
-        self.observed_created: dict[int, list] | None = {} if self._track_created else None
 
     def inject(self, blob, node_idx, gated=False) -> None:
         cfg = self.cfg
@@ -104,7 +103,6 @@ class Engine:
         self.acquired[(node_idx, blob.id)] = receipt_t        # CAUSALITY: true origination time, NEVER the forged ts
         if gated:                                             # subject to the receive-before-originate gate
             self.gated_origins.add(blob.id)
-        self._observe_created(node_idx, blob.created_at)
         self._draw_mix_delay(node_idx, blob.id)
         self.buffers[node_idx].offer(blob, now=self.t)
 
@@ -122,49 +120,11 @@ class Engine:
         """Node nd's RTC offset; 0.0 when the clock model is off. EXPIRY-ONLY (never causality/measurement)."""
         return self.clock_offset[nd] if self.clock_offset is not None else 0.0
 
-    def _observe_created(self, nd: int, created_at: float) -> None:
-        """Record a created_at into nd's gossip stream (only when median/clamp is engaged)."""
-        if self.observed_created is not None:
-            self.observed_created.setdefault(nd, []).append(created_at)
-
-    def _gossip_median(self, nd: int):
-        """Trimmed-median over the created_at values nd has OBSERVED in its own stream (no origin oracle).
-        Drops a 10% tail each side so a liar MINORITY cannot drag the estimate. None if nothing observed."""
-        obs = self.observed_created.get(nd) if self.observed_created is not None else None
-        if not obs:
-            return None
-        arr = sorted(obs)
-        k = len(arr)
-        trim = int(k * 0.1)
-        core = arr[trim: k - trim] if k - 2 * trim > 0 else arr
-        m = len(core)
-        return core[m // 2] if m % 2 else 0.5 * (core[m // 2 - 1] + core[m // 2])
-
     def _clock_trusted(self, nd: int, now: float) -> bool:
-        """clock_trusted gate for the origin-TTL path. Blackout ⇒ never trusted (no NTP). With the gossip
-        guard on, untrusted iff |local_now − gossip_median| > threshold (the OBSERVABLE deviation). Cold
-        start (no observations) ⇒ trust (cannot judge — documented weakness; clearance never relies on this)."""
-        if self._blackout:
-            return False
-        if not self._gossip_on:
-            return True
-        med = self._gossip_median(nd)
-        if med is None:
-            return True
-        local_now = now + self._offset(nd)
-        return abs(local_now - med) <= self.cfg.clock_trust_threshold
-
-    def _clamp_created(self, nd: int, blob):
-        """COARSE admission-time future-clamp: a created_at implausibly far above nd's gossip-median is pulled
-        DOWN to (median + clamp) so a forged far-future ts cannot defeat the origin-TTL path. Deliberately
-        LOOSE and cold-start safe (no median ⇒ no clamp) so honest-fresh mail on a lagging node is never rejected."""
-        med = self._gossip_median(nd)
-        if med is None:
-            return blob
-        ceiling = med + self.cfg.creation_ts_clamp
-        if blob.created_at > ceiling:
-            return replace(blob, created_at=ceiling)
-        return blob
+        """clock_trusted gate for the origin-TTL path — an EXPLICIT input, not auto-derived. Trusted unless
+        blackout (no NTP / no trusted absolute clock). The deferred passive auto-flag is NOT in this path, so
+        clearance (H) can never be defeated by a mis-estimated clock-trust signal."""
+        return not self._blackout
 
     def _recon_cells(self, n: int) -> float:
         """Scheduled cell count S(n) = recon_c0 + ceil(recon_k * n), a pure function of the public
@@ -385,15 +345,16 @@ class Engine:
                 if self._B is not None:                            # hop-energy spread cap: receiver = source_energy-1
                     se = blob.hop_energy
                     if se is not None and se - 1 <= 0:             # a copy that would arrive at energy 0 is NOT stored
+                        # NOTE: the energy cap is applied HERE (storage), not in _offerable, so a frontier
+                        # copy declined at energy 0 was still tallied as "offered" — the offered_blobs metric
+                        # slightly OVER-counts under a binding B. Clearance/spread are unaffected (it never
+                        # gets stored/forwarded); only the airtime offered-set bookkeeping is loose under B.
                         continue
                     out_blob = replace(blob, hop_energy=(se - 1) if se is not None else None)
-                if self._clamp_on:                                 # admission-time creation-ts future-clamp (loose)
-                    out_blob = self._clamp_created(dst, out_blob)
                 # causal + mixing: not before src acquired it AND its forward-hold elapsed
                 deliver_t = max(enter, self.acquired[(src, blob.id)] + self.forward_delay.get((src, blob.id), 0.0))
                 if db.offer(out_blob, deliver_t) == "Accepted":
                     self.acquired[(dst, blob.id)] = deliver_t
-                    self._observe_created(dst, out_blob.created_at)
                     self._draw_mix_delay(dst, blob.id)                 # dst now holds it -> its own mixing hold
                     if self.origin.get(blob.id) != src:               # src relayed a FOREIGN id (gate accounting)
                         self.relayed.setdefault(src, set()).add(blob.id)

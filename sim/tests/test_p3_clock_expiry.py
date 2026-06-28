@@ -108,7 +108,9 @@ def test_H_drops_at_exactly_H_untrusted_isolates_hold_budget():
     b.expire(now=9.9, hold_budget=10.0, receipt=rec, clock_trusted=False)
     assert b.has(1)                              # elapsed 9.9 < H=10 -> alive
     b.expire(now=10.0, hold_budget=10.0, receipt=rec, clock_trusted=False)
-    assert not b.has(1)                          # elapsed 10 >= H -> dropped (realized lifetime == H)
+    assert not b.has(1)                          # elapsed 10 >= H -> dropped. Buffer-level the realized
+    #   lifetime is exactly H (we call expire at the boundary); at ENGINE scale the sweep is per-step, so
+    #   the realized honest lifetime is <= H + one expiry-sweep step (dt), not exactly H.
     assert 1 in b.seen
 
 
@@ -177,18 +179,37 @@ def test_default_inert_no_clock_rng_and_legacy_path():
     bufs = [NodeBuffer(c.buffer_cap, seen_window(c), c.rng(3, i)) for i in range(c.n)]
     eng = Engine(c, mob, bufs, AirtimeBudget(1e9, 0, 0, 0, 1.0), c.rng(1), on_deliver=lambda *_: None)
     assert eng.clock_offset is None        # sigma=0 -> NO rng(10,i) drawn
-    assert eng.observed_created is None     # no gossip/clamp -> no observation tracking
     assert eng._expiry_ext is False         # legacy expire(t) path runs -> bit-identical
 
 
-def test_default_inert_run_one_identical():
+def test_deferred_median_clamp_not_wired():
+    """The gossip-median auto-flag + creation-ts clamp are DEFERRED (open problem): no engine state, no
+    helpers, and setting their (still-validated) config fields does NOT change a run — clearance never
+    depended on them."""
+    eng = Engine.__new__(Engine)            # no instance needed: assert the helpers are gone from the class
+    assert not hasattr(eng, "observed_created")
+    assert not hasattr(Engine, "_gossip_median") and not hasattr(Engine, "_clamp_created")
+    assert not hasattr(Engine, "_observe_created")
+    # the deferred config knobs are inert: a run with them set == a run without them set
     base = tiny()
-    r_default = run_one(base)
-    r_explicit_off = run_one(replace(base, hold_budget=None, hop_energy_init=None,
-                                     clock_skew_sigma=0.0, clock_trust_threshold=None,
-                                     creation_ts_clamp=None, blackout=False))
+    r0 = run_one(base)
+    r1 = run_one(replace(base, clock_trust_threshold=5.0, creation_ts_clamp=100.0))
     for k in ("delivery_ratio", "transmissions", "latencies", "circulated_per_min", "charged_airtime"):
-        assert r_default[k] == r_explicit_off[k]
+        assert r0[k] == r1[k]
+
+
+def test_bit_identity_inert_knob_is_noop():
+    """Non-tautological default-inert check: flip a P3 knob that MUST be a no-op given the others off.
+    clock_skew_sigma only touches the expiry comparison, so with expiry unable to fire (huge ttl + huge
+    H + trusted) the FULL run_one result is identical to sigma=0 — the offset machinery (incl. its
+    rng(10) draws) perturbs nothing else (metrics, other RNG namespaces)."""
+    base = tiny(ttl=1e12, hold_budget=1e12, measure_window=15.0)
+    r_off = run_one(replace(base, clock_skew_sigma=0.0))
+    r_on = run_one(replace(base, clock_skew_sigma=50.0))
+    for k in r_off:
+        if k == "manifest":
+            continue                        # manifest legitimately differs by the sigma value itself
+        assert r_off[k] == r_on[k], f"sigma flip perturbed {k}"
 
 
 # ---- THE HEADLINE: blackout soup-clearance iff H (integration, tiny) ------------------------------
@@ -221,36 +242,69 @@ def test_blackout_H_run_is_deterministic():
     assert a == b
 
 
-# ---- gossip-median + admission-time clamp (clock-trust guard; not clearance) ----------------------
+# ---- clock_trusted is an EXPLICIT input (blackout-driven), not auto-derived -----------------------
 def _engine_with(cfg):
     mob = make_mobility(cfg, cfg.rng(0))
     bufs = [NodeBuffer(cfg.buffer_cap, seen_window(cfg), cfg.rng(3, i)) for i in range(cfg.n)]
     return Engine(cfg, mob, bufs, AirtimeBudget(1e9, 0, 0, 0, 1.0), cfg.rng(1), on_deliver=lambda *_: None)
 
 
-def test_gossip_median_trimmed_and_clock_trust():
-    eng = _engine_with(tiny(clock_trust_threshold=5.0))
-    assert eng._gossip_median(0) is None                  # cold start -> None -> trusted
-    assert eng._clock_trusted(0, now=100.0) is True
-    eng.observed_created[0] = [100.0] * 9 + [1e9]         # one liar (minority) far in the future
-    assert abs(eng._gossip_median(0) - 100.0) < 1e-9      # trimmed median ignores the liar
-    assert eng._clock_trusted(0, now=100.0) is True       # |100 - 100| <= 5 -> trusted
-    assert eng._clock_trusted(0, now=200.0) is False      # |200 - 100| > 5 -> untrusted
+def test_clock_trusted_is_explicit_blackout_driven():
+    assert _engine_with(tiny())._clock_trusted(0, now=1e9) is True           # not blackout -> trusted
+    assert _engine_with(tiny(blackout=True))._clock_trusted(0, now=0.0) is False  # blackout -> untrusted
+    # the trust value does NOT drift with elapsed time (the bug the gossip-median auto-flag had):
+    eng = _engine_with(tiny())
+    assert eng._clock_trusted(0, now=0.0) == eng._clock_trusted(0, now=1e12) is True
 
 
-def test_blackout_forces_untrusted():
-    eng = _engine_with(tiny(blackout=True, clock_trust_threshold=5.0))
-    eng.observed_created = {0: [100.0]}
-    assert eng._clock_trusted(0, now=100.0) is False      # blackout -> never trusted (no NTP)
+def test_trusted_clock_clears_by_TTL_untrusted_only_by_H():
+    """blackout=False -> trusted -> origin-TTL clears even with NO H. blackout=True -> untrusted ->
+    origin-TTL never fires -> only H clears (the headline contrast, at integration scale)."""
+    base = tiny()
+    t_end = 10 * base.ttl
+    _, end_trusted_noH = held_after(replace(base, blackout=False, hold_budget=None), t_end)
+    _, end_untrusted_noH = held_after(replace(base, blackout=True, hold_budget=None), t_end)
+    _, end_untrusted_H = held_after(replace(base, blackout=True, hold_budget=base.ttl), t_end)
+    assert end_trusted_noH == 0          # trusted clock -> TTL clears the soup, no H needed
+    assert end_untrusted_noH > 0         # untrusted -> TTL never fires -> immortal without H
+    assert end_untrusted_H == 0          # untrusted -> H clears regardless of the (dropped) TTL path
 
 
-def test_creation_ts_clamp_pulls_down_extreme_future_only():
-    eng = _engine_with(tiny(creation_ts_clamp=50.0))
-    eng.observed_created[0] = [100.0] * 5                 # median ~100, ceiling = 150
-    far = Blob(1, created_at=10_000.0, ttl=30.0, size=1.0)
-    fresh = Blob(2, created_at=130.0, ttl=30.0, size=1.0)
-    assert eng._clamp_created(0, far).created_at == 150.0  # extreme-future clamped to ceiling
-    assert eng._clamp_created(0, fresh).created_at == 130.0  # honest-fresh (below ceiling) untouched
-    # cold start: no median -> no clamp (loose; never false-rejects)
-    eng2 = _engine_with(tiny(creation_ts_clamp=50.0))
-    assert eng2._clamp_created(0, far).created_at == 10_000.0
+# ---- monotonicity residual: a slow (behind) clock within ±threshold extends life up to TTL+threshold
+def test_monotonicity_residual_within_threshold_then_H_beyond():
+    TTL, thr, H = 10.0, 3.0, 1e12
+    # WITHIN threshold + TRUSTED: a clock behind by exactly `thr` fires origin-TTL late, at TTL+thr.
+    b = NodeBuffer(10, 1e9, np.random.default_rng(0))
+    b.store[1] = Blob(1, 0.0, TTL, 1.0)
+    b.expire(now=TTL + thr - 0.1, hold_budget=H, receipt={1: 0.0}, clock_trusted=True, clock_offset=-thr)
+    assert b.has(1)                                 # 12.9: local_now 9.9 < TTL -> alive (residual > TTL)
+    b.expire(now=TTL + thr, hold_budget=H, receipt={1: 0.0}, clock_trusted=True, clock_offset=-thr)
+    assert not b.has(1)                             # 13.0: realized lifetime == TTL+thr (bounded residual)
+    # BEYOND threshold -> run as UNTRUSTED -> origin-TTL never fires -> clears strictly by H instead
+    b2 = NodeBuffer(10, 1e9, np.random.default_rng(0))
+    b2.store[1] = Blob(1, 0.0, TTL, 1.0)
+    b2.expire(now=1e6, hold_budget=None, receipt=None, clock_trusted=False, clock_offset=-1e6)
+    assert b2.has(1)                                # untrusted + no H -> immortal (offset beyond any bound)
+    b2.expire(now=20.0, hold_budget=20.0, receipt={1: 0.0}, clock_trusted=False, clock_offset=-1e6)
+    assert not b2.has(1)                            # H clears it (independent of the huge offset)
+
+
+# ---- behind-clock boundary (the exact >= H crossing) ----------------------------------------------
+def test_behind_clock_boundary_drops_at_H():
+    b = NodeBuffer(10, 1e9, np.random.default_rng(0))
+    b.store[1] = Blob(1, 0.0, 1e12, 1.0)
+    b.expire(now=20.0, hold_budget=20.0, receipt={1: 0.0}, clock_trusted=True, clock_offset=-1e6)
+    assert not b.has(1)                             # offset=-1e6, H=20, receipt=0, now=20.0 -> dropped
+
+
+# ---- bounded buffer + future-dated created_at: H still clears (H keys on TRUE receipt) -------------
+def test_bounded_buffer_blackout_future_dated_clears_by_H():
+    """A CAPPED buffer evicts oldest-by-created; a future-dated created_at looks YOUNGEST so it evades
+    eviction, and (untrusted clock) the origin-TTL never fires -> immortal survivors without H. H keys on
+    the TRUE receipt time, not created_at, so it clears them anyway."""
+    base = tiny(buffer_cap=4, n_messages=12, blackout=True, blackout_future_max=200.0)
+    t_end = 10 * base.ttl
+    _, end_off = held_after(replace(base, hold_budget=None), t_end)
+    _, end_on = held_after(replace(base, hold_budget=base.ttl), t_end)
+    assert end_off > 0                              # future-dated survivors evade eviction + TTL -> immortal
+    assert end_on == 0                              # H clears them despite the forged-future created_at

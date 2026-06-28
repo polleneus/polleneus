@@ -31,8 +31,11 @@ def seen_window(cfg) -> float:
     """Seen-window span. P3 sizes it to H (+margin) when the hold-budget binds — a blob's clearance
     lifetime is then bounded by H, not TTL, so ttl+margin could be too short and the no-resurrection
     guarantee would degrade to best-effort. H=None ⇒ legacy ttl+margin ⇒ bit-identical. With H set the
-    window is max(ttl, H)+margin (covers both the origin-TTL and hold-budget drop paths)."""
+    window is max(ttl, H)+margin (covers both the origin-TTL and hold-budget drop paths). PR-2: when the
+    hold-budget is density-adaptive, the maximum clearance lifetime is H_max, so the window covers max(ttl, H_max)."""
     span = cfg.ttl if cfg.hold_budget is None else max(cfg.ttl, cfg.hold_budget)
+    if cfg.hold_budget_adaptive and cfg.hold_budget_max is not None:
+        span = max(span, cfg.hold_budget_max)
     return span + cfg.seen_margin
 
 

@@ -84,8 +84,17 @@ class Engine:
         #  Clearance via H never depends on it.)
         self._blackout = bool(cfg.blackout)
         self._future_on = self._blackout and cfg.blackout_future_max > 0.0
+        # P3 PR-2 density-adaptive hold-budget. When on, H_eff per node = H_min + (H_max−H_min)·(1−occ)^k with
+        # occ = len(store)/cap (clock-free) ⇒ offset-invariance preserved (H_eff is still a threshold on
+        # elapsed-since-receipt). When on, the fixed self._H is IGNORED. Off ⇒ self._H_eff returns self._H.
+        self._H_adaptive = bool(cfg.hold_budget_adaptive)
+        self._H_min = cfg.hold_budget_min
+        self._H_max = cfg.hold_budget_max
+        self._H_k = cfg.hold_budget_shape_k
+        # "hold-budget engaged at all" — drives receipt-building + the H_eff path (fixed OR adaptive)
+        self._H_on = (self._H is not None) or self._H_adaptive
         # the extended expiry sweep runs iff an expiry knob is engaged (else the legacy call → bit-identical)
-        self._expiry_ext = (self._H is not None or self._offset_on or self._blackout)
+        self._expiry_ext = (self._H_on or self._offset_on or self._blackout)
         # per-node RTC offset: drawn from DISJOINT namespace 10, gated on sigma>0 (no RNG drawn when off)
         self.clock_offset = ([float(cfg.rng(10, i).normal(0.0, cfg.clock_skew_sigma)) for i in range(cfg.n)]
                              if self._offset_on else None)
@@ -125,6 +134,19 @@ class Engine:
         blackout (no NTP / no trusted absolute clock). The deferred passive auto-flag is NOT in this path, so
         clearance (H) can never be defeated by a mis-estimated clock-trust signal."""
         return not self._blackout
+
+    def _H_eff(self, nd: int) -> float | None:
+        """Effective hold-budget for node nd this sweep (PR-2). Off ⇒ the fixed self._H (None ⇒ no H drop).
+        Adaptive ⇒ H_min + (H_max−H_min)·(1−occ)^k with occ = len(store)/cap clamped to [0,1] — a CLOCK-FREE
+        load signal, so the comparison against elapsed-since-receipt stays offset-invariant. Occupancy is
+        snapshotted at sweep start; H_eff ∈ [H_min, H_max] so clearance stays bounded and the soup still clears."""
+        if not self._H_adaptive:
+            return self._H
+        occ = len(self.buffers[nd].store) / self.buffers[nd].cap
+        occ = 0.0 if occ < 0.0 else (1.0 if occ > 1.0 else occ)
+        # H_eff = H_min + (H_max−H_min)·(1 − occ^k). occ=0 ⇒ H_max, occ=1 ⇒ H_min, monotone↓ in occ.
+        # k=1 ⇒ linear; k>1 ⇒ holds near H_max until the buffer is nearly full, then sheds sharply (shed late).
+        return self._H_min + (self._H_max - self._H_min) * (1.0 - occ ** self._H_k)
 
     def _recon_cells(self, n: int) -> float:
         """Scheduled cell count S(n) = recon_c0 + ceil(recon_k * n), a pure function of the public
@@ -219,8 +241,8 @@ class Engine:
         for nd in expire_nodes:                            # sweep dead blobs regardless of airtime
             if self._expiry_ext:                           # P3 clock-independent expiry (H / clock / blackout)
                 receipt = ({bid: self.acquired.get((nd, bid)) for bid in self.buffers[nd].ids()}
-                           if self._H is not None else None)
-                self.buffers[nd].expire(t, hold_budget=self._H, receipt=receipt,
+                           if self._H_on else None)
+                self.buffers[nd].expire(t, hold_budget=self._H_eff(nd), receipt=receipt,
                                         clock_trusted=self._clock_trusted(nd, t),
                                         clock_offset=self._offset(nd))
             else:

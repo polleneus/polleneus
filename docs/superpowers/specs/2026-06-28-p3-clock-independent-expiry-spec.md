@@ -162,3 +162,110 @@ clamp/median off ⇒ perfect global clock + carried-but-ignored energy = today. 
 5. Bounded measure (low reps, capped density — engine super-linear); document; update README fidelity row
    (energy now binding; clock modeled; honest scope of what it does/doesn't prevent).
 6. Fan-out code+security review; PR; merge.
+
+---
+
+# P3 — PR-2: density-adaptive hold-budget (load-adaptive clearance)
+
+**Version:** v0.1 — 2026-06-28 · **Roadmap:** P3 — PR-2 (the §6/line-142 "density-adaptive retention
+knobs beyond hop-energy" deferred from PR-1) · **Builds on:** PR-1 (local hold-budget `H`).
+
+## P2.1 Problem
+
+PR-1 ships a **fixed** hold-budget `H`. But the mission spans two regimes a single fixed `H` cannot both
+serve: a **thin** blackout network (few nodes, sparse contacts) needs a **long** hold so a blob reaches the
+component before it is dropped (delivery floor); a **dense** crowd fills the bounded buffer and needs a
+**short** hold so the soup sheds load before it sits saturated at `cap` (constant eviction churn → honest mail
+force-evicted; and before an injection flood is amplified). **No single constant `H` is good in both regimes
+at once** — pick `H` small and the sparse network under-delivers; pick `H` large and the dense buffer stays
+saturated. PR-2 makes `H` **load-adaptive** so each node self-regulates from local load without per-venue
+hand-tuning. (The hard `cap` + eviction make literal overflow impossible; "overflow" throughout means
+*sustained saturation*, not exceeding `cap`.)
+
+## P2.2 Mechanism (default-inert)
+
+A held blob at node *i* is dropped once `local_now − local_receipt_time ≥ H_eff_i(t)`, where the effective
+hold-budget shrinks with **local buffer occupancy** (a clock-free, locally-observable load signal):
+
+```
+occ_i(t) = len(buffer_i) / buffer_cap            ∈ [0, 1]
+H_eff_i(t) = H_min + (H_max − H_min) · (1 − occ_i^k)        (k ≥ 1, shape; default k = 1)
+```
+
+- **Empty buffer (`occ→0`) ⇒ `H_eff→H_max`** — hold long, protect delivery exactly when the network is
+  thin. **Full buffer (`occ→1`) ⇒ `H_eff→H_min`** — shed fast, protect against overflow when dense.
+- `k = 1` is linear in occupancy; `k > 1` **holds near `H_max` until the buffer is nearly full, then sheds
+  sharply** (shed late — don't pay delivery cost until storage is actually pressured). Monotone ↓ in `occ`.
+- **New config (all default-inert):** `hold_budget_adaptive` (bool, default `False`), `hold_budget_min`
+  (`H_min`), `hold_budget_max` (`H_max`), `hold_budget_shape_k` (default 1). Off ⇒ PR-1's fixed `H`
+  (`hold_budget`) is used unchanged ⇒ **bit-identical** to PR-1/legacy. When on, `hold_budget` is ignored.
+
+## P2.3 Invariants preserved (must verify, not assert)
+
+- **Offset-invariance preserved (the PR-1 crown jewel).** `H_eff` is still compared against
+  **elapsed-since-receipt**, and `occ_i` is a count, not a clock — so a constant RTC skew still cancels.
+  A behind-clock node (offset −1e6) must still clear under adaptive `H`. (Re-run the PR-1 behind-clock test
+  with adaptive on.)
+- **Bounded clearance.** `H_min ≤ H_eff ≤ H_max` always ⇒ realized honest lifetime ∈ `[H_min, H_max]`
+  (replaces PR-1's clean `≤ H`; the monotonicity gate becomes a **band**, stated honestly).
+- **Monotone load-shedding.** `occ ↑ ⇒ H_eff ↓` (unit-test the curve) ⇒ occupancy is self-limiting:
+  the fuller the buffer, the faster it drains, so it spends **less time saturated at `cap`**. NB the hard
+  `cap` + oldest-by-creation eviction **already make instantaneous overflow impossible** — what adaptive
+  reduces is *sustained saturation* (the buffer sitting at `cap` → constant eviction churn → honest mail
+  force-evicted). The win runs through **interior** `H_eff` values (the feedback loop equilibrates occupancy
+  below `cap` at an interior `H_eff`), not a pinned endpoint — that is what makes the curve (and `k`) earn it.
+- **Blackout clearance preserved.** `H_eff ≤ H_max < ∞` ⇒ the soup still clears in a blackout (untrusted
+  clock, future-dated ts) — adaptivity only ever shortens vs `H_max`.
+
+## P2.4 Honest caveat (the load-shedding attack — state it, don't hide it)
+
+Load-adaptive shedding is **adversary-inducible**: an attacker who inflates a victim's buffer occupancy
+(by injecting blobs) shrinks that node's `H_eff` and can force **premature drop of honest mail**. This is a
+real, disclosed trade — adaptive `H` buys sustained-saturation/eviction-churn resistance at the cost of an
+injection-driven early-drop. The **only** thing bounding the attack is the **P2 token rate-limit** (how fast
+an adversary can inject). Honest framing: **graceful degradation under load, bounded against adversarial
+inflation only as well as the P2 token gate bounds injection.** A pure flood with no admission control would
+let an attacker weaponize the shedding — so PR-2 is only sound *on top of* P2's token gate.
+- **Damage outlasts the burst (newly adversary-triggerable in PR-2).** An `H`-forced drop writes the
+  seen-record (`seen[bid]=now`), so a blob dropped early via a shrunken `H_eff` is **seen-locked at that node
+  for ~`seen_window` (≈`H_max`)** — long after the injection burst ends and `occ` recovers. So the token gate
+  bounds the *rate* of forced drops, **not their duration**: a rate-limited attacker still accumulates
+  persistent honest-mail exclusions. (PR-1's fixed `H` could not be shrunk on demand; this lever is new to
+  PR-2.) Disclosed here, in the README fidelity row, and tracked — not buried.
+
+## P2.5 What we measure (bounded — low reps, capped density)
+
+The **honest headline (a TRADE, not strict dominance)**: compare three arms — fixed-`H_min`, fixed-`H_max`,
+and adaptive — on two regimes:
+- **(a) dense storage** — **time-averaged held** over the run (storage-*time* pressure, since the hard `cap`
+  makes instantaneous occupancy meaningless), with a **finite** `H_max` (no `H_max=∞` saturation tautology).
+  Adaptive's time-avg held is **far below** fixed-`H_max`'s and only **slightly above** fixed-`H_min`'s (which
+  holds ~nothing) — so adaptive **captures most of `H_min`'s storage hygiene**, and the win runs through
+  **interior** `H_eff` (measured), not a pinned endpoint.
+- **(b) sparse delivery** — `ttl = window` (so the cohort is fair-chance), `H` binding. Adaptive **matches
+  fixed-`H_max`** delivery (occ≈0 ⇒ `H_eff`≈`H_max` locally) while fixed-`H_min` loses it.
+
+**The honest conclusion: no single GLOBAL fixed `H` is good in both regimes — `H_min` starves sparse
+delivery, `H_max` saturates dense storage — and adaptive captures the favorable end of EACH from LOCAL
+occupancy, without a global pre-commit.** It does **NOT strictly dominate**: a node holds slightly more than
+fixed-`H_min` would (the residual storage cost of staying responsive). The full per-node benefit is realized
+in a **heterogeneous / time-varying** network where nodes face different loads at once; an end-to-end
+heterogeneous-network win is a **noted follow-up** (the bounded tests demonstrate the per-node mechanism, the
+interior-`H_eff` dynamics, and the two single-regime trades — not a heterogeneous-network end-to-end result).
+
+## P2.6 Tests
+
+Default-inert bit-identity (adaptive off ⇒ PR-1 exact, full `run_one` result); `H_eff` monotone in `occ`
+and bounded in `[H_min,H_max]` (+ `k>1` holds nearer `H_max` at mid-occupancy); **offset-invariance through
+the adaptive ENGINE** (forced −1e6 offset AND engine-drawn `clock_skew_sigma=1e5`, blackout ⇒ clears to 0 —
+not a buffer-literal); blackout clears with adaptive on; the **trade headline** (dense time-avg held:
+`H_min ≤ adaptive < H_max` with adaptive ≪ `H_max`, AND `H_eff` provably **interior** during the run;
+sparse delivery: `adaptive ≈ H_max > H_min`); determinism.
+
+## P2.7 Out of scope (PR-2)
+
+- Youngest-by-real-age eviction-policy redesign (design §16) — needs its own injection-adversary model;
+  deferred to a follow-up (current oldest-by-creation eviction is unchanged here).
+- Price/token-discount adaptivity (the "price knobs" half of §16) — P2/P5 territory, not retention.
+- A robust *adversarial* occupancy signal — PR-2 uses raw local occupancy; hardening it against the
+  load-shedding attack beyond the P2 token gate is out of scope (disclosed in P2.4).

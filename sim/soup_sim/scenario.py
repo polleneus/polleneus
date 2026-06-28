@@ -231,6 +231,49 @@ def ferrying_budget_sweep(base_cfg, densities, budgets, reps: int) -> dict:
     return {"rows": rows, "budgets": [float(T) for T in budgets], "regime_tag": FERRYING_REGIME_TAG}
 
 
+BRIDGE_REGIME_TAG = ("[clustered ISLANDS (leak=0); UPPER BOUND (RWP within/between clusters); the ceiling is "
+                     "ERGODIC at unbounded budget — this is a FIXED-budget floor-lift, and bridge effectiveness "
+                     "is a PURPOSEFUL-routing (operational) property, not an emergent protocol guarantee]")
+
+
+def bridge_lift_sweep(base_cfg, n_bridge_values, reps: int) -> dict:
+    """P4 PR-2 — the cold-start FLOOR-lift via inter-cluster bridges, in the clustered ISLAND regime
+    (cluster_leak=0 ⇒ ordinary nodes never leave their gathering ⇒ cross-island delivery is a hard floor).
+    Runs BOTH routing arms at a FIXED budget: 'uniform' (a wandering bridge picks a uniform arena point — a
+    poor ferry that mostly sits in empty space) and 'tour' (a bridge heads to a random gathering — the §14
+    'organizer gathering kit', an EFFECTIVE ferry). The honest contrast: a TOUR bridge lifts the floor; a
+    UNIFORM-wander bridge barely helps. Seed depends on (n_bridge, rep) NOT the routing arm, so both arms
+    share the same island layout (only routing differs); at n_bridge=0 no node ever wanders ⇒ both arms are
+    identical (the shared floor). UPPER BOUND; the ceiling is ergodic at unbounded budget (bounded-T here).
+    """
+    # Disconnection diagnostic (so the "islands" premise is AUDITABLE, not asserted): the initial-layout
+    # largest-component fraction. Genuine islands ⇒ giant_frac ≈ 1/K (each gathering its own component); a
+    # value well above 1/K means the random cluster centres OVERLAP and the "floor" is permeability-inflated.
+    giants = []
+    for rep in range(reps):
+        c0 = replace(base_cfg, n_bridge=0, bridge_tour=False,
+                     master_seed=_seed_for(base_cfg.master_seed, 0, rep))
+        m0 = make_mobility(c0, c0.rng(0))
+        giants.append(largest_component_fraction(m0.positions, c0.radius, c0.width, c0.height, c0.boundary))
+    giant_frac = float(np.mean(giants))
+    one_over_k = 1.0 / max(1, base_cfg.n_clusters)
+    arms = {}
+    for tour in (False, True):
+        rows = []
+        for nb in n_bridge_values:
+            ratios = []
+            for rep in range(reps):
+                cfg = replace(base_cfg, n_bridge=int(nb), bridge_tour=tour,
+                              master_seed=_seed_for(base_cfg.master_seed, int(nb), rep))
+                ratios.append(run_one(cfg)["delivery_ratio"])
+            m, lo, hi = mean_ci(ratios)
+            rows.append({"n_bridge": int(nb), "delivery_mean": m, "ci_lo": lo, "ci_hi": hi, "per_rep": ratios})
+        arms["tour" if tour else "uniform"] = rows
+    floor = arms["uniform"][0]["delivery_mean"]   # n_bridge=0: no wander ⇒ identical to the tour arm
+    return {"arms": arms, "floor": floor, "giant_frac": giant_frac, "one_over_k": one_over_k,
+            "n_bridge_values": [int(v) for v in n_bridge_values], "regime_tag": BRIDGE_REGIME_TAG}
+
+
 CLUSTER_REGIME_TAG = "[MOBILITY REGIME = clustered gathering; uniform/RWP is the optimistic baseline]"
 
 

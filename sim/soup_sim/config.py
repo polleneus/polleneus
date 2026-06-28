@@ -75,6 +75,15 @@ class Config:
     n_clusters: int = 1                # number of cluster centers (gathering zones)
     cluster_sigma: float = 0.0         # intra-cluster Gaussian spread (arena units)
     cluster_leak: float = 0.0          # per-retarget prob. a node wanders uniformly (0=islands, 1=RWP)
+    # P4 PR-2 bridge / cold-start floor-lift: the first `n_bridge` nodes are dedicated inter-cluster carriers
+    # ("organizer gathering kits") with personal leak = 1.0 (always wander between islands) while the rest keep
+    # `cluster_leak`. Bridges ferry blobs across statically-disconnected clusters. 0 ⇒ off (all nodes use
+    # cluster_leak ⇒ bit-identical). Only affects the `clustered` mobility path (no-op for rwp/static).
+    n_bridge: int = 0
+    bridge_tour: bool = False           # bridge routing model. False ⇒ a wandering bridge picks a UNIFORM
+    #   arena point (a poor ferry in a sparse venue — mostly empty space, rarely visits a cluster). True ⇒ a
+    #   wandering node heads to a RANDOM CLUSTER CENTER ("organizer gathering kit": purposeful routing between
+    #   known gathering points) ⇒ an EFFECTIVE ferry. Default False ⇒ uniform path ⇒ bit-identical.
     # P1 set-reconciliation cost model (all default OFF ⇒ zero overhead, zero new RNG draws, bit-identical).
     # Flat, density-scheduled airtime floor billed per funded contact-episode, INDEPENDENT of the symmetric
     # difference and exact set sizes (inv 4). S(n)=recon_c0+ceil(recon_k*n); cost=recon_cell_bytes*S(n).
@@ -153,6 +162,8 @@ class Config:
                 raise ValueError("cluster_leak must be in [0, 1]")
             if self.cluster_sigma < 0.0:
                 raise ValueError("cluster_sigma must be >= 0")
+        if self.n_bridge < 0 or self.n_bridge > self.n:
+            raise ValueError("n_bridge must be in [0, n]")
         if self.radius <= 0:
             raise ValueError("radius must be > 0")
         if self.speed_max * self.dt > self.radius / 4.0:

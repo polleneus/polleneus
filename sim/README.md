@@ -338,6 +338,31 @@ cost** on this path; real mobility needs a larger budget and delivers less. The 
 small, or `N` too small for any inter-component contact) is what the **PR-2 bridge** (opportunistic NAN/LoRa)
 and the §14 **pair-to-activate (N=2) / standby (N=0)** UX address.
 
+## The bridge: lifting the cold-start floor (P4 — PR-2)
+PR-1's ferrying assumed nodes mix (RWP, ergodic). The real cold-start is **separated gatherings** (clustered
+islands): with `cluster_leak=0` ordinary nodes never leave their crowd, so **cross-island delivery is a hard
+floor** (~`1/K` of pairs — messages trapped per gathering). §14's fix is a **bridge / "organizer gathering
+kit"**: a carrier (`n_bridge` nodes, personal leak=1) that travels between gatherings. `bridge_lift_sweep`
+measures whether it works, and the routing model (`bridge_tour`) decides:
+
+**Measured** (clustered K=4 islands, W=500/σ=4 so `giant_frac=0.250=1/K` — **genuinely disconnected**, emitted
+per-run; leak=0, fixed budget; **seed=7, reps=4**; UPPER BOUND):
+
+| n_bridge | uniform-wander | tour (purposeful) |
+|---------:|---------------:|------------------:|
+| 0 (floor) | 0.17 | 0.17 |
+| 2 | 0.19 | **0.81** |
+| 8 | 0.23 | 0.94 |
+
+The honest finding (robust **8/8** seed-groups; `giant_frac≈1/K` verified): the cold-start floor is real and
+hard (cross-island ≈ 0 without a bridge); a **purposeful (tour) bridge lifts it steeply** (two ferries:
+0.17→0.81); a **naive uniform-wander bridge is essentially useless** here (eight reach only 0.23 — in a
+genuinely-separated sparse arena it almost never lands in a gathering). **Effective ferrying is a
+PURPOSEFUL-routing (operational) property — the organizer must travel between gatherings — not an emergent
+protocol guarantee.** Ceiling is ergodic (unbounded budget → 1); this is a fixed-budget floor-lift. **Low-N:**
+a pair within range delivers (pair-to-activate); an isolated node delivers nothing and crashes nothing
+(standby). Default-inert (`n_bridge=0` bit-identical; `bridge_tour` a no-op when nothing wanders).
+
 ## The gate (why you can trust the curve)
 `tests/test_integration_percolation.py`:
 1. **Oracle KAT** — in the static unbounded regime the engine's multi-hop fixpoint delivers

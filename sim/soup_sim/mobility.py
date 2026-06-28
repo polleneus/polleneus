@@ -13,7 +13,8 @@ from .cell_list import neighbor_pairs
 class Mobility:
     def __init__(self, mode, positions, velocities, w, h, smin, smax,
                  speeds=None, targets=None, rng=None,
-                 boundary="torus", centers=None, home=None, cluster_sigma=0.0, cluster_leak=0.0):
+                 boundary="torus", centers=None, home=None, cluster_sigma=0.0, cluster_leak=0.0,
+                 bridge_tour=False):
         self.mode = mode
         self.positions = positions
         self.velocities = velocities
@@ -29,6 +30,7 @@ class Mobility:
         self.home = home
         self.cluster_sigma = cluster_sigma
         self.cluster_leak = cluster_leak
+        self.bridge_tour = bridge_tour
         self.n_clusters = len(centers) if centers is not None else 0
 
     def _cluster_targets(self, idx) -> np.ndarray:
@@ -37,10 +39,20 @@ class Mobility:
         m = len(idx)
         homes = self.home[idx]
         pts = self.centers[homes] + self.rng.normal(0.0, self.cluster_sigma, (m, 2))
-        wander = self.rng.random(m) < self.cluster_leak
+        # leak may be a scalar (uniform) or a per-node vector (P4 bridge: bridge nodes have leak=1.0). The
+        # rng.random(m) draw is identical in size/order either way ⇒ bridge=off (scalar) is bit-identical.
+        leak = self.cluster_leak if np.isscalar(self.cluster_leak) else self.cluster_leak[idx]
+        wander = self.rng.random(m) < leak
         k = int(np.count_nonzero(wander))
         if k:
-            pts[wander] = self.rng.uniform([0.0, 0.0], [self.w, self.h], (k, 2))
+            if self.bridge_tour:
+                # purposeful routing: head to a RANDOM CLUSTER CENTER (lands IN a gathering) — an effective
+                # ferry. NB draws different RNG than the uniform branch (so only bridge_tour=False is the
+                # bit-identical legacy path).
+                ck = self.rng.integers(0, self.n_clusters, k)
+                pts[wander] = self.centers[ck] + self.rng.normal(0.0, self.cluster_sigma, (k, 2))
+            else:
+                pts[wander] = self.rng.uniform([0.0, 0.0], [self.w, self.h], (k, 2))
         if self.boundary == "torus":
             return np.mod(pts, [self.w, self.h])
         return np.clip(pts, 0.0, [self.w, self.h])
@@ -93,10 +105,16 @@ def make_mobility(cfg, rng) -> Mobility:
         cpos = near_home()
         ctgt = near_home()
         cspeeds = rng.uniform(cfg.speed_min, cfg.speed_max, n)
+        # P4 bridge: the first n_bridge nodes are dedicated inter-cluster carriers (personal leak=1.0).
+        # n_bridge=0 ⇒ pass the SCALAR cluster_leak (unchanged code path) ⇒ bit-identical.
+        leak = cfg.cluster_leak
+        if cfg.n_bridge > 0:
+            leak = np.full(n, cfg.cluster_leak, dtype=float)
+            leak[:cfg.n_bridge] = 1.0
         cmob = Mobility("clustered", cpos, np.zeros((n, 2)), cfg.width, cfg.height,
                         cfg.speed_min, cfg.speed_max, speeds=cspeeds, targets=ctgt, rng=rng,
                         boundary=cfg.boundary, centers=centers, home=home,
-                        cluster_sigma=cfg.cluster_sigma, cluster_leak=cfg.cluster_leak)
+                        cluster_sigma=cfg.cluster_sigma, cluster_leak=leak, bridge_tour=cfg.bridge_tour)
         cdiag = (cfg.width ** 2 + cfg.height ** 2) ** 0.5
         cmean = max((cfg.speed_min + cfg.speed_max) / 2.0, 1e-9)
         for _ in range(min(int(5.0 * 0.52 * cdiag / cmean / cfg.dt), 20000)):

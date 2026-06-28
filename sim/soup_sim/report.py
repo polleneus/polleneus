@@ -49,6 +49,26 @@ def ferrying_to_csv_string(result, manifest) -> str:
     return buf.getvalue()
 
 
+def bridge_to_csv_string(result, manifest) -> str:
+    """P4 bridge floor-lift: one row per (routing arm, n_bridge) with delivery, against the shared island
+    floor. Leading comments carry the regime + the honest 'purposeful routing, not emergent' caveat."""
+    man = list(manifest.keys())
+    header = ["arm", "n_bridge", "delivery_mean", "ci_lo", "ci_hi", "floor"] + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    buf.write(f"# {result['regime_tag']}\n")
+    buf.write(f"# giant_frac={result.get('giant_frac'):.3f} vs 1/K={result.get('one_over_k'):.3f} "
+              "(islands genuine iff giant_frac ~ 1/K; well above ⇒ centres overlap ⇒ floor is permeability-inflated)\n")
+    buf.write("# floor = cross-island delivery with NO bridge; a TOUR (purposeful) bridge lifts it, a "
+              "UNIFORM-wander bridge barely helps. Effectiveness is an OPERATIONAL routing property.\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for arm in ("uniform", "tour"):
+        for row in result["arms"][arm]:
+            w.writerow([arm, row["n_bridge"], row["delivery_mean"], row["ci_lo"], row["ci_hi"],
+                        result["floor"]] + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
 AIRTIME_FIELDS = ["density", "circulated_per_min_mean", "ci_lo", "ci_hi", "utilization_mean",
                   "delivery_mean", "t50"]
 BINDING_KEYS = ["contention_bound", "setup_starved", "quantization", "demand_satisfied"]

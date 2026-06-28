@@ -49,35 +49,48 @@ The proofs forbid *removing* or *blurring* the apex. They leave exactly three do
 
 | Escape | Idea | Verdict for polleneus |
 |---|---|---|
-| **Re-randomize the bytes** | Make each hop look different so the adversary can't link sightings into one wavefront (universal re-encryption; the "stem/bloom" relocation and the "FoG" label-erasure both rely on this) | **BLOCKED by our crypto — see §4.** This was the most promising new direction; it does not work on our post-quantum stack. |
+| **Re-randomize the bytes** | Make each hop look different so the adversary can't link sightings into one wavefront (universal re-encryption; the "stem/bloom" relocation and the "FoG" label-erasure both rely on this) | **BLOCKED on two independent grounds (§4):** (i) crypto byte-stability on our PQ stack, and (ii) **for the flood, Law 1** — re-encryption destroys the dedup a terminating flood needs, so **even a free, perfect PQ universal re-encryption would not open this for the flood.** The single-path *stem* survives Law 1 but is killed separately by multi-session PHY fingerprinting (§5). |
 | **No root at all (DC-net)** | The message is *born* from the XOR of every participant's share; no device is ever the root. Information-theoretically perfect, intersection-immune | **Provable but O(N) airtime** — every phone broadcasts a share every round. Viable only for **small, high-stakes groups / long epochs / low throughput**, never stadium-scale low-latency. |
 | **Drown / move the root with cover** | Constant-rate cover traffic (the "chamber": every phone always emits, real or dummy) or a relocating proxy hop | **Bounded, conditional.** Helps a *single* message against a *blob-blind* adversary (§5); does **not** help a persistent, fingerprinted sender without near-constant venue-wide cover → straight into the airtime wall. |
 
-## 4. The re-randomization gate (the decisive new finding)
+## 4. The re-randomization gate — NOT a single crypto gate (corrected; see the consolidated answer)
 
 The strongest external proposals (relocating "stem," "fog-of-gossip" label-erasure) all rest on
-**universal re-encryption**: re-randomize a ciphertext so an observer cannot link the before/after, while
-the recipient still decrypts. Verified to work **as a primitive** (Golle–Jakobsson–Juels–Syverson, under
-DDH). **But it does not compose with our design:**
+**universal re-encryption (URE)**: re-randomize a ciphertext so an observer cannot link before/after, while
+the recipient still decrypts (Golle–Jakobsson–Juels–Syverson, under DDH). A focused crypto research effort
+([consolidated answer](ANSWER-consolidated-pq-universal-reencryption.md), independently verified) settled
+the picture — and it is **deeper than "blocked by our PQ crypto."** Three distinct barriers, not one:
 
-- Our payload uses an **X-Wing post-quantum hybrid KEM (X25519 + ML-KEM-768) + AEAD** (§5). Universal
-  re-encryption only re-randomizes a small **classical** group element. The **symmetric AEAD payload
-  (~kilobyte) stays byte-identical** across re-randomizations.
-- So a spatial grid simply follows the **stable payload bytes** hop-to-hop and walks the trail back —
-  the back-tracking "branching factor" collapses to 1 (a thread), reproducing the decoy-null. The
-  external review's own falsifier names this exact case ("re-enable byte-linking and you reproduce your
-  null"); **our crypto *is* that case.**
+- **(a) Crypto byte-stability (our deployed stack).** Our payload is an **X-Wing PQ hybrid KEM
+  (X25519+ML-KEM-768) + AEAD** (§5). The FO transform makes the ciphertext *unique per (message, key)* —
+  unre-randomizable even *with* the public key — and the AEAD body stays byte-identical, so a spatial grid
+  follows the stable bytes and walks the trail back.
+- **(b) Law 1 kills URE *in the flood* — even a free, perfect PQ URE would NOT help.** The decisive
+  finding. A terminating flood must **dedup** on a stable, public, proof-bound message-ID, and our
+  airtime-winning set-reconciliation (§8) depends on stable global IDs. Re-randomizing every flood hop
+  either (i) preserves the ID — which *is* the linking tag the grid groups on — or (ii) re-randomizes it,
+  so duplicates never reconcile, the flood never terminates, and the airtime budget collapses. URE is a
+  *mixnet (single-path) primitive*, architecturally wrong for a flood. **No PQ-crypto advance opens this.**
+- **(c) The single-path *stem* is a different case.** Law 1 does *not* apply to the stem (single-path, no
+  dedup), so a free URE *would* give it single-message disk-anonymity. But the stem dies **separately**, to
+  the already-known weakness (§5): the originator's own radio emits the first stem hop, so PHY
+  fingerprinting + multi-session intersection re-identify a persistent sender regardless of byte-
+  unlinkability. And for the stem you don't even *need* keyless URE — the originator picks the path and can
+  use **keyed onion** encryption (PQ-buildable today). Keyless URE is needed only where it fails (the flood).
 
-**Consequence — a genuine, board-level tradeoff:** there is a direct tension between **post-quantum
-confidentiality** and **any re-randomization-based path to sender anonymity**. Closing the gate requires
-one of:
-1. **Drop post-quantum** and use a fully re-randomizable (classical ElGamal-style) encryption over the
-   *whole* payload — surrenders PQ security, and re-randomizing kilobytes per hop is itself costly; or
-2. **Efficient post-quantum re-randomizable encryption** — an **open cryptographic research problem**, not
-   something to build on today.
+**Crypto status (general, decoupled from polleneus):** keyless PQ URE **exists** but is **provably
+expensive** — group-action exponential-ElGamal works but carries only `O(log λ)` payload bits/element
+(MB ciphertexts + slow decryption for a kilobyte); the keyless lattice route forces an exponential modulus
+(MB-scale). The structural reason: classical GJJS is cheap only because group exponentiation is *noiseless
+and has division*, and **no post-quantum substrate has a cheap keyless re-randomization** (lattices have
+noise growth; group actions have no division).
 
-Until one of those exists, the re-randomization family (stem, FoG) is **not a near-term mechanism** for
-polleneus. Record it as a *gated research direction*, not a roadmap build.
+**Bottom line (corrected):** the re-randomization family is retired for polleneus — but **not** because we
+await a crypto advance. The flood is closed by **Law 1** (no crypto opens it); the stem by **multi-session
+PHY fingerprinting**; both also by byte-stability today. Earlier drafts that framed this as *"an efficient
+PQ re-randomizable encryption would unblock the gate"* were **wrong** and are corrected here. The surviving
+escapes are §3's **DC-net** (small groups), **cover** (single-message, blob-blind), and — if the flood model
+is ever allowed to bend — a **keyed-onion stem** (not keyless URE).
 
 ## 5. What survives — and the one cheap experiment worth running
 
@@ -131,10 +144,13 @@ real but narrow win, honestly bounded.
 
 ## 7. Honest credits & status
 
-This limit and the re-randomization gate were sharpened by an independent 4-expert review (`docs/riddle/`)
-and two adversarial verification passes. The experts converged on the correct theory; the gate is the
-reason their strongest constructions do not transfer to *our* post-quantum system. **No silver bullet
-exists for our configured adversary.** The honest product posture (carried to B3): *strong recipient
-anonymity and content secrecy; single-message sender cover that is bounded and blob-blind-conditional;
-no cheap protection for a persistent, fingerprinted sender; perfect sender anonymity only via a
-small-group DC-net or a post-quantum crypto advance we do not yet have.*
+This limit and the re-randomization gate were sharpened by an independent 4-expert review (`docs/riddle/`),
+a focused crypto research effort ([consolidated answer](ANSWER-consolidated-pq-universal-reencryption.md)),
+and several adversarial verification passes. The experts converged on the correct theory. **No silver
+bullet exists for our configured adversary** — and, per §4, the re-randomization escape is closed
+*architecturally* (Law 1 for the flood; PHY fingerprinting for the stem), **not** merely pending a crypto
+advance: a free, perfect PQ re-randomizable encryption would **not** open it for the flood. The honest
+product posture (carried to B3): *strong recipient anonymity and content secrecy; single-message sender
+cover that is bounded and blob-blind-conditional; no cheap protection for a persistent, fingerprinted
+sender; perfect sender anonymity only via a small-group DC-net (the flood layer cannot be made
+sender-anonymous by any re-randomization scheme).*

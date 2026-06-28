@@ -1,8 +1,27 @@
 # Open problem: Post-Quantum Universal Re-encryption (the "re-randomization gate")
 
-**For:** cryptographers. **Self-contained** — everything needed to attack the problem is here.
-**Origin:** this is the single primitive whose absence blocks sender-anonymity in an offline mesh
-messenger (polleneus). A systems write-up of *why* it's needed is in §6; you do not need it to work on §3–§5.
+**For:** cryptographers. **Self-contained.**
+
+> ## ⚠️ RE-SCOPED — read before working on this
+> Since this brief was drafted, a focused research effort substantially **answered the parts that
+> mattered for our messenger** — see the **[consolidated answer](ANSWER-consolidated-pq-universal-reencryption.md)**
+> and its research trail; **start from there, not from scratch.** Two things changed:
+> 1. **Existence is SETTLED.** An efficient bar is unmet, but a *keyless* PQ universal re-encryption
+>    **does exist** (group-action exponential-ElGamal) — it is just **provably expensive** (`O(log λ)`
+>    payload bits/element → MB ciphertexts + slow decryption; the keyless lattice route forces an
+>    exponential modulus). So this is **no longer "does it exist?"** — it is **"how efficient can it be,
+>    and what is the unavoidable cost (a formal lower bound)?"**
+> 2. **The polleneus motivation is SUPERSEDED.** Universal re-encryption would **not** help our messenger
+>    even if free and perfect: our transport is a *flood*, which needs a stable dedup tag to terminate,
+>    and re-randomization destroys exactly that tag ("Law 1"). URE is a *mixnet* (single-path) primitive,
+>    architecturally wrong for a flood. **So treat this as a GENERAL post-quantum *mixnet* crypto problem,
+>    decoupled from polleneus** — §6's systems motivation is retained only for context and is no longer
+>    the reason to solve it.
+>
+> **The genuinely open remnant (worth your time, as general crypto):** an *efficient* keyless PQ universal
+> re-encryption (whole-payload, fast, secure at real parameters), **or** a rigorous **cost lower bound**
+> ("any such scheme must pay ≥ X"). The consolidated answer has a half-proven lower-bound skeleton; finishing
+> or refuting it is the prize.
 
 ## 1. One-line ask
 
@@ -10,10 +29,10 @@ Build — or prove must-be-expensive — an **efficient, post-quantum, IND-CPA +
 encryption scheme whose ciphertexts can be re-randomized by *any third party without the recipient's
 public key*, such that re-randomization is *unlinkable* (even to an observer who sees every hop of a
 chain) and the legitimate recipient still recovers the message.** Classical "universal re-encryption"
-(ElGamal; GJJS 2004) does exactly this. A **lattice** universal re-encryption has been *attempted*
-(Singh–Rangan 2014, on the GHV cryptosystem), but — to our knowledge — **no construction meets the full
-deployable bar of §3** (efficient, whole-payload, chain-unlinkable, key-private, uniform fixed-size,
-depth-L on a phone). Closing that gap, or showing it cannot be closed cheaply, is the problem.
+(ElGamal; GJJS 2004) does exactly this. **Existence post-quantum is settled** (an inefficient keyless
+construction exists — see the banner / consolidated answer); **no construction meets the full *efficient*
+deployable bar of §3** (whole-payload, chain-unlinkable, key-private, uniform fixed-size, depth-L on a
+phone). **Closing that efficiency gap — or proving an unavoidable cost lower bound — is the problem.**
 
 ## 2. The primitive — syntax
 
@@ -91,12 +110,14 @@ for the minimum**, but an **RCCA-secure / tag-resistant** version is a valued bo
 
 - **Universality (no-pk re-randomization) in the lattice world — the crux.** Classical URE works because
   an ElGamal ciphertext can carry an encryption of the *identity element* under the recipient's key,
-  letting anyone re-randomize via the group homomorphism *without* `pk`. The lattice analogue ("add a
-  fresh encryption of zero") is blocked because a fresh LWE encryption of zero needs `b = A·s + e` tied to
-  the recipient's secret `s`: **the LWE samples `(A, b)` themselves are the obstacle to producing fresh
-  encryption-of-zero material without `pk`.** (For contrast, *with* `pk`, lattice re-encryption is easy and
-  even statistical via the Leftover Hash Lemma with only bounded additive noise — the whole difficulty is
-  doing it *blindly*.) Singh–Rangan attempt exactly this via GHV's embedded structure + a shared public
+  letting anyone re-randomize via the group homomorphism *without* `pk`. The lattice analogue carries an
+  **encryption of zero minted by the SENDER from the recipient's PUBLIC key at encryption time** (the GJJS
+  `[E(m); E(1)]` device, ported from ElGamal's multiplicative to LWE's additive homomorphism). The relay
+  uses **neither `pk` nor `sk`** — but it therefore **cannot mint *fresh* zero material on the fly**; it can
+  only **re-combine the carried zero**, and that self-combination (Singh's `C₂·R`) grows error
+  *multiplicatively* per hop ⇒ modulus exponential in L. (For contrast, *with* the public key / a
+  re-encryption key one can inject *fresh bounded* noise additively — the efficient rate — which a keyless
+  relay cannot. So the keyless requirement *is* the cost.) Singh–Rangan attempt exactly this via GHV's embedded structure + a shared public
   matrix; verifying whether their `ReRand` is truly key-free, and which §3 bars it misses, is the natural
   starting point.
 - **Computational vs. statistical re-randomization (don't conflate them).** Property 3.4 is *computational*.
@@ -131,19 +152,25 @@ for the minimum**, but an **RCCA-secure / tag-resistant** version is a valued bo
   "you can't have it cheaply, here's the price" is a deliverable we will act on (state the limit honestly
   and stop chasing it).
 
-## 6. Systems context (why this primitive — read only if useful)
+## 6. Systems context (historical motivation — now SUPERSEDED; read only for background)
 
-polleneus is an offline Bluetooth-mesh messenger: phones in a crowd blindly **re-share fixed-size,
-byte-uniform, recipient-sealed blobs** (pure flooding, no servers, no routing); recipients **trial-
-decrypt**. A passive adversary with **receivers spread across the venue** records **first-sighting times**
-of each blob and runs epidemic source-localization (Pinto–Thiran–Vetterli) — the spread ripples back to
-the originator. We proved and measured that you **cannot hide the source of an exact-byte single-root
-flood**: the only escape is to make each relay hop **byte-unlinkable**, so the adversary cannot stitch the
-sightings into one wavefront. That is exactly `PQ-URE`: a relay holding a blob (not knowing the recipient)
-re-randomizes it before re-sharing; the recipient still decrypts; the physical trail no longer links back.
-The catch that motivates the §3 "whole-payload" note: our payload is an **X-Wing hybrid (X25519 +
-ML-KEM-768) KEM + AEAD**, and re-randomizing only the KEM leaves the **AEAD body byte-stable**, so the
-trail is still walkable.
+> **This section is why we *originally* posed the problem; it is no longer a valid motivation — see the
+> banner.** We keep it because it explains the primitive's shape, not because polleneus needs it.
+
+polleneus is an offline Bluetooth-mesh messenger: phones blindly **re-share fixed-size, byte-uniform,
+recipient-sealed blobs** (pure flooding, no servers/routing); recipients **trial-decrypt**. A passive
+adversary with receivers across the venue records **first-sighting times** and runs epidemic source-
+localization (Pinto–Thiran–Vetterli) — the ripples trace back to the originator. We *hoped* `PQ-URE` was
+the escape: a relay re-randomizes a blob before re-sharing so the trail can't be stitched.
+
+**Why that hope failed (the supersession).** A *flood must dedup to terminate* — it needs a stable, public
+message-ID, and our airtime-winning set-reconciliation depends on stable global IDs. Re-randomizing the
+flood either keeps that ID (which *is* the linking tag) or destroys it (so the flood never terminates):
+**universal re-encryption is architecturally incompatible with a terminating flood ("Law 1"), so even a
+free, perfect `PQ-URE` would not help us.** URE is a *mixnet* (single-path) primitive. Hence the
+re-scope: the problem is interesting **for mixnets**, not for our flood. (Separately, our deployed X-Wing
+KEM/DEM stack is byte-stable, which is why naïve re-randomization fails today regardless — but that is the
+lesser barrier; Law 1 is the fundamental one.)
 
 ## 7. Known related work (so you don't reinvent)
 

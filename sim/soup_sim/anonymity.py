@@ -1,0 +1,171 @@
+"""Anonymity scoring + the capability/exposure publish-gates (slice 3, PR-1).
+
+Honesty inversion: every number is an UPPER BOUND on anonymity (a stronger adversary
+localizes better). SCOPE_TAG travels with every emitted figure. The must-localize gate
+refuses to publish any number unless the (reachability) estimator demonstrably localizes a
+slow-mobility source under near-total coverage — so we never mistake a weak attack for
+anonymity. The exposure gate uses a MARGIN over the 1/N random-guess floor (a bare
+"beats random" is vacuous at a 1/N floor) and refuses underpowered runs.
+"""
+from __future__ import annotations
+import numpy as np
+from .geometry import dist2
+
+SCOPE_TAG = "[SINGLE-EVENT, EXTERNAL-PASSIVE; intersection+insider NOT modeled; UPPER BOUND on anonymity]"
+DEFENSE_SCOPE_TAG = "[defense gain vs the single-event passive-grid adversary ONLY; NOT evaluated vs intersection/insider]"
+DEFENSE_MIN_DROP = 0.2       # a defense must cut rank-1 by >= this relative fraction (on the intersection set)
+
+# pre-registered constants
+EXPOSURE_RANK1 = 0.5          # "flooding exposes the source" if detected rank-1 prob >= this...
+EXPOSURE_MARGIN_K = 5         # ...AND >= K x the 1/N random-guess floor (kills the vacuous-at-1/N hole)
+# Capability control = "does the BEST attack demonstrably localize the easy case (slow source +
+# near-total coverage)?" — i.e. real signal, not near-perfection. (rank-1>=0.9 was mis-specified:
+# catching 1-of-N exactly is not the bar for "can it localize at all".)
+MUSTLOC_MARGIN_K = 10        # best-estimator rank-1 must beat the 1/N random floor by >= this factor...
+MUSTLOC_MIN_RANK1 = 0.1     # ...and clear an absolute floor...
+MUSTLOC_ERR_RADII = 1.0     # ...and pin the source to within ~one radio-range (median).
+ANON_SET_EPS = 1e-6          # candidates within EPS of the best score count as an (upper-bound) anon set
+MIN_MESSAGES_PER_RUN = 150   # below this rank-1 is not estimable -> exposure refuses
+MIN_REPS = 6                 # below this the CI-over-seeds is degenerate -> exposure refuses
+# PR-2 defenses
+UPSTREAM_PENALTY = 10.0      # origin-vs-relay: penalty for a candidate whose first-hold had an in-range upstream holder
+MIN_RELAY_DENSITY = 2.0      # gate credit requires >= this mean distinct foreign ids relayable per node
+MIN_INTERSECTION_SIZE = 30   # same-detected-set rank-1 needs >= this many shared messages, else inconclusive
+# PR-3 multi-session intersection
+INTERSECTION_SCOPE_TAG = ("[INTERSECTION over K linked originations; device-linkage ASSUMED given "
+                          "(PHY out of scope); single external-passive adversary, insider + "
+                          "defenses-vs-intersection NOT modeled; UPPER BOUND on anonymity]")
+DECOY_MARGIN = 0.2           # the originator's fused rank-1 must beat the central-decoy's by >= this...
+MIN_INTERSECTION_SAMPLES = 24  # ...over >= this many (device x seed) fusion samples, else underpowered
+#   (Control A: the credited climb is measured ABOVE the MEASURED fused-random floor, not the 1/N one —
+#    if fusion manufactures a high floor, the exposure threshold rises proportionally, see intersection_gate)
+
+
+def localization_error(point, true_pos, cfg) -> float:
+    return float(np.sqrt(dist2(np.asarray(point, float), np.asarray(true_pos, float),
+                               cfg.width, cfg.height, cfg.boundary)))
+
+
+def rank_of(scores, true_idx) -> float:
+    """Rank of the true source (0 = exact catch) = #strictly-better + fractional mid-rank on ties."""
+    s = np.asarray(scores, float)
+    t = s[true_idx]
+    strictly_better = int(np.sum(s < t - 1e-12))
+    ties = int(np.sum(np.abs(s - t) <= 1e-12)) - 1
+    return strictly_better + ties / 2.0
+
+
+def anonymity_set_size(scores, eps=ANON_SET_EPS) -> int:
+    s = np.asarray(scores, float)
+    return int(np.sum(s <= s.min() + eps))
+
+
+def quantiles(errs):
+    a = np.asarray(errs, float)
+    if a.size == 0:
+        return (float("nan"), float("nan"), float("nan"))
+    return (float(np.median(a)), float(np.percentile(a, 90)), float(np.percentile(a, 95)))
+
+
+def mustlocalize_gate(best_result, random_floor, coverage_curve=None) -> dict:
+    """Capability control: the BEST estimator must demonstrably localize a slow source under
+    near-total coverage — beat the 1/N random floor by a wide margin AND pin the source to within
+    ~one radio-range — AND best-estimator error must be monotone-non-increasing as coverage->1.
+    (Uses the BEST estimator, not reachability-only: empirically first-spy is the workhorse under
+    dense coverage. Else no slice-3 exposure number publishes.)"""
+    rank1 = best_result.get("rank1", 0.0)
+    err = best_result.get("median_err_radii", float("inf"))
+    threshold = max(MUSTLOC_MIN_RANK1, MUSTLOC_MARGIN_K * random_floor)
+    if not (rank1 >= threshold and err <= MUSTLOC_ERR_RADII):
+        return {"ok": False, "label": f"estimator inconclusive (best rank-1 {rank1:.2f} < {threshold:.2f} "
+                                      f"or median err {err:.2f} > {MUSTLOC_ERR_RADII} radii)"}
+    if coverage_curve:                                  # [(coverage, best_median_err), ...] increasing coverage
+        errs = [e for (_c, e) in sorted(coverage_curve)]
+        if any(errs[i + 1] > errs[i] + 1e-9 for i in range(len(errs) - 1)):
+            return {"ok": False, "label": "estimator power non-monotone in coverage"}
+    return {"ok": True, "label": f"best estimator localizes (rank-1 {rank1:.2f}, err {err:.2f} radii) — capability confirmed"}
+
+
+def defense_gate(baseline_rank1, defended_rank1, mustlocalize_ok, timing_only_gain_survives,
+                 relay_density_ok=True, intersection_size=None) -> dict:
+    """Credit a defense's anonymity gain only if it's REAL, not an artifact. baseline_rank1/
+    defended_rank1 MUST be computed on the same-detected-set intersection (survivorship removed)."""
+    if intersection_size is not None and intersection_size < MIN_INTERSECTION_SIZE:
+        return {"credited": False, "label": f"inconclusive — intersection too small ({intersection_size} < {MIN_INTERSECTION_SIZE})"}
+    if not mustlocalize_ok:
+        return {"credited": False, "label": "inconclusive — attack failed must-localize (a drop isn't meaningful)"}
+    if defended_rank1 > baseline_rank1 * (1.0 - DEFENSE_MIN_DROP):
+        return {"credited": False, "label": f"no material gain (rank-1 {defended_rank1:.2f} vs baseline {baseline_rank1:.2f})"}
+    if not timing_only_gain_survives:
+        return {"credited": False, "label": "NOT credited — gain is message-dropping/survivorship, not timing-scramble"}
+    if not relay_density_ok:
+        return {"credited": False, "label": "NOT credited — low-density artifact (too few relays to hide among)"}
+    return {"credited": True, "label": f"defense cuts exposure (rank-1 {baseline_rank1:.2f} -> {defended_rank1:.2f})"}
+
+
+# P2 PR-2 (spec v0.4): origination (venue-wide cover floor) defense gate — WHICH-ROOT, timing-aware.
+ORIGINATION_DEFENSE_SCOPE_TAG = ("[cover-floor gain vs the single-event passive WHICH-ROOT timing-aware "
+                                 "adversary ONLY; credited only ABOVE the grown-candidate-null; NOT "
+                                 "evaluated vs intersection (P2 PR-3)/insider; UPPER BOUND]")
+
+
+def origination_defense_gate(null_rank1, cover_rank1, mustlocalize_ok, credited_increment,
+                             cover_off_rank1, timing_only_gain_survives, intersection_size=None) -> dict:
+    """Credit a venue-wide cover floor ONLY for the which-root rank-1 increment ABOVE the GROWN-CANDIDATE-
+    NULL — the key honesty fix that pins the round-2 denominator artifact (a non-emitting padding null
+    reproduced the whole "credit"; cover moved rank-1 by exactly 0).
+      * null_rank1   — cover-OFF, candidate set padded to the cover-ON denominator with NON-emitting nodes
+                       (pure denominator inflation, zero coincident dummy emitters).
+      * cover_rank1  — cover-ON which-root rank-1 (REAL time-coincident dummy emitters in the candidate set).
+      * credited_increment = null_rank1 - cover_rank1 — the drop BEYOND denominator inflation (genuine
+        time-AND-space-coincident K-anonymity). The cover arm is credited only for THIS increment.
+    Controls retained: must-localize (the which-root estimator must localize the true emitter cover-OFF at
+    the FIXED denominator — note this ALSO proves the grown-candidate-null itself credits ~0, since a
+    padding that hid the source would drive null_rank1 below the must-localize bar); a material increment;
+    TTL=inf (a drop that dies there was message-dropping); powered same-detected-set intersection. The
+    own-root co-location guard is built into the metric (an emitter is ONE distinct candidate node)."""
+    if intersection_size is not None and intersection_size < MIN_INTERSECTION_SIZE:
+        return {"credited": False, "label": f"inconclusive — intersection too small ({intersection_size} < {MIN_INTERSECTION_SIZE})"}
+    if not mustlocalize_ok:
+        return {"credited": False, "label": f"inconclusive — which-root estimator failed must-localize at the "
+                f"fixed denominator (null rank-1 {null_rank1:.2f}; padding alone hid the source or no signal)"}
+    if credited_increment < DEFENSE_MIN_DROP * null_rank1:
+        return {"credited": False, "label": f"NULL — no credit above the grown-candidate-null (cover rank-1 "
+                f"{cover_rank1:.2f} vs null {null_rank1:.2f}; increment {credited_increment:+.2f} = denominator, "
+                f"not time+space-coincident cover)"}
+    if not timing_only_gain_survives:
+        return {"credited": False, "label": "NOT credited — gain dies at TTL=inf (message-dropping, not position cover)"}
+    return {"credited": True, "label": f"cover floor cuts the position leak ABOVE the null (which-root rank-1 "
+            f"{null_rank1:.2f} -> {cover_rank1:.2f}, increment {credited_increment:+.2f} from coincident emitters)"}
+
+
+def intersection_gate(fused_rank1, decoy_rank1, random_floor, mustlocalize_ok, n_samples,
+                      fused_random_floor=None) -> dict:
+    """Credit "intersection deanonymizes the persistent sender" only if the fused rank-1 crosses the
+    exposure threshold, beats the central-decoy by DECOY_MARGIN (else it's centrality, not origination),
+    the per-message estimator was capable (must-localize), the run is powered, AND fusion itself created
+    no signal (Control A: the MEASURED fused-random floor must stay near 1/N). The threshold is taken
+    over the larger of the 1/N and the measured fused-random floor — credit the climb ABOVE the floor
+    fusion actually produced, not the theoretical one."""
+    if n_samples < MIN_INTERSECTION_SAMPLES:
+        return {"credited": False, "label": f"underpowered ({n_samples} fusion samples < {MIN_INTERSECTION_SAMPLES})"}
+    if not mustlocalize_ok:
+        return {"credited": False, "label": "inconclusive — per-message estimator failed must-localize"}
+    # Control A: credit the climb ABOVE the floor fusion actually produced. If fusion manufactured a high
+    # fused-random rank-1, eff_floor rises and the exposure bar rises proportionally with it.
+    eff_floor = max(random_floor, fused_random_floor or 0.0)
+    threshold = max(EXPOSURE_RANK1, EXPOSURE_MARGIN_K * eff_floor)
+    if fused_rank1 < threshold:
+        return {"credited": False, "label": f"not pinned (fused rank-1 {fused_rank1:.2f} < {threshold:.2f})"}
+    if fused_rank1 - decoy_rank1 < DECOY_MARGIN:
+        return {"credited": False, "label": f"confounded by centrality (origin {fused_rank1:.2f} vs decoy {decoy_rank1:.2f})"}
+    return {"credited": True, "label": f"intersection deanonymizes the sender (fused rank-1 {fused_rank1:.2f} @ decoy {decoy_rank1:.2f})"}
+
+
+def exposure_gate(best_rank1_detected, random_floor, beats_random, n_messages, n_reps) -> dict:
+    if n_messages < MIN_MESSAGES_PER_RUN or n_reps < MIN_REPS:
+        return {"exposed": False, "label": f"underpowered (messages<{MIN_MESSAGES_PER_RUN} or reps<{MIN_REPS})"}
+    threshold = max(EXPOSURE_RANK1, EXPOSURE_MARGIN_K * random_floor)
+    if beats_random and best_rank1_detected >= threshold:
+        return {"exposed": True, "label": f"flooding EXPOSES the source (rank-1 {best_rank1_detected:.2f} >= {threshold:.2f})"}
+    return {"exposed": False, "label": f"not cleanly exposed (rank-1 {best_rank1_detected:.2f} < {threshold:.2f})"}

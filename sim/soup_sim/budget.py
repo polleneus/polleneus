@@ -1,0 +1,56 @@
+"""Density-aware airtime budget for one contact episode.
+
+Effective throughput collapses with local contention (parent §6/§11). A handshake
+floor (t_setup) means very short contacts transfer nothing; transfer is quantized
+to whole blobs; reconciliation decode-failure (p_fail) thins the result. The result
+is an UPPER BOUND on what a real BLE contact could move.
+"""
+from __future__ import annotations
+import math
+
+
+class AirtimeBudget:
+    def __init__(self, throughput_ideal: float, alpha: float, t_setup: float,
+                 p_fail: float, blob_size: float,
+                 model: str = "linear", beta: float = 0.0, t_setup_slope: float = 0.0,
+                 n_channels: int = 3):
+        self.throughput_ideal = throughput_ideal
+        self.alpha = alpha
+        self.t_setup = t_setup
+        self.p_fail = p_fail
+        self.blob_size = blob_size
+        self.model = model
+        self.beta = beta
+        self.t_setup_slope = t_setup_slope
+        self.n_channels = max(1, n_channels)
+
+    def t_setup_at(self, n_contenders: int) -> float:
+        return self.t_setup + self.t_setup_slope * max(0, n_contenders)
+
+    def effective_goodput(self, n_contenders: int) -> float:
+        """PER-LINK goodput (bytes/time), MONOTONE DECREASING for both models (the system
+        turn-over lives in n*goodput, not here):
+        linear:    throughput/(1+alpha*n)   (~1/n; system n*goodput -> plateau)
+        collision: throughput*exp(-beta*n)  (ALOHA; system n*goodput interior max at 1/beta)
+
+        NOTE: no /n_channels divisor. BLE advertises the SAME packet on all 3 advertising
+        channels per event (redundant, not frequency-division capacity), so the 3 channels do
+        NOT triple collision capacity — dividing the load by n_channels was ~3x too optimistic
+        and is removed. beta is the per-contender collision rate (UNCALIBRATED; a duty-cycle
+        calibration is follow-up). n_channels is retained in config but no longer scales collision."""
+        n = max(0, n_contenders)
+        loss = 1.0 - self.p_fail
+        if self.model == "collision":
+            return self.throughput_ideal * math.exp(-self.beta * n) * loss
+        return self.throughput_ideal / (1.0 + self.alpha * n) * loss
+
+    def charged_airtime(self, served_blobs: int, n_contenders: int) -> float:
+        """Airtime a contact consumes for `served_blobs`: handshake floor (once) + service time.
+        Returns 0 if nothing served (no contact billed). Used for the OFFERED-airtime figure;
+        the engine bills service incrementally per step for utilization (see engine)."""
+        if served_blobs <= 0:
+            return 0.0
+        eff = self.effective_goodput(n_contenders)
+        if eff <= 0.0:                                # fully starved (p_fail=1 or eff underflow): infinite airtime
+            return float("inf")
+        return self.t_setup_at(n_contenders) + served_blobs * self.blob_size / eff

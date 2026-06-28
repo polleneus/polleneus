@@ -1,0 +1,145 @@
+import numpy as np
+from soup_sim.config import Config
+from soup_sim.adversary import place_receivers, realized_coverage, hearings
+
+
+def cfg(**kw):
+    d = dict(n=50, width=120.0, height=120.0, radius=10.0, boundary="torus", mobility="rwp",
+             speed_min=2.0, speed_max=2.0, dt=0.5, ttl=60.0, buffer_cap=50, throughput_ideal=1e4,
+             alpha=0.0, t_setup=0.0, p_fail=0.0, blob_size=1.0, warmup=0.0, measure_window=1.0,
+             drain=0.0, n_messages=0, seen_margin=60.0, master_seed=3, adversary_range_mult=1.0)
+    d.update(kw)
+    return Config(**d)
+
+
+def test_realized_coverage_increases_with_f():
+    c = cfg()
+    covs = [realized_coverage(place_receivers(c, f, "uniform", c.rng(4)), c.radius, c, c.rng(4))
+            for f in (0.1, 0.4, 0.8)]
+    assert covs[0] < covs[1] < covs[2]
+    assert 0.0 <= covs[0] and covs[2] <= 1.0
+
+
+def test_placement_deterministic():
+    c = cfg()
+    a = place_receivers(c, 0.5, "uniform", c.rng(4))
+    b = place_receivers(c, 0.5, "uniform", c.rng(4))
+    assert np.array_equal(a, b)
+
+
+def test_chokepoint_differs_from_uniform():
+    c = cfg()
+    u = place_receivers(c, 0.4, "uniform", c.rng(4))
+    k = place_receivers(c, 0.4, "chokepoint", c.rng(4))
+    assert not (u.shape == k.shape and np.allclose(u, k))
+
+
+def test_receiver_hears_in_range_holder_only():
+    # holder of blob 7 sits at (50,50) for the whole log; R0 near, R1 far
+    c = cfg(width=2000.0, height=200.0, boundary="walls")
+    log = [(float(t), np.array([[50., 50.], [55., 50.]])) for t in range(5)]
+    acquired = {(0, 7): 0.0}                  # node0 holds blob 7 from t=0
+    recv = np.array([[58., 50.], [900., 50.]])
+    h = hearings(recv, 10.0, log, acquired, {7: 1e12}, c)
+    assert h[(0, 7)] == 0.0 and (1, 7) not in h
+
+
+def test_first_spy_points_at_earliest_receiver():
+    from soup_sim.adversary import estimate
+    recv = np.array([[0., 0.], [100., 0.], [200., 0.]])
+    hear = [(0, 5.0), (1, 9.0), (2, 14.0)]
+    cands = np.array([[2., 0.], [150., 0.]])
+    out = estimate("first_spy", hear, recv, cands, np.random.default_rng(0))
+    assert np.allclose(out["point"], [0., 0.]) and out["scores"][0] < out["scores"][1]
+
+
+def test_reachability_ranks_true_source_top():
+    from soup_sim.adversary import estimate
+    recv = np.array([[0., 0.], [50., 0.], [100., 0.], [150., 0.]])
+    hear = [(0, 1.0), (1, 3.0), (2, 5.0), (3, 7.0)]          # gradient: source near x=0
+    cands = np.array([[1., 0.], [80., 0.], [149., 0.]])
+    # reach[c][r] ~ |cand_x - recv_x| (spread reaches nearer receivers sooner)
+    reach = np.array([[abs(cx - rx) for rx in (0., 50., 100., 150.)] for cx in (1., 80., 149.)])
+    out = estimate("reachability", hear, recv, cands, np.random.default_rng(0), reach=reach)
+    assert int(np.argmin(out["scores"])) == 0               # candidate nearest the source ranks top
+
+
+def test_origin_vs_relay_beats_first_spy_via_upstream():
+    from soup_sim.adversary import estimate
+    # true origin = idx 0; decoy relayer = idx 1 sits closer to the earliest receiver (so first-spy
+    # wrongly fingers the relayer). upstream flags the relayer (it had an in-range upstream holder).
+    recv = np.array([[0., 0.], [50., 0.]])
+    hear = [(0, 1.0), (1, 5.0)]
+    cands = np.array([[10., 0.], [1., 0.]])           # origin far from R0; relayer near R0
+    reach = np.array([[1., 2.], [1., 2.]])            # identical reach -> reachability base is a tie
+    fs = estimate("first_spy", hear, recv, cands, np.random.default_rng(0))
+    assert int(np.argmin(fs["scores"])) == 1          # first-spy wrongly picks the relayer (nearer R0)
+    ovr = estimate("origin_vs_relay", hear, recv, cands, np.random.default_rng(0),
+                   reach=reach, upstream=[False, True])
+    assert int(np.argmin(ovr["scores"])) == 0         # origin-vs-relay correctly picks the true origin
+
+
+def test_random_guess_is_uniform_permutation():
+    from soup_sim.adversary import estimate
+    out = estimate("random_guess", [(0, 1.0)], np.array([[0., 0.]]), np.zeros((5, 2)), np.random.default_rng(1))
+    assert sorted(out["scores"].tolist()) == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+def test_hearing_respects_hold_lifetime():
+    # node acquires blob 9 only at t=3 -> not heard before then
+    c = cfg(width=2000.0, height=200.0, boundary="walls")
+    log = [(float(t), np.array([[58., 50.]])) for t in range(6)]
+    acquired = {(0, 9): 3.0}
+    h = hearings(np.array([[58., 50.]]), 10.0, log, acquired, {9: 1e12}, c)
+    assert h[(0, 9)] == 3.0
+
+
+# --- PR-3 Task 1: score fusion ------------------------------------------------
+def test_avg_rank_handles_ties():
+    from soup_sim.adversary import _avg_rank
+    r = _avg_rank(np.array([0.0, 0.0, 1.0]))   # two-way tie for best
+    assert r[0] == 0.5 and r[1] == 0.5 and r[2] == 2.0
+
+
+def test_fuse_borda_rewards_consistency():
+    from soup_sim.adversary import fuse_scores
+    from soup_sim.anonymity import rank_of
+    # 4 candidates, 3 messages. Candidate A (idx 1) is ALWAYS 2nd; B/C/D rotate through 1st/3rd/4th.
+    # consistent-2nd must beat the rotating extremes under Borda.
+    m1 = np.array([0.0, 1.0, 2.0, 3.0])   # B 1st, A 2nd, C 3rd, D 4th
+    m2 = np.array([3.0, 1.0, 0.0, 2.0])   # C 1st, A 2nd, D 3rd, B 4th
+    m3 = np.array([2.0, 1.0, 3.0, 0.0])   # D 1st, A 2nd, B 3rd, C 4th
+    fused = fuse_scores([m1, m2, m3], "borda")
+    assert int(np.argmin(fused)) == 1                       # A wins
+    assert rank_of(fused, 1) == 0                           # A is exact-catch
+
+
+def test_fuse_score_sum_big_scale_msg_does_not_dominate():
+    from soup_sim.adversary import fuse_scores
+    # The big-scale message DISAGREES with the consistent winner: without per-message normalization the
+    # huge message dominates and crowns candidate 2 ([300,403,6]); WITH normalization the consistently-
+    # low candidate 0 wins. (A tautology test where cand 0 is min in every message would pass either way.)
+    small = [np.array([0.0, 1.0, 2.0])] * 3
+    huge = np.array([300.0, 400.0, 0.0])
+    fused = fuse_scores(small + [huge], "score_sum")
+    assert int(np.argmin(fused)) == 0
+    # sanity: the UN-normalized sum would instead pick candidate 2 (the regression this guards against)
+    assert int(np.argmin(np.sum(small + [huge], axis=0))) == 2
+
+
+def test_borda_and_score_sum_can_disagree():
+    from soup_sim.adversary import fuse_scores
+    # the two fusion rules are genuinely different estimators (justifying reporting BOTH + crediting the
+    # lower): cand 0 is rank-0 in 2 of 3 (Borda crowns it) but cand 1 is a hair behind the min every
+    # message (tiny normalized score -> score_sum crowns it instead).
+    msgs = [np.array([0.0, 0.01, 5.0]), np.array([0.0, 0.01, 5.0]), np.array([5.0, 0.01, 0.0])]
+    borda = int(np.argmin(fuse_scores(msgs, "borda")))
+    ssum = int(np.argmin(fuse_scores(msgs, "score_sum")))
+    assert borda == 0 and ssum == 1 and borda != ssum      # the rules crown different candidates
+
+
+def test_fuse_empty_raises():
+    import pytest
+    from soup_sim.adversary import fuse_scores
+    with pytest.raises(ValueError):
+        fuse_scores([], "borda")

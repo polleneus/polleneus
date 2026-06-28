@@ -1,0 +1,134 @@
+{
+  "summary": "Targeted round-2 re-review of the revised PR-1 gate (temporal-reachability oracle)",
+  "agentCount": 2,
+  "logs": [
+    "Round-2 done: GATE-VALIDITY:minor-nits, FIXES-AND-SCOPE:minor-nits; blocking=1"
+  ],
+  "result": {
+    "reviews": [
+      {
+        "lens": "GATE-VALIDITY — temporal-reachability oracle (Tasks 1 and 5)",
+        "verdict": "minor-nits",
+        "confirmations": [
+          "(1) Oracle correctness + both-direction anchors are sound. `temporal_reachable` (sort episodes by exit_time, infect both endpoints when either is infected) correctly computes time-respecting reachability. The hand-known anchors are right: [(0,1,1.0),(1,2,2.0)] gives {0,1,2} (t2=2>t1=1, journey exists); [(1,2,1.0),(0,1,2.0)] gives {0,1} (B-C at exit 1 fires before B is infected at exit 2, so C unreachable). Anchoring BOTH the reachable and the not-reachable direction makes the oracle falsifiable, not just permissive.",
+          "(2) The engine==oracle equality holds for the real engine IN THE TASK-5 CONFIG. Verified against engine.py: although `_settle` computes the exchange at now=entry (line 119/126), an episode is only SETTLED (and thus its transfer executed) when the pair goes out of range, i.e. at its exit time; across distinct dt steps the engine's settle order therefore equals exit-time order, matching the oracle. In the infinite-TTL/infinite-cap limit (ttl=1e12, cap=1e9) the entry-vs-exit `now` choice affects only timestamps, never delivered-set MEMBERSHIP, so it cannot break the set-equality gate. The CFL bound (speed_max*dt<=radius/4) plus speed=2/dt=0.5/radius=16 puts every contact across ~20 steps, so sub-step contacts effectively cannot occur.",
+          "(3) Equal-exit-time ties are handled CONSISTENTLY: Python's `sorted` is stable, so tied episodes keep their list (=append=engine-settle) order, which is the same order the engine processed them in. The oracle and engine agree on ties (correct, though this is undocumented and load-bearing).",
+          "(4) The one-hop mutant is a genuine negative control / strict subset. With one_hop, only the originator offers blob 0, so delivered = {0} + direct contacts of 0; every direct contact (0,X) is also temporally reachable (source always infected), so one-hop delivered is a SUBSET of the oracle, and STRICT because the supercritical/mobile config (mean degree ~4.9, T=80) reaches multi-hop nodes one-hop misses. It catches under-delivery. Both arms compute the oracle from the SAME recorded episodes, which is the correct construction.",
+          "(5) Task 1 contact-timing gate is now NON-tautological: it runs the real RWP engine (make_mobility + run_until) and compares measured mean_contact_duration and meeting rate to independently-derived analytic formulas. The analytic side never reads engine state.",
+          "(6) The three analytic formulas are sound. E[v_rel]=(4/pi)v verified by integrating |v_rel|=2v|sin(theta/2)| over uniform theta (exact here since speed_min=speed_max=3 makes both speeds equal). Mean contact duration pi*r/(2*v_rel) = mean-chord (pi*r/2 for the dist<=r convention) / v_rel. Meeting rate 2*r*v_rel*(n-1)/area matches kinetic-theory swept-band (cross-section 2r for the center-to-center dist<=r edge convention in geometry.py). The 0.5x-2x band absorbs transient/boundary truncation. The round-1 must-fixes (run the engine; sound E[v_rel]) are addressed.",
+          "No path found by which a BROKEN engine passes the tested gate: under-delivery is caught by the one-hop control, and over-delivery is caught by delivered==oracle in the long-contact regime that Task 5 runs in."
+        ],
+        "remaining": [
+          {
+            "title": "delivered==oracle is presented as an EXACT theorem but is only valid in the long-contact regime; the precondition is unstated",
+            "severity": "medium",
+            "fix": "The equality engine-delivered == temporal_reachable(episodes-by-exit) is NOT unconditional. Within a single dt step the engine settles co-settling episodes in spatial cand order, not exit-time order, so a chain of sub-step episodes can cascade multi-hop in one step (engine delivers a SUPERSET of the exit-ordered oracle). Concrete falsifier: in one dt window, episode P=(0,1) enter0.1/exit0.9 and Q=(1,2) enter0.0/exit0.5 both settle this step; oracle (Q before P by exit) yields {0,1}, but if cand orders (0,1) before (1,2) the engine yields {0,1,2}. The Task-5 config (CFL-bounded, contacts span ~20 steps) avoids this, so the test passes -- but document the precondition on temporal_reachable exactly as settle_static_fixpoint documents its unbounded-buffer precondition (e.g. 'valid only when each contact spans >=1 full dt step so settle-order==exit-order'), and soften Step 7's 'never loosen the oracle, any mismatch is a fidelity failure' to exclude the sub-step-cascade regime. Otherwise a future short-contact config will make a FAITHFUL engine fail and send the worker debugging a non-bug."
+          },
+          {
+            "title": "Gate correctness silently depends on sorted() being stable AND episodes appended in engine-settle order (equal-exit ties)",
+            "severity": "low",
+            "fix": "The equal-exit-time tie-break only matches the engine because Python's sort is stable and episodes are appended in settle order. This is correct as written but load-bearing and undocumented. Add a one-line note in temporal_reachable that ties resolve by episode-recording order (= engine processing order), and keep the engine appending episodes in _settle (cand) order so the invariant is not accidentally broken (e.g. by later sorting episodes for reporting)."
+          },
+          {
+            "title": "One-hop negative control runs only seed 0",
+            "severity": "low",
+            "fix": "test_one_hop_mutant_fails_the_gate asserts strict subset for a single seed. The strictness is essentially guaranteed at d~4.9/T=80, but for robustness loop over the same >=5 seeds as the positive gate (or assert len(delivered) < len(oracle) with a clear margin) so the control cannot pass degenerately."
+          }
+        ]
+      },
+      {
+        "lens": "FIXES-AND-SCOPE — Round-2 re-review of revised PR-1 plan (2026-06-25-airtime-pr1-engine-fidelity.md): did the round-1 must-fixes land, is scope still exactly PR-1, and is the keystone gate now falsifiable? Verified against the actual slice-1 code (engine.py, percolation.py, buffer.py, budget.py, policies.py, mobility.py, config.py) and by simulating the proposed gate + the Task-4 order scenario.",
+        "verdict": "minor-nits",
+        "confirmations": [
+          "SI logistic / beta-fitting REMOVED entirely. No si_logistic, no measured_meeting_rate-as-oracle, no 'calibrate beta'. Global Constraints line 14 states 'No SI logistic, no beta fitting'; analytics.py is now only the 3 contact-timing formulas (expected_relative_speed, expected_contact_duration, analytic_meeting_rate_per_node). Task 5 replaced the SI gate with the temporal-reachability oracle. Round-1 must-fixes #1 and #2 (well-mixed violation + beta-is-fitting) are fully resolved by removal.",
+          "Contact-timing gate (Task 1) now RUNS the engine and is not a tautology. test_contact_timing_matches_rwp_analytics_within_tolerance builds a real Engine, calls eng.run_until(40), and compares measured eng.mean_contact_duration() and episode-derived meeting rate (2*len(eng.episodes)/(n*T)) to analytic targets within a 0.5x-2x band. The helpers' outputs are consumed by engine-vs-analytic assertions, not compared to their own arithmetic. Round-1 must-fix #3 resolved. The 0.5x-2x band is loose but correctly self-labeled an order-of-magnitude sanity, not the headline gate.",
+          "Negative control present and real. test_one_hop_mutant_fails_the_gate asserts delivered < oracle (strict subset). I reproduced it on the Task-5 params: a one-hop engine (only forwards source-originated blobs) delivers 45 nodes vs oracle 120 -> strict subset holds. Round-1 must-fix #5's 'demonstrated falsifying mutant' requirement is met.",
+          "Temporal-reachability oracle is algorithmically sound for its chosen 'journey = non-decreasing exit times' convention. I verified both hand-known cases pass ({0,1,2} for A-B(t1)<B-C(t2); {0,1} for B-C(t1)<A-B(t2)). A single forward pass over exit-sorted episodes is correct for strict time-respecting reachability because infection is monotone in time. This is a legitimate independent oracle (the dynamic analog of slice-1's static union-find KAT).",
+          "Engine==oracle gate has genuine discriminating power, not just trivial full-flood. At T=80 the spread saturates (delivered=oracle=all 120 on 5 seeds) so the positive arm is weak there, but at a shorter run (T=6) the oracle returns NON-trivial subsets (27, 80, 23 of 120) and the engine still matches exactly on every seed. So the gate genuinely tracks a partial time-respecting frontier. I confirmed engine==oracle by simulating the Task-1 episode recording + Task-5 one_hop flag against the real engine.",
+          "Non-regression gate intact. Task 6 keeps test_integration_percolation.py green and adds the static-fixpoint zero-cost limit (delivered pairs == same_component_pairs, the percolation-oracle KAT family). Baseline suite is green now (61 passed) so the gate has a valid bit-for-bit starting point. settle_static_fixpoint and the susceptibility/threshold test are untouched by Tasks 2-4.",
+          "Scope is exactly PR-1. No airtime model (Global Constraints line 13: 'No airtime model in PR-1'; AirtimeBudget unchanged, runs use unbounded budget), no utilization, no knee estimator, no censoring-aware latency, no provenance table. Those are correctly left to PR-2 (spec section 3). Deliberately replacing the spec's literal section-2.2 'SI/epidemic growth' gate with the temporal-reachability oracle is the round-1-mandated fix, not a scope deviation.",
+          "Interface names are consistent across tasks and with slice-1 code: engine.episodes = list of (i,j,exit_time) recorded in _settle; one_hop flag on Engine + per-blob origin tracked at inject; _pair_order hook on Engine; temporal_reachable(episodes, source, n) appended to percolation.py. All referenced slice-1 symbols (Config fields, c.rng(*path), NodeBuffer, AirtimeBudget, make_mobility, Mobility, Blob, select_offers, contact_interval) exist with the signatures the plan uses. Tasks 2 (deliver_t = max(now, created_at), engine-side, no metrics clamp) and 3 (single shared pool over fixpoint rounds, k granted once) are unchanged from v1 and remain sound against the current engine."
+        ],
+        "remaining": [
+          {
+            "title": "Task 4 order-invariance test is reintroduced as a tautology by the Step-3 're-canonicalize' instruction (round-1 must-fix #4 NOT correctly addressed)",
+            "severity": "high",
+            "fix": "The test intent (line 102: 'tests canonicalization, not just a fixed seed') contradicts the implementation note (line 123: 'apply the requested permutation, then the engine RE-CANONICALIZES'). If the _pair_order hook re-canonicalizes, then _pair_order='sorted' and 'reversed' both collapse to the same canonical (entry,i,j) order BEFORE the engine settles, so run('sorted')==run('reversed') passes by construction regardless of whether the canonicalization is correct or even present -- it only proves the sort is deterministic. This is the exact round-1 defect (same-seed rerun) in new clothing; Step 2's 'expect fail' can never fire. I verified the scenario itself is sound: for the static A(0)-B(9)-C(18) line, processing (A,B) before (B,C) delivers to C while (B,C) before (A,B) does NOT (C-has-blob True vs False) -- so order genuinely matters. The hook must therefore apply the forced/permuted order WITHOUT re-canonicalizing, and the assertion that the delivered-SET + timestamps are nonetheless identical is what proves invariance. Because the naive within-step result is order-dependent here, making the test pass requires the engine to make the delivered-set order-independent (e.g. iterate exchange to a fixpoint across the step's episodes, or canonicalize at candidate-discovery while the hook permutes only that discovered list and the engine does not re-sort). Rewrite Step 3 to remove 're-canonicalizes' and state precisely where the forced order is injected and why the delivered-set is invariant despite it."
+          },
+          {
+            "title": "Engine==oracle positive arm is weak at the chosen run length (T=80) because the spread saturates to all nodes",
+            "severity": "low",
+            "fix": "At T=80 on Task-5 params the oracle == {all 120 nodes} on every seed, so delivered==oracle reduces to 'engine floods everything' -- it confirms no under/over-delivery only because reachable is everything; the negative control carries the falsifiability. I measured non-trivial discriminating power at a shorter run (T=6 -> oracle 27/80/23 of 120, engine matches exactly). Recommend the gate use a run length that leaves the oracle a strict subset of all nodes on at least some seeds (or add a second assertion that 0 < len(oracle) < n on >=1 seed) so the POSITIVE arm tests a real partial frontier, not just full flood. Not blocking (negative control + non-regression still bite), but it materially strengthens the keystone gate."
+          },
+          {
+            "title": "Task 4 canonicalization is specified only for the candidate loop, not the vanished-episode and iv-None settle passes (round-1 should-consider carryover)",
+            "severity": "low",
+            "fix": "engine.py settles episodes in three places: the candidate loop (lines 66-87), the iv-is-None branch (71-73), and the vanished-episode pass over self.open (88-91). Task 4 (lines 97/123) only canonicalizes the candidate loop. For full per-step determinism under scarcity (relevant to Task 6 NEGATIVE-2's airtime-starved arm), apply the same (entry,i,j) ordering to the vanished/None settle passes, or explicitly document that final delivered-SET is order-invariant only in the unbounded limit and counts/selected-blobs under a finite pool depend on canonical order by design."
+          },
+          {
+            "title": "Task 5 helper (line 173) uses a fragile 'eng.episodes and __import__(...)' idiom that drops the source on empty episodes",
+            "severity": "low",
+            "fix": "set(eng.episodes and temporal_reachable(...)) short-circuits to set([]) (empty) when eng.episodes == [] -- bypassing the oracle entirely and losing even the source node {0}. Only triggers in the degenerate no-contact case, but it is a latent footgun and the __import__ idiom is needlessly obscure. Replace with a plain top-level 'from soup_sim.percolation import temporal_reachable' and call it unconditionally so the oracle always returns at least {source}."
+          },
+          {
+            "title": "Task 1 Step 3 has muddled task-ordering prose for who records engine.episodes",
+            "severity": "low",
+            "fix": "Step 3 hedges ('ensure Task-5's engine.episodes recording exists... or stub episodes=[] here and let Task 5 fill it -- but the meeting-rate assertion needs it, so record episodes now'). Pin it cleanly: record self.episodes.append((i, j, end)) in _settle as part of Task 1 (the meeting-rate assertion depends on it), and have Task 5 only ADD the one_hop flag + temporal_reachable. Remove the conditional stubbing language to avoid a half-built episodes list during subagent execution."
+          }
+        ]
+      }
+    ],
+    "clean": false
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Re-review"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "r2:gate-validity",
+      "phaseIndex": 1,
+      "phaseTitle": "Re-review",
+      "agentId": "ad95c5ffa35df858c",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782402526850,
+      "queuedAt": 1782402526842,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "GATE-VALIDITY — temporal-reachability oracle (Tasks 1 and 5)",
+      "promptPreview": "Focused ROUND-2 re-review of a revised PR-1 plan. Read it with file tools.\n\nLENS: GATE-VALIDITY — Read the plan at C:/Users/rob/Documents/meldingx/docs/superpowers/plans/2026-06-25-airtime-pr1-engine-fidelity.md (Tasks 1, 5). Is the TEMPORAL-REACHABILITY ORACLE gate valid and falsifiable? Verify: (1) temporal_reachable (process episodes in exit-time order, infect both endpoints when either is infe…",
+      "lastProgressAt": 1782402728547,
+      "tokens": 55189,
+      "toolCalls": 22,
+      "durationMs": 201697,
+      "resultPreview": "{\"lens\":\"GATE-VALIDITY — temporal-reachability oracle (Tasks 1 and 5)\",\"verdict\":\"minor-nits\",\"confirmations\":[\"(1) Oracle correctness + both-direction anchors are sound. `temporal_reachable` (sort episodes by exit_time, infect both endpoints when either is infected) correctly computes time-respecting reachability. The hand-known anchors are right: [(0,1,1.0),(1,2,2.0)] gives {0,1,2} (t2=2>t1=1, j…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "r2:fixes-and-scope",
+      "phaseIndex": 1,
+      "phaseTitle": "Re-review",
+      "agentId": "a649119d93d7e24d9",
+      "model": "claude-opus-4-8[1m]",
+      "state": "done",
+      "startedAt": 1782402526851,
+      "queuedAt": 1782402526843,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "FIXES-AND-SCOPE — Round-2 re-review of revised PR-1 plan (2…",
+      "promptPreview": "Focused ROUND-2 re-review of a revised PR-1 plan. Read it with file tools.\n\nLENS: FIXES-AND-SCOPE — Read the plan at C:/Users/rob/Documents/meldingx/docs/superpowers/plans/2026-06-25-airtime-pr1-engine-fidelity.md. Confirm the round-1 must-fixes landed: SI logistic/beta-fitting REMOVED entirely; contact-timing gate now runs the engine (not a tautology); overlap test (Task 4) now tests pair-ORDER i…",
+      "lastProgressAt": 1782402896670,
+      "tokens": 86760,
+      "toolCalls": 26,
+      "durationMs": 369818,
+      "resultPreview": "{\"lens\":\"FIXES-AND-SCOPE — Round-2 re-review of revised PR-1 plan (2026-06-25-airtime-pr1-engine-fidelity.md): did the round-1 must-fixes land, is scope still exactly PR-1, and is the keystone gate now falsifiable? Verified against the actual slice-1 code (engine.py, percolation.py, buffer.py, budget.py, policies.py, mobility.py, config.py) and by simulating the proposed gate + the Task-4 order sc…"
+    }
+  ],
+  "totalTokens": 141949,
+  "totalToolCalls": 48
+}

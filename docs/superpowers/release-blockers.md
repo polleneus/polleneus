@@ -53,17 +53,35 @@ probability** from an adversarial source-estimator audit + a USRP PHY self-audit
 
 ## B3 — Honest anonymity posture in all user-facing copy  ·  **OPEN**
 
-No unqualified "anonymous" claim. The honest, evidence-backed posture from slice 3:
+No unqualified "anonymous" claim. The honest, evidence-backed posture (reframed 2026-06-28 — see
+[originator-anonymity-limit.md §8](../originator-anonymity-limit.md)):
 
-- **Strong recipient anonymity** — pure flooding lands a message on ~everyone in the component, so
-  receipt ≠ being the recipient.
-- **Sender anonymity is best-effort and degrades against a resourceful, persistent, sensor-dense
-  adversary** — single messages are roughly anonymous; persistent authors are deanonymizable under
-  multi-session intersection + device fingerprinting (B2).
-- **Existence of mesh traffic is detectable** — running the app is itself a membership signal in the
-  most repressive settings (largely unavoidable for any radio protocol); blend toward ordinary BLE.
+- **What is protected (the crown jewels — SOLVED):** **content secrecy** (sealed, E2E) and **recipient
+  anonymity** (pure flooding lands a message on ~everyone in the component, so receipt ≠ being the
+  recipient). For the actual mission — coordinating locally when infrastructure is down — *what* you said
+  and *who* you said it to are the dangerous facts, and both are hidden.
+- **What origin-localization actually leaks: only "this device transmitted" — not the content, not the
+  recipient.** And because every phone relays others' blobs (and may emit cover), "you transmitted" is
+  largely the same membership signal as *running the app at all* — which is unavoidable for any radio tool.
+  So the achievable, honest goal is **"originating blends into participating,"** not "hide the originator."
+- **Single message:** roughly anonymous *against an adversary that cannot pick your blob out of the
+  crowd's* — origination blends to ~1/(concurrent originators) (the "free cover" measurement). Useless
+  against an adversary that can already identify the target blob.
+- **Persistent, targeted, device-fingerprinted author: NOT protected** — multi-session intersection pins
+  them (B2: rank-1 → 0.72 at K=16). This is an **accepted, disclosed limit, not a blocker to overcome** —
+  it is the same limit every mesh tool (Briar, etc.) has, and it is **architecturally final** (no crypto
+  opens it for a flood — the re-randomization escape is closed by Law 1; see the originator-anonymity-limit
+  doc). polleneus is **not for a specifically-hunted persistent author under heavy surveillance**, and the
+  copy must say so.
+- **Existence of mesh traffic is detectable** — running the app is a membership signal in the most
+  repressive settings (unavoidable for any radio protocol); blend toward ordinary BLE.
+- **Reframe note (CTO decision 2026-06-28):** originator-anonymity is **not** a release blocker we must
+  *engineer away* — it is a **bounded property we must honestly disclose.** B3 is cleared by truthful
+  copy, not by achieving sender-unlinkability (which is impossible for a flood). The crypto research into
+  re-randomization (PQ universal re-encryption) is **parked as decoupled general cryptography** — it
+  cannot help our flood (Law 1) and is no longer on the polleneus track.
 - **Clear when:** onboarding/marketing/docs carry this posture, reviewed against the B2 numbers; no
-  surface implies sender-unlinkability or undetectability.
+  surface implies sender-unlinkability or undetectability, and the persistent-author limit is stated plainly.
 
 ## B4 — v1 spend + key-evolution cost on low-end Android  ·  **OPEN**
 

@@ -154,3 +154,31 @@ product posture (carried to B3): *strong recipient anonymity and content secrecy
 cover that is bounded and blob-blind-conditional; no cheap protection for a persistent, fingerprinted
 sender; perfect sender anonymity only via a small-group DC-net (the flood layer cannot be made
 sender-anonymous by any re-randomization scheme).*
+
+## 8. The reframe — does finding the origin even matter? (CTO decision, 2026-06-28)
+
+After establishing that originator-anonymity is impossible for a flood (and that no crypto opens it,
+§4), the right move is not a cleverer hack — it is to **ask what the leak actually costs**, and accept
+the answer.
+
+**What localizing the origin gets the adversary: exactly one bit — "this device transmitted a message."**
+Not the content (sealed, E2E). Not the recipient (everyone receives everything). For the mission that
+defines polleneus — coordinating locally when infrastructure is down — the dangerous facts are *what* was
+said and *who* it was said to, and **both are protected.** "Someone near the south gate transmitted
+something" is usually operationally useless.
+
+**And that one bit is mostly already public.** Every phone relays others' blobs (and may emit cover), so
+"you transmitted" ≈ "you are running the app" — a **membership** signal that is unavoidable for *any*
+radio tool and that we already disclose. The honest, achievable goal is therefore **"originating blends
+into participating,"** not "hide the originator":
+- a **single** message blends into concurrent traffic against a blob-blind adversary (§5/§6, ~1/A(W));
+- **content + recipient** — the crown jewels — stay protected unconditionally.
+
+**The one genuinely-exposed case, accepted and disclosed:** a *persistent, specifically-targeted,
+device-fingerprinted* author is pinned by multi-session intersection (B2). polleneus does **not** protect
+that person, and the copy says so — the same limit every mesh tool has.
+
+**Consequence for the roadmap:** originator-anonymity is **retired as a blocker.** It is a *bounded,
+disclosed property* (B3), not an engineering gate — and the re-randomization research that chased it is
+**parked as decoupled general cryptography** (it cannot help a flood; §4 / Law 1). We stop spending
+project effort on hiding the originator and return to making the app work when things go down (P3–P6).

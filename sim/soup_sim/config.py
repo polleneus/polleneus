@@ -114,6 +114,18 @@ class Config:
     #   a future-dated created_at (a) defeats the absolute origin-TTL test even on a trusted clock and (b)
     #   evades the oldest-by-created eviction (it looks YOUNGEST) — the point being that H, which keys on the
     #   TRUE receipt time not created_at, still clears it. 0 ⇒ no forging.
+    # P3 PR-2 density-adaptive hold-budget (spec P3-PR-2; all default-inert ⇒ PR-1/legacy bit-identical). When
+    # ON, the effective hold-budget shrinks with LOCAL buffer occupancy occ=len(store)/cap (a clock-free load
+    # signal): H_eff = H_min + (H_max−H_min)·(1−occ^k). Empty buffer ⇒ H_max (hold long, protect delivery when
+    # thin); full buffer ⇒ H_min (shed fast, resist overflow when dense). Still compared against
+    # elapsed-since-receipt ⇒ OFFSET-INVARIANCE preserved (occ is a count, not a clock). When ON, `hold_budget`
+    # (the PR-1 fixed H) is IGNORED. Honest caveat (spec P3.4): adaptive shedding is adversary-inducible — an
+    # injection flood inflates occ and shrinks a victim's H_eff (premature honest-mail drop); bounded ONLY by the
+    # P2 token rate-limit. Off ⇒ False ⇒ PR-1's fixed H path, bit-identical.
+    hold_budget_adaptive: bool = False      # OFF ⇒ use fixed `hold_budget`. ON ⇒ occupancy-adaptive H_eff.
+    hold_budget_min: float | None = None    # H_min: the floor H_eff at full buffer (must be > 0 when adaptive)
+    hold_budget_max: float | None = None    # H_max: the ceiling H_eff at empty buffer (>= H_min; bounds clearance)
+    hold_budget_shape_k: float = 1.0        # curve shape k>=1 (1 ⇒ linear; larger ⇒ holds H_max until near-full)
     # --- DEFERRED (open problem; NOT wired to live behavior; carried only for the manifest + the §4 bound) ---
     clock_trust_threshold: float | None = None  # DEFERRED. Intended as the tolerated-offset bound for the
     #   monotonicity residual gate (a slow clock within ±threshold can extend life up to TTL+threshold). The
@@ -219,6 +231,18 @@ class Config:
             raise ValueError("creation_ts_clamp must be >= 0 when set (None ⇒ off)")
         if self.blackout_future_max < 0.0:
             raise ValueError("blackout_future_max must be >= 0")
+        # P3 PR-2 density-adaptive hold-budget
+        if self.hold_budget_shape_k < 1.0:
+            raise ValueError("hold_budget_shape_k must be >= 1")
+        if self.hold_budget_min is not None and self.hold_budget_min <= 0.0:
+            raise ValueError("hold_budget_min must be > 0 when set (None ⇒ off)")
+        if self.hold_budget_max is not None and self.hold_budget_max <= 0.0:
+            raise ValueError("hold_budget_max must be > 0 when set (None ⇒ off)")
+        if self.hold_budget_adaptive:
+            if self.hold_budget_min is None or self.hold_budget_max is None:
+                raise ValueError("hold_budget_adaptive requires hold_budget_min and hold_budget_max")
+            if self.hold_budget_min > self.hold_budget_max:
+                raise ValueError("require hold_budget_min <= hold_budget_max")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

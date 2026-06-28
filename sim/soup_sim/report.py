@@ -26,6 +26,29 @@ def write_csv(rows, manifest, path) -> None:
         f.write(to_csv_string(rows, manifest))
 
 
+def ferrying_to_csv_string(result, manifest) -> str:
+    """P4 ferrying-budget sweep: one row per (density, time-budget T) with the static bound + the lift.
+    Leading comment carries the loud UPPER-BOUND / RWP-regime tag so the file is self-describing."""
+    man = list(manifest.keys())
+    budgets = result["budgets"]
+    header = ["density", "n", "static_bound", "budget_to_half", "budget_T", "delivery_mean", "ci_lo", "ci_hi",
+              "t50_delivered_censored", "lift"] + [f"param_{k}" for k in man]
+    buf = io.StringIO()
+    buf.write(f"# {result['regime_tag']}\n")
+    buf.write("# delivery=1.0 at large T is ERGODIC-MIXING saturation (any d>0 saturates given time), NOT a "
+              "capability result; the informative quantity is budget_to_half (rises as density falls). "
+              "t50 is delivered-only + censored at T (a LOWER bound on true delay).\n")
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(header)
+    for row in result["rows"]:
+        for T in budgets:
+            pb = row["per_budget"][T]
+            w.writerow([row["density"], row["n"], row["static_bound"], row["budget_to_half"], T,
+                        pb["delivery_mean"], pb["ci_lo"], pb["ci_hi"], pb["t50"], pb["lift"]]
+                       + [manifest[k] for k in man])
+    return buf.getvalue()
+
+
 AIRTIME_FIELDS = ["density", "circulated_per_min_mean", "ci_lo", "ci_hi", "utilization_mean",
                   "delivery_mean", "t50"]
 BINDING_KEYS = ["contention_bound", "setup_starved", "quantization", "demand_satisfied"]

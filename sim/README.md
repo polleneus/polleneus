@@ -309,6 +309,35 @@ number are bit-identical. The cluster layout rides the mobility RNG substream, f
 stable across the leak sweep (a per-rep venue). Delivery numbers remain an **UPPER BOUND** (clustering
 is an optimism-*removing* axis: real crowds gather, so clustered ≤ uniform at the same N).
 
+## Ferrying below the percolation threshold (P4 — PR-1)
+A blackout/protest IS the sparse, **sub-`d_c`** regime where the static network *shatters*. The saving grace
+is **time**: mobile nodes physically **carry** sealed blobs between components (store-carry-forward = *blind
+ferrying*), so delivery below `d_c` is governed by **temporal connectivity** (the time budget), not the static
+snapshot. `ferrying_budget_sweep` measures the lift = engine delivery − static component-reachability bound,
+as a function of the time budget `T` (the blob's `ttl` = the **P3 hold-budget `H`** made into the knob).
+
+**Measured** (RWP, W=H=140, r=12, speed 2; **seed=7, reps=4**; UPPER BOUND):
+
+| d (N) | static | T=10 | T=30 | T=80 | T=200 | budget→50% |
+|------:|------:|-----:|-----:|-----:|------:|-----------:|
+| 0.3 (13) | 0.01 | 0.15 | 0.20 | 0.85 | 1.00 | 80 |
+| 0.8 (35) | 0.04 | 0.15 | 0.62 | 0.97 | 1.00 | 30 |
+
+> **The `1.00` ceiling is NOT a capability result** — RWP on a torus is *ergodic*, so any `d>0` saturates to
+> 1.0 given enough time (even `N=2` reaches 1.0 by `T≈1500`). "Ferrying delivers given budget" just restates
+> ergodic mixing. **The informative quantity is the budget scaling.**
+
+Honest findings: (1) the **cost of cold-start is the budget, and it rises as density falls** — `budget→50%`
+goes `30 → 80` as `d` falls `0.8 → 0.3`, and `budget_to_half(sparser) ≥ budget_to_half(denser)` is robust
+(**20/20 seeds**); as `d→0` the budget →∞ (and in real constrained mobility may be **unbounded**). This budget
+*is* the **P3 hold-budget `H`** and costs **P0 storage** — thinner venue ⇒ longer hold, more buffer. (2) The
+lift below `d_c` is real (static ~1% → ~100% given budget); its ceiling is ergodic, its cost is the budget.
+(3) Latency (`t50`, **delivered-only + censored at `T`** ⇒ a lower bound; arena-time units) is nonzero and
+grows toward the budget as the venue thins. **UPPER BOUND** — RWP full re-mixing, **no airtime AND no buffer
+cost** on this path; real mobility needs a larger budget and delivers less. The residual floor (budget too
+small, or `N` too small for any inter-component contact) is what the **PR-2 bridge** (opportunistic NAN/LoRa)
+and the §14 **pair-to-activate (N=2) / standby (N=0)** UX address.
+
 ## The gate (why you can trust the curve)
 `tests/test_integration_percolation.py`:
 1. **Oracle KAT** — in the static unbounded regime the engine's multi-hop fixpoint delivers

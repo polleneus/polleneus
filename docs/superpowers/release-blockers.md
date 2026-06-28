@@ -29,6 +29,11 @@ hardest gate and gates every other "ship" decision.
   key-evolution, transport) against a written threat model.
 - **Now:** the codebase is a *simulator/research* tree, not a shippable client — so this is not
   yet imminent, but it must be formalized before any client work begins.
+- **Audit target defined (P5):** the v1 key-management stack is now consolidated into one audit-ready
+  artifact — [p5-key-management-spec.md](specs/2026-06-28-p5-key-management-spec.md) — with an explicit
+  **§10 open-questions list for the auditor** (the load-bearing FS/puncturable-KEM construction; the FJB
+  boot-reset gap; key-committing AEAD; deniability; X-Wing combiner; spend integration; SE/TEE
+  erase/endurance; side-channels). It ships **no crypto code** and is marked UNAUDITED throughout.
 
 ## B2 — Publish the realized sender-origin identifiability number  ·  **MEASURED-IN-SIM**
 
@@ -92,6 +97,12 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
 
 - **Clear when:** measured spend + key-evolution latency/battery on a low-end handset is within the
   budget that keeps the soup uniform and the UX usable.
+- **Protocol defined (P5):** the on-device measurement plan is now written —
+  [p5-key-management-spec.md §9](specs/2026-06-28-p5-key-management-spec.md) — naming exactly what to
+  measure (spend, key-evolution + **FS-KEM puncture cost**, envelope under BLE MTU, trial-decrypt,
+  sustained + **worst-case** load, SE/TEE write-endurance) on a named low-end Android. Thresholds are
+  **TBD-pending the P0 field-airtime anchor (B2)** — a gate can't pass against a TBD. **Owed:** the run on
+  real hardware (the simulator cannot measure handset crypto/battery).
 
 ## B5 — Continuous-verification gates green  ·  **OPEN**
 

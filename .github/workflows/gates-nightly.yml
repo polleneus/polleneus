@@ -1,0 +1,28 @@
+name: gates-nightly
+
+# P6 — the heavy realistic-sweep gates (-m slow): airtime knee at n~154, intersection-sharpening,
+# defense-NULL realistic. These are minute-to-tens-of-minutes scale (the engine is super-linear in crowd
+# size — see the perf note), so they run on a schedule + on-demand rather than blocking every push. The
+# fast gates + offline-first proof run per-change in ci.yml.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"        # nightly 04:00 UTC
+  workflow_dispatch: {}         # manual trigger
+
+defaults:
+  run:
+    working-directory: sim
+
+jobs:
+  gates-slow:
+    name: gates (heavy end-to-end sweeps)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45          # bounded so a runaway sweep can't hang CI (the bounded-sweep discipline)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q -m slow  # realistic airtime / anonymity sweeps (deselected from the fast suite)

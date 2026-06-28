@@ -1,0 +1,44 @@
+name: CI
+
+# P6 — continuous verification. Runs the SIMULATOR's gates on every push/PR and guards that the simulator
+# needs NO network at runtime (a regression guard over the socket-based stack, in-process — see conftest).
+# (The percolation oracle, airtime publish-gate, and anonymity gates all live inside the pytest suite.)
+
+on:
+  push:
+  pull_request:
+
+defaults:
+  run:
+    working-directory: sim
+
+jobs:
+  test:
+    name: gates (fast suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20          # bound the job (a sweep must never hang CI — the engine is super-linear)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q          # fast suite incl. percolation / airtime / anonymity gates
+
+  offline-first:
+    name: internet-disabled (offline-first guard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20          # bound the job (a sweep must never hang CI — the engine is super-linear)
+    env:
+      POLLENEUS_OFFLINE_CI: "1"   # conftest blocks the socket connection entry points (in-process) for the session
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"   # build-time dep fetch (network OK); the guard activates only at test time
+      - run: pytest -q          # whole FAST suite under the socket guard -> no runtime network dependency
+
+# The heavy realistic sweeps (-m slow: airtime n~154, intersection/defense) are minute-to-tens-of-minutes
+# scale (the engine is super-linear in crowd size) — they run NIGHTLY + on-demand in gates-nightly.yml, not
+# on every push, so per-change CI stays fast while the gates are still exercised regularly.

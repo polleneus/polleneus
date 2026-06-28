@@ -132,3 +132,8 @@ airtime + anonymity gates kept green as the model evolves.
 
 ## Change log
 - 2026-06-26 — created; B2 populated from slice-3 PR-1/PR-2/PR-3 (PRs #7–#10).
+- 2026-06-28 — **P0–P6 campaign ratified** ([campaign-p0-p6-closeout.md](campaign-p0-p6-closeout.md), PRs
+  #13–#27). B1 audit target + open-questions defined (P5); B4 benchmark protocol defined (P5); B5 sim gates +
+  offline guard enforced via `pytest`, CI auto-run pending token `workflow` scope (P6). **Two human-action
+  items recorded:** grant the `polleneus-dev` token `workflow` scope (P6 CI); fix the repo default branch →
+  `main`. No blocker cleared — all remain OPEN/OWED pending audit, hardware, and a client.

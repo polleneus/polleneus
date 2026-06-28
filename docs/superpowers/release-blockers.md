@@ -115,9 +115,10 @@ airtime + anonymity gates kept green as the model evolves.
   **Internet-disabled is ENFORCED as a runtime GUARD** for the simulator: an in-repo gate
   (`test_offline_first.py`) rebinds the socket connection entry points around a real run on **every `pytest`**
   — a regression guard over the common socket stack (in-process; not a supply-chain proof). The **GitHub
-  Actions auto-run** (`ci.yml` per-push + `gates-nightly.yml` for the heavy `-m slow` sweeps, timing
-  UNVERIFIED) is **authored but its commit is PENDING the `polleneus-dev` token gaining `workflow` scope** (a
-  user credential change). The **client-side** transport conformance + adversarial-eviction + client
+  Actions auto-run is now LIVE and green on `main`** (#29): the per-push `CI` workflow (`ci.yml` — `test` +
+  `offline-first`) passes on the runner; `gates-nightly.yml` (heavy `-m slow` sweeps) is scheduled but its
+  **CI timing is still UNVERIFIED** until the first nightly/dispatch run. The **client-side** transport
+  conformance + adversarial-eviction + client
   internet-disabled CI remain **OPEN** (no client yet); the **USRP PHY** + **source-estimator** field audits
   remain **OWED** (hardware). Protocols for all of these are written in
   [p6-continuous-verification-spec.md §4](specs/2026-06-28-p6-continuous-verification-spec.md).
@@ -134,6 +135,7 @@ airtime + anonymity gates kept green as the model evolves.
 - 2026-06-26 — created; B2 populated from slice-3 PR-1/PR-2/PR-3 (PRs #7–#10).
 - 2026-06-28 — **P0–P6 campaign ratified** ([campaign-p0-p6-closeout.md](campaign-p0-p6-closeout.md), PRs
   #13–#27). B1 audit target + open-questions defined (P5); B4 benchmark protocol defined (P5); B5 sim gates +
-  offline guard enforced via `pytest`, CI auto-run pending token `workflow` scope (P6). **Two human-action
-  items recorded:** grant the `polleneus-dev` token `workflow` scope (P6 CI); fix the repo default branch →
-  `main`. No blocker cleared — all remain OPEN/OWED pending audit, hardware, and a client.
+  offline guard enforced via `pytest` (P6). **Both human-action items now DONE:** the `polleneus-dev` token
+  was granted `workflow` scope → **CI is LIVE and green on `main`** (#29), and the **repo default branch was
+  fixed to `main`** (one residual: delete the orphaned `chore/ways-of-working` branch). No release blocker
+  cleared — B1–B4 + client-side B5 remain OPEN/OWED pending audit, hardware, and a client.

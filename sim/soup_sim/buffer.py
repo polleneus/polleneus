@@ -43,8 +43,36 @@ class NodeBuffer:
         self._evict_to_fit(now)
         return "Accepted"
 
-    def expire(self, now: float) -> None:
-        dead = [bid for bid, b in self.store.items() if now >= b.expires_at]
+    def expire(self, now: float, hold_budget: float | None = None, receipt: dict | None = None,
+               clock_trusted: bool = True, clock_offset: float = 0.0) -> None:
+        """Per-step expiry sweep. A drop writes the seen-record (seen[bid]=now), like evict/legacy.
+
+        With the DEFAULT args (hold_budget=None, receipt=None, clock_trusted=True, clock_offset=0.0)
+        this reduces EXACTLY to the legacy rule `now >= b.expires_at` ⇒ bit-identical.
+
+        P3 clock-independent expiry (spec §2/§3). `now` and `receipt` are TRUE global time
+        (frame-consistent with offer/evict/seen/acquired); the per-node RTC `clock_offset` enters
+        ONLY this comparison, never causality. The predicate is:
+
+            local_now      = now + clock_offset                 # the node's LOCAL clock
+            local_receipt  = receipt[bid] + clock_offset        # receipt in the SAME local frame
+            expired = (H is not None AND local_now − local_receipt >= H)   # OFFSET-INVARIANT (offset cancels)
+                      OR (clock_trusted AND local_now >= b.expires_at)     # origin-TTL (offset does NOT cancel)
+
+        The hold-budget term clears the soup under ANY clock skew (offset cancels); the origin-TTL term
+        fires only when the clock is trusted. Both only ever SHORTEN an honest blob's life.
+        """
+        local_now = now + clock_offset
+        dead = []
+        for bid, b in self.store.items():
+            h_drop = False
+            if hold_budget is not None and receipt is not None:
+                rt = receipt.get(bid)
+                if rt is not None:                       # local_now − local_receipt: clock_offset cancels
+                    h_drop = (local_now - (rt + clock_offset)) >= hold_budget
+            ttl_drop = clock_trusted and local_now >= b.expires_at
+            if h_drop or ttl_drop:
+                dead.append(bid)
         for bid in dead:
             del self.store[bid]
             self.seen[bid] = now

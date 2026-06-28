@@ -92,6 +92,27 @@ class Config:
     #   all of a static holder's co-present spends fire at ~t0, so gossip can never beat them — the no-rate-limit
     #   worst case). >0 spreads spends so the gossip front can RACE to later acceptors. The §4 headline is the
     #   slots/token RACE over the gossip-rate (gossip_delay) ÷ spend-rate (token_spend_interval) ratio.
+    # P3 PR-1 clock-independent expiry (spec 2026-06-28). ALL default-inert ⇒ every existing slice is
+    # bit-identical: H=None+B=None+sigma=0+clamp=None+blackout=False ⇒ engine takes the legacy expire(t)
+    # path and draws NO new RNG (namespaces 10/11 untouched). See engine.py for the expiry predicate.
+    hold_budget: float | None = None        # H: LOCAL hold-budget. A node drops a held blob when
+    #   (local_now − local_receipt) >= H. Elapsed-since-receipt is OFFSET-INVARIANT (clock skew cancels) ⇒
+    #   the clock-independent expiry that clears the soup. None ⇒ off (no hold-budget drop). NOT hop-energy.
+    hop_energy_init: int | None = None      # B: anti-amplification SPREAD cap (separate from H). Origin starts
+    #   at B; a receiver stores energy = sender_energy−1; a copy that would arrive at 0 is not stored. Bounds
+    #   the spread RADIUS (~B hops), does NOT clear the soup. None ⇒ off (energy carried-but-ignored, as today).
+    clock_skew_sigma: float = 0.0           # per-node RTC offset ~ Normal(0, sigma), drawn from disjoint
+    #   namespace cfg.rng(10,i), gated on sigma>0. The offset enters ONLY the expiry comparison — never
+    #   contact/causality/acquisition/measurement timing (those stay TRUE global time). 0 ⇒ off (perfect clock).
+    clock_trust_threshold: float | None = None  # gossip-median clock-TRUST guard: a node is clock_untrusted iff
+    #   |local_now − trimmed_median(observed created_at)| > threshold; when untrusted it DROPS the sender-TTL
+    #   path and relies on H. None ⇒ off (clock always trusted unless blackout). NOT a clearance mechanism.
+    creation_ts_clamp: float | None = None  # COARSE admission-time future-clamp: on receipt, a created_at above
+    #   (node_median + clamp) is pulled down to that ceiling (loose; no honest-fresh false-reject). None ⇒ off.
+    blackout: bool = False                  # no NTP / no trusted absolute clock ⇒ ALL nodes clock_untrusted
+    #   (sender-TTL path dropped network-wide; clearance falls to H). Also enables future-dated creation-ts.
+    blackout_future_max: float = 0.0        # if blackout, forge created_at into the future by U(0, this) drawn
+    #   from disjoint namespace cfg.rng(11,id); causality still uses the TRUE origination time. 0 ⇒ no forging.
 
     def validate(self) -> None:
         if self.boundary not in ("torus", "walls"):
@@ -174,6 +195,19 @@ class Config:
             raise ValueError("gossip_delay must be >= 0")
         if self.token_spend_interval < 0.0:
             raise ValueError("token_spend_interval must be >= 0")
+        # P3 clock-independent expiry knobs (None ⇒ off; otherwise must be a sane magnitude)
+        if self.hold_budget is not None and self.hold_budget <= 0.0:
+            raise ValueError("hold_budget (H) must be > 0 when set (None ⇒ off)")
+        if self.hop_energy_init is not None and self.hop_energy_init < 1:
+            raise ValueError("hop_energy_init (B) must be >= 1 when set (None ⇒ off)")
+        if self.clock_skew_sigma < 0.0:
+            raise ValueError("clock_skew_sigma must be >= 0")
+        if self.clock_trust_threshold is not None and self.clock_trust_threshold < 0.0:
+            raise ValueError("clock_trust_threshold must be >= 0 when set (None ⇒ off)")
+        if self.creation_ts_clamp is not None and self.creation_ts_clamp < 0.0:
+            raise ValueError("creation_ts_clamp must be >= 0 when set (None ⇒ off)")
+        if self.blackout_future_max < 0.0:
+            raise ValueError("blackout_future_max must be >= 0")
 
     def rng(self, *path: int) -> np.random.Generator:
         return make_rng(self.master_seed, *path)

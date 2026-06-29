@@ -67,6 +67,38 @@ is, today, an honestly-measured research foundation with a clear, gated path to 
 
 ---
 
+## Beyond P0–P6: the spike → app roadmap (Phase T underway, 2026-06-29)
+
+The path from the validated protocol to a shippable, audited app. Each decision is bucketed **BUILD** (sim/spec
+settled it), **TEST** (only real hardware answers it), or **RESEARCH** (a genuine unknown → literature/prior
+art). We never build on a guess; an unknown triggers a research stop or a hardware test first.
+
+| Phase | What | Guess-risks → how resolved | Status |
+|---|---|---|---|
+| (now) | sim P0–P6 ✓ + BLE spike (discovery + p2p throughput on real Android) ✓ | — | done |
+| **T — Transport** | turn the p2p spike into a real **background, multi-node flooding/relay** BLE mesh (Android) | background-BLE, GATT concurrency/`133`, sustained-vs-brief connection model, prior art → **Research Stop #1 (done)** + lab tests | **active** |
+| R — Reconciliation | implement set-sync (naive OFFER/REQUEST/ACK for v1; rateless RIBLT later if telemetry warrants) | minisketch/IBLT worth it? → resolved: naive for v1 | folded into T |
+| C — Crypto / keys (B1-gated) | X-Wing + key-committing AEAD + time-ratchet FS | forward-secure-KEM "open problem" → **resolved**: buildable now (BouncyCastle); classical CHK03 FS = port + audit; **PQ-FS deferred** (X-Wing covers harvest-now-decrypt-later) | parallel track |
+| X — Client + UX | pairing/SAS, trust states, truth-in-labeling, panic/duress, buffer/soup | low (specs exist) → BUILD + DESIGN | later |
+| V — Verify + Audit | client-side CI + adversarial-eviction, then **B1 independent audit** (the ship gate) | prepare via the P5 §10 question list | later |
+| I — iOS | foreground-only **edge** node (not a backbone) | iOS background BLE limits → **resolved**: two screen-off iPhones can't discover each other; Android is the relay backbone | later |
+| Ship | honest copy (B3) → pilot at a planned gathering (cold-start) → release | — | gated by B1 |
+
+**Phase-T status (hardware, honest):** BLE **discovery and point-to-point GATT throughput PASS** on real
+Android phones (rates *exceed* the simulator's conservative transport assumption in-room and through a wall),
+but **per-link throughput drops sharply under contention** and a weak link failed to connect during concurrent
+setup (`GATT status 133`) — the known Android BLE concurrency wall. **Research Stop #1** (evidence-backed,
+sourced) then decided the transport architecture: brief connect→reconcile→disconnect with a small warm-pool,
+dual-role nodes, a `connectedDevice` foreground service, a global single-op GATT mutex (the `133` fix), and
+naive OFFER/REQUEST/ACK reconciliation for v1. **Active build: the flooding mesh node ("the soup spreads").**
+
+> Operational detail (device lab, build toolchain, the polleneus-dev GitHub/release mechanics, and the full
+> measured results) is kept in a **local, non-published runbook** — deliberately out of this repo to preserve
+> the identity boundary. This public ledger carries the sanitized plan + honest caveats; `release-blockers.md`
+> remains the authoritative gate list (B1 audit gates all shipping).
+
+---
+
 ## Appendix — authored CI workflows (pending `workflow` token scope)
 
 These are ready in the working tree at `.github/workflows/` but could not be committed by the `polleneus-dev`

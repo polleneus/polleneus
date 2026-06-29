@@ -146,14 +146,21 @@ Sender authentication should be **deniable** (a recipient can verify the sender 
 **transferable proof** of authorship to a third party) — so a *recipient* cannot later incriminate a sender.
 
 **v1 construction (decided — research-backed):** a **static pairwise shared-key MAC**. Carry an outer
-Encrypt-then-MAC tag `HMAC-SHA-256(K_auth, content_hash ‖ domain_label)` over the X-Wing / key-committing-AEAD
-ciphertext, where `K_auth = HKDF(K_pair, "…senderauth…")` and the per-contact root
-`K_pair = HKDF(X25519(my_id_sk, peer_id_pk) ‖ stored ML-KEM-768 shared secret(s))` is established **once at
-pairing** and persisted. Because **both** peers hold `K_pair`, either could have forged the tag → it is
-non-transferable (deniable), and being symmetric the authenticator is **post-quantum with no PQ-deniability
-caveat**. This is the *proven* route: strong deniable authentication is impossible in the PKI/signature setting
-under adaptive corruption, but **achievable in the symmetric shared-key setting** (Dodis–Katz–Smith–Walfish,
-TCC 2009). The sender identity is named **inside** the seal, so trial-decrypt stays O(1) (recipient decapsulates
+Encrypt-then-MAC tag `HMAC-SHA-256(K_auth, transcript)` over the X-Wing / key-committing-AEAD ciphertext, where
+the MAC `transcript = sealed_blob_ciphertext_bytes ‖ version ‖ global-TTL ‖ message-ID ‖ ephemeral_pk ‖
+creation_ts ‖ domain_label` (i.e. the actual ciphertext bytes — true Encrypt-then-MAC — **plus** the mutable
+wire-header fields the parent design §5.2 declares authenticated, so a relay cannot alter TTL/version
+undetected; this reconciles design §5.2's "authenticated transcript" with this section). `K_auth =
+HKDF(K_pair, "…senderauth…")` and the per-contact root `K_pair = HKDF(X25519(my_id_sk, peer_id_pk) ‖ stored
+ML-KEM-768 shared secret)` is established **once at pairing** and persisted. Because **both** peers hold
+`K_pair`, either could have forged the tag → it is non-transferable (deniable). Being symmetric, the
+authenticator is **post-quantum as a symmetric primitive**. The *general* feasibility basis is
+Dodis–Katz–Smith–Walfish (TCC 2009): strong deniable authentication is impossible in the PKI/signature setting
+under adaptive corruption but **achievable in the symmetric shared-key setting given a shared key**. **Caveat
+(audit item §10.3): DKSW does not cover THIS establishment** — the PQ-deniability of the
+X25519-static-static ‖ stored-ML-KEM `K_pair` + outer-HMAC composition is not yet proven; "post-quantum" here
+means the primitive resists Shor, not that this exact construction's deniability is proven against a quantum
+coercer. The sender identity is named **inside** the seal, so trial-decrypt stays O(1) (recipient decapsulates
 with its own key, then verifies the one named contact's `K_auth` — no O(contacts) trial-MAC).
 
 **Correction to the prior candidate ("MAC keyed by the KEM shared secret"):** a MAC keyed by *only* the
@@ -167,8 +174,10 @@ sender's static identity** (the static-static / stored-KEM `K_pair` above), not 
 - the inner AEAD commitment level is a deliberate choice: CMT-1 (key-only) does **not** commit AAD, so if any
   bound field's tamper-evidence is load-bearing it needs CMT-3/4 (e.g. CTX / HtE) — the outer Encrypt-then-MAC
   avoids that dependency by binding the ciphertext directly;
-- content-addressing is deterministic, so the inner AEAD must be nonce-misuse-resistant (e.g. AES-GCM-SIV) or
-  use strictly single-use keys;
+- the sealed envelope carries no random nonce field, so the inner key must be **single-use** (it is — a fresh
+  per-message X-Wing ephemeral derives it) or, as a hedge, an MRAE be used. **Note (SEAL-03): bare AES-GCM-SIV
+  is itself NON-committing** and a partitioning-oracle target — if used it must sit *under* the §4 committing
+  transform, never as the committing layer itself;
 - deniability delivered is **offline** message deniability (the achievable target); **online** deniability is
   provably unreachable in an asynchronous store-and-forward setting and is therefore **not promised**;
 - the **PQ deniability of this static-KEM-pairwise construction specifically** is under-studied in the

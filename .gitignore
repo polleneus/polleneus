@@ -6,3 +6,10 @@ docs/riddle/
 # Holds device serials, LAN IPs, machine paths, and polleneus-dev GitHub mechanics (identity boundary).
 # The sanitized roadmap/ledger lives in docs/superpowers/ instead.
 spike/
+
+# Local agent/assistant config dirs — don't depend on a per-machine global ignore for a fresh clone
+# (external security review M6). No secrets today; keep it that way.
+.claude/
+.agents/
+.codex/
+**/settings.local.json

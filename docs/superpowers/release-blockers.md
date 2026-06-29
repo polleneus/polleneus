@@ -44,6 +44,30 @@ hardest gate and gates every other "ship" decision.
   `t_setup` and K radios, folding into the §9.6 funded-device residual). See
   [p2-token-source-spec §2–§4](specs/2026-06-27-p2-token-source-spec.md). **Do not claim `Q` bounds a
   device.**
+- **Pre-ship client hardening / strip-test-affordances checklist (added 2026-06-29, external review).** The
+  prior in-loop red-team scoped itself to "design/spec text, no spike Java", so these real items lived only in
+  spike code comments. An external read-only review surfaced them; **none may survive into a shippable client**,
+  and the **exported-component / IPC surface is hereby named an explicit B1 audit-scope item** (it is not
+  confidentiality-breaking today — service `exported=false`, event channel `RECEIVER_NOT_EXPORTED`,
+  package-scoped — but it is a confused-deputy (CWE-926) class). Checklist:
+  - [ ] **Exported control surface (C1):** the spike's exported `MainActivity` proxies the private service from
+    external intent extras (the deliberate adb `--es` test interface). The client must NOT accept externally
+    supplied control extras — make the activity non-exported except for LAUNCHER (or gate to self/signature
+    intents); never rely on `service exported=false` behind an exported proxy. (The unbounded `handleInject`
+    alloc is being bounded by `MAX_BLOB` now.)
+  - [ ] **Fixed deterministic recipient key (H3):** the world-known `RECIPIENT_SEED` test scaffold + any
+    default-recipient send path must be **removed**; no-contact send must **fail closed** (being removed now).
+  - [ ] **Sensitive logging (H7):** the spike logs decrypted plaintext, SAS, pairing tokens, contact IDs by
+    design (the lab tests grep them). The client must **redact / DEBUG-gate** all of these — a logcat ring
+    buffer of plaintext + SAS is real data-at-rest under the seizure threat model.
+  - [ ] **Raw key material at rest (H4):** spike `identity.dat` / `contacts.dat` store private keys + `K_auth`
+    **unwrapped** (app-sandboxed but not keystore-wrapped). The **SE/TEE/StrongBox wrapping required by P5 §2**
+    is owed at/before B1. (Spike caveat: keys are currently raw-at-rest — honest disclosure.)
+  - [ ] **Pairing-trust gate (H1) + inbound-pairing consent (H2):** contact persistence + send must be gated on
+    the **human SAS-match** (not key-confirmation alone), and inbound pairing must be **rejected when pair mode
+    is off** (both being fixed in the spike now; carry the gate into the client spec as a build requirement).
+  - [ ] **PQ-vs-classical durable marker (H5):** persist + surface a per-contact PQ flag (being added now).
+  Owner/home: this checklist is the written home (decision: live here under B1, not only in code comments).
 
 ## B2 — Publish the realized sender-origin identifiability number  ·  **MEASURED-IN-SIM**
 

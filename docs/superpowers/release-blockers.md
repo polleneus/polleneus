@@ -34,6 +34,16 @@ hardest gate and gates every other "ship" decision.
   **§10 open-questions list for the auditor** (the load-bearing FS/puncturable-KEM construction; the FJB
   boot-reset gap; key-committing AEAD; deniability; X-Wing combiner; spend integration; SE/TEE
   erase/endurance; side-channels). It ships **no crypto code** and is marked UNAUDITED throughout.
+- **Anti-flood transport audit item (added 2026-06-29, AF-3):** the parent §9.5 **per-PHY-session quota
+  `Q`** is the fail-closed anti-flood / anti-ZK-bug backstop, but its enforceability on **commodity BLE is
+  unproven.** A commodity phone cannot do USRP-class radiometrics (design §3 reserves rotation-surviving
+  PHY fingerprinting to a USRP/SDR *adversary*), so a defender can key a "session" only by the **rotating
+  Resolvable Private Address (RPA, ~15 min default) / per-connection handle** — which an attacker can
+  **rotate per spend** to draw a fresh `Q` allowance. The auditor must determine whether `Q` is a real
+  per-device backstop or collapses to **per-observed-session friction** (bounded only by serialized
+  `t_setup` and K radios, folding into the §9.6 funded-device residual). See
+  [p2-token-source-spec §2–§4](specs/2026-06-27-p2-token-source-spec.md). **Do not claim `Q` bounds a
+  device.**
 
 ## B2 — Publish the realized sender-origin identifiability number  ·  **MEASURED-IN-SIM**
 
@@ -103,6 +113,23 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   sustained + **worst-case** load, SE/TEE write-endurance) on a named low-end Android. Thresholds are
   **TBD-pending the P0 field-airtime anchor (B2)** — a gate can't pass against a TBD. **Owed:** the run on
   real hardware (the simulator cannot measure handset crypto/battery).
+- **Anti-flood rate-limit EFFICACY residual (added 2026-06-29, AF-2 + AF-3 + AF-6) · MEASURED-IN-SIM —
+  resolves the [p2-token-source-spec §4](specs/2026-06-27-p2-token-source-spec.md) "carried to
+  release-blockers" forward-reference, which previously had no matching entry:**
+  - **AF-2 — the "≈1 slot venue-wide" claim is conditional.** The parent §9.3 idealization ("one token =
+    D slots" → "≈1 slot venue-wide, modulo gossip-propagation delay") holds **only when seen-`nf` gossip
+    outpaces the holder's serialized spend rate**. For a **burst / co-present holder** the token-source sim
+    measures **slots/token → D (≈11 = D in the committed sweep) = NO rate-limit**, bounded then **only by
+    the §9.5 quota `Q`**. The honest headline is the **gossip-vs-spend race curve**, not a single number.
+  - **AF-3 — `Q` is per-observed-session friction, not a per-device quota.** Commodity phones rotate their
+    RPA (~15 min default) and an attacker can present fresh connections/RPAs per spend → a fresh `Q` each
+    time; this residual folds into the already-disclosed funded-device-count bound (§9.6). (Enforceability
+    is the B1 audit item above.)
+  - **AF-6 (physicality) — the `token_spend_interval = 0` / D endpoint is the multi-radio O(K) regime;** a
+    single radio is floored at `t_setup` (~hundreds of ms/spend) and reaches the no-rate-limit regime only
+    via slow gossip (large diameter / sub-`d_c` fragmentation), not via bursting.
+  - **Owed:** an **attacker-RPA/session-rotation harness arm** (does `Q` survive rotation?) and the **B1
+    audit determination** above; the field number depends on real commodity-BLE RPA behaviour.
 
 ## B5 — Continuous-verification gates green  ·  **OPEN**
 
@@ -139,3 +166,7 @@ airtime + anonymity gates kept green as the model evolves.
   was granted `workflow` scope → **CI is LIVE and green on `main`** (#29), and the **repo default branch was
   fixed to `main`** (one residual: delete the orphaned `chore/ways-of-working` branch). No release blocker
   cleared — B1–B4 + client-side B5 remain OPEN/OWED pending audit, hardware, and a client.
+- 2026-06-29 — **pre-B1 red-team AF-findings folded in:** added the **anti-flood rate-limit efficacy
+  residual** (under B4, AF-2 + AF-3 + AF-6) — resolving the dangling `p2-token-source-spec` "carried to
+  release-blockers" forward-reference — and a **B1 anti-flood transport audit item** on the §9.5 quota
+  `Q` enforceability under commodity-BLE RPA rotation (AF-3). No release blocker cleared.

@@ -144,8 +144,41 @@ median. **Open — §10.1.**
 
 Sender authentication should be **deniable** (a recipient can verify the sender but cannot produce
 **transferable proof** of authorship to a third party) — so a *recipient* cannot later incriminate a sender.
-v1 candidate: a designated-verifier / ring-style MAC keyed by the KEM shared secret (the recipient could have
-forged it themselves). **Scope of the protection (do not overclaim):**
+
+**v1 construction (decided — research-backed):** a **static pairwise shared-key MAC**. Carry an outer
+Encrypt-then-MAC tag `HMAC-SHA-256(K_auth, content_hash ‖ domain_label)` over the X-Wing / key-committing-AEAD
+ciphertext, where `K_auth = HKDF(K_pair, "…senderauth…")` and the per-contact root
+`K_pair = HKDF(X25519(my_id_sk, peer_id_pk) ‖ stored ML-KEM-768 shared secret(s))` is established **once at
+pairing** and persisted. Because **both** peers hold `K_pair`, either could have forged the tag → it is
+non-transferable (deniable), and being symmetric the authenticator is **post-quantum with no PQ-deniability
+caveat**. This is the *proven* route: strong deniable authentication is impossible in the PKI/signature setting
+under adaptive corruption, but **achievable in the symmetric shared-key setting** (Dodis–Katz–Smith–Walfish,
+TCC 2009). The sender identity is named **inside** the seal, so trial-decrypt stays O(1) (recipient decapsulates
+with its own key, then verifies the one named contact's `K_auth` — no O(contacts) trial-MAC).
+
+**Correction to the prior candidate ("MAC keyed by the KEM shared secret"):** a MAC keyed by *only* the
+per-message KEM shared secret (ephemeral→recipient) authenticates **nothing about the sender** — any party can
+encapsulate to the recipient's public key and produce a valid MAC. Sender authentication **requires binding the
+sender's static identity** (the static-static / stored-KEM `K_pair` above), not the per-message secret alone.
+
+**Construction rules (carried to the §10.3 audit):**
+- the **outer MAC MUST be HMAC** (or another committing / collision-resistant MAC), **never Poly1305/GMAC** — a
+  polynomial MAC re-opens a partitioning oracle (key multi-collisions) that can deanonymize;
+- the inner AEAD commitment level is a deliberate choice: CMT-1 (key-only) does **not** commit AAD, so if any
+  bound field's tamper-evidence is load-bearing it needs CMT-3/4 (e.g. CTX / HtE) — the outer Encrypt-then-MAC
+  avoids that dependency by binding the ciphertext directly;
+- content-addressing is deterministic, so the inner AEAD must be nonce-misuse-resistant (e.g. AES-GCM-SIV) or
+  use strictly single-use keys;
+- deniability delivered is **offline** message deniability (the achievable target); **online** deniability is
+  provably unreachable in an asynchronous store-and-forward setting and is therefore **not promised**;
+- the **PQ deniability of this static-KEM-pairwise construction specifically** is under-studied in the
+  literature → explicit audit item (§10.3).
+
+**Reserve option (not v1):** if a *self-identifying* authenticator (no pre-shared secret / no named-sender
+field) is ever required, use a **2-party ring signature** (≈ designated-verifier; e.g. Gandalf NTRU/Falcon
+~1.2 KB at ring 2) — but it ≈ doubles the blob and breaks byte-uniformity economics, so it is held in reserve.
+
+**Scope of the protection (do not overclaim):**
 - It protects against the **recipient turning informant / a seized recipient transcript being used as
   transferable proof.** It is **VOID against a coercer who IS or controls the recipient device** — that device
   holds the plaintext and the in-seal sender identity regardless of MAC deniability. (So §8 must NOT list it as

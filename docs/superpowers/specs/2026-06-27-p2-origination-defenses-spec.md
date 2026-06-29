@@ -1,6 +1,24 @@
 # polleneus — P2 PR-2: Effective origination defenses (venue-wide cover floor + probabilistic license)
 
-**Version:** v0.4 — 2026-06-27 (design-review rounds 1-2 + build-review round 1: which-root adversary) · **Roadmap:** P2 — PR-2 of 3
+> # ⛔ SUPERSEDED — origination defenses measured NULL (2026-06-29, AF-5)
+> **The mechanism this spec proposes — the always-on venue-wide cover floor — was measured and came out
+> NULL, and the limit was then reframed: hiding the originator of an exact-byte, single-root flood is
+> _architecturally impossible_ (a property of undirected flooding, not an engineering gap), per Law 1 /
+> Law 2.** Read this document only as the *falsifiable measurement proposal* it was — **not** as a working
+> defense.
+> - **The origination-hiding goal was NOT achieved.** The honest, ratified posture is
+>   **"originating blends into participating"** (single-message, blob-blind cover only — ≈1/concurrent
+>   originators), **not** "hide the originator." A persistent, device-fingerprinted author is **not**
+>   protected.
+> - **Authoritative records:** [originator-anonymity-limit.md §2](../../originator-anonymity-limit.md)
+>   (the venue-wide decoy floor is one of *three measured null results*, architecturally impossible by
+>   Law 1/Law 2) and its [§8 reframe](../../originator-anonymity-limit.md) (CTO decision 2026-06-28);
+>   the parent design's §10/§12.2 origination-defenses retraction (the v0.6 sync — tracked under AF-1);
+>   [release-blockers.md](../release-blockers.md) **B2 PR-2** ("do NOT materially cut that leak … the
+>   credit gate refuses both") and **B3**; the [campaign close-out](../campaign-p0-p6-closeout.md)
+>   ("origination defenses → NULL verdict").
+
+**Version:** v0.5 — 2026-06-29 (pre-B1 red-team AF-5: SUPERSEDED-NULL banner added; invariant-bend citation repointed off the removed line-234 mechanism) · **Roadmap:** P2 — PR-2 of 3
 **Parent design:** [polleneus v0.5 §10](2026-06-25-polleneus-design.md#10-anonymity-engineering--measured-not-assumed)
 · **Builds on:** slice-3 PR-1 (source-localization apparatus) + PR-2 (the *cheap* defenses, measured **not credited**).
 
@@ -116,10 +134,16 @@ Extend the slice-3 anonymity apparatus, **default-inert**:
 ## 5. Invariant & honesty check
 
 - **inv 2/3/4:** dummies are byte-uniform, sealed to the emitter's key, propagate like any blob → soup
-  uniform; real-vs-dummy hidden. The venue-wide floor **bends inv 3** (self-roots > relays) — the
-  **§10 (line 234) + §19 pre-sanctioned bend**; gated to sparse/cover mode. *No NEW bend is introduced*
-  (the v0.1 originator-burst mechanism, which WAS a new fingerprint, is removed), so this stays within the
-  parent design's existing approval — **noted, not re-escalated.**
+  uniform; real-vs-dummy hidden. The venue-wide floor **bends inv 3** (self-roots > relays) — authorized
+  by the **always-on §10 Poisson-mixing / self-loop floor (§10 lines 236-237: "Poisson outbound mixing at
+  a fixed venue-wide rate … self-loops … keep emitting at the normal Poisson rate when isolated") + §19
+  pre-sanctioned bend**; gated to sparse/cover mode. **Citation repointed (AF-5):** earlier drafts cited
+  §10 *line 234* for this authorization, but line 234 is the *removed* originator-burst mechanism (the
+  node's OWN pre-send self-loops, §1) — a different, narrower, sparse-mode-only mechanism this very spec
+  deleted; the bend this spec actually relies on is the always-on, every-node, fixed-rate floor of §10
+  lines 236-237. *No NEW bend is introduced* (the v0.1 originator-burst, which WAS a new fingerprint, is
+  removed), so this stays within the parent design's existing approval — **noted, not re-escalated. (Moot
+  in any case: the mechanism measured NULL and is not shipping — see the supersession banner.)**
 - **The banned metric is gone.** The credited number is the **source-estimator node-rank** (§10's
   mandated measure), never the cover-ratio 1/K. The new distinct-node gate control makes a co-located
   artifact uncreditable by construction.

@@ -1,8 +1,18 @@
 # polleneus — P2: Anti-flood token source (Reciprocity Hourglass) + sim rate-limit model
 
-**Version:** v0.2 — 2026-06-27 (design-review round 1 folded in) · **Roadmap:** P2 — PR-1 of 3
+**Version:** v0.3 — 2026-06-29 (pre-B1 red-team AF-2/AF-3/AF-4/AF-6 closed) · **Roadmap:** P2 — PR-1 of 3
 **Parent design:** [polleneus v0.5 §9](2026-06-25-polleneus-design.md#9-anti-abuse--bound-rate-without-a-quota)
 · **Sibling PRs:** P2 PR-2 (effective origination defenses), P2 PR-3 (intersection defenses).
+
+> **Changelog v0.3 (pre-B1 red-team, 2026-06-29).** **AF-4** — pinned the v1 spend to **blind-RSA**
+> (not "blind-RSA / BBS show" interchangeably) and specified the nullifier derivation; BBS-show
+> **DEFERRED**. **AF-2** — restated the headline as the conditional it is (≈1 slot/token only when gossip
+> outpaces serialized spends; → D for a burst holder, bounded only by `Q`) and repointed the "carried to
+> release-blockers" reference to the now-created [release-blockers](../release-blockers.md) entry. **AF-3**
+> — conceded commodity RPA/connection rotation, defined the commodity-defender session key, reframed `Q`
+> as **per-observed-session friction** (not a per-device quota), and added an attacker-rotation harness
+> arm + B1 audit item. **AF-6** — floored the single-radio spend interval at `t_setup` and labelled the
+> `token_spend_interval = 0` endpoint as the **multi-radio O(K)** regime.
 
 > **Scope of THIS PR.** The token-source *mechanism* (parent §9, sharpened) **and** the one falsifiable
 > sim claim: **the token-anchored nullifier + epidemically-gossiped seen-set is what makes the relay
@@ -26,15 +36,37 @@ minimal model needed to *measure that this fix works and to quantify its residua
 
 - **Mint = sequential hash-PoSW** (Cohen–Pietrzak Simple PoSW); per-**chain** friction, **not** a
   per-device quota — one device runs many chains, faster HW lowers each chain's wall-clock (§9.1).
-- **Spend = a nullifier in the handshake**, not the blob. **v1 spend = audited blind-RSA / BBS show**;
-  the bespoke ZK nullifier is **post-v1** (§12.7) — not modeled here.
-- **Token-anchored nullifier:** spend reveals `nf = H("nf"‖s)` — **one stable marker per token,
-  lifetime-stable** — plus a session proof-tag binding the transcript (anti verbatim-replay only). The
+- **Spend = a nullifier in the handshake**, not the blob. **v1 spend = audited blind-RSA (RSA-BSSA)** —
+  **pinned** (AF-4), no longer "blind-RSA / BBS show" as interchangeable alternatives. **Rationale:** a
+  blind-RSA token **unblinds to a deterministic signature `σ`**, so a **stable, linkable nullifier exists
+  naturally** for the §9.3 gossiped double-spend detection. A **BBS "show" is a fresh ZK proof on each
+  spend → it yields NO stable, linkable nullifier** without an added double-spend / scope-pseudonym
+  extension (k-times-anonymous-authentication style); **BBS-show is therefore DEFERRED** (it would need
+  that extension before it could carry the §9.3 mechanism at all). The bespoke Fiat-Shamir ZK nullifier
+  is likewise **post-v1** (§12.7) — not modeled here.
+- **Token-anchored nullifier:** spend reveals **`nf = H("nf" ‖ σ)`** — the hash of the **deterministic
+  unblinded blind-RSA signature `σ`** (the token) — giving **one stable marker per token,
+  lifetime-stable** — plus a session proof-tag binding the transcript (anti verbatim-replay only). *(In
+  the §3 sim the token is an integer `s` and `nf = hash(s)` stands in for `H("nf" ‖ σ)`; no crypto is
+  computed.)* **Unforgeability + nullifier-binding** — that a relay can verify `nf` is backed by a valid
+  blind-RSA token at spend time **without re-linking**, and that one token cannot yield two distinct
+  accepted `nf` — is the load-bearing crypto property the whole rate-limit rests on. It is the **B1 audit
+  item at P5 §10 item 6** (spend-primitive unforgeability + nullifier binding under the parent §9.3
+  token-anchored gossiped seen-set — *the integration, not the textbook primitive*). The
   **seen-`nf` set is epidemic-gossiped** in the same uniform fixed-length flood (opaque hashes, no
   routing metadata), in the §6 sliding-window filter (retention horizon **W ≥ maxTTL + margin**, §6, so
   an `nf` is remembered at least as long as a token can live).
 - **Non-ZK secondary quota:** cap relay slots granted to any single observed **PHY-radio-session** to a
   small constant `Q` **regardless of how many valid tokens it presents**, fail-closed (§9.5).
+  **Commodity-defender session key + honest scope (AF-3):** a commodity Android/iOS phone **cannot do
+  USRP-class radiometrics** (parent design §3 reserves PHY fingerprinting that survives address rotation
+  to a USRP/SDR *adversary*), so the only session key a commodity defender observes is the
+  **per-connection / per-RPA handshake** — and commodity phones advertise with a **Resolvable Private
+  Address that rotates (~15 min by default)**, while an attacker can present **fresh connections/RPAs at
+  will**. So `Q` is **per-observed-session friction, NOT a hard per-device quota**: an attacker who
+  rotates its RPA/connection per spend draws a **fresh `Q` allowance each time** (bounded only by
+  serialized `t_setup` and K radios — i.e. this residual **folds into the already-disclosed
+  funded-device-count residual** §9.6, not a new wall). **We do NOT claim `Q` bounds a device.**
 - **Two earn paths** (reciprocity / sweat); **discount curve = research (§17), NOT modeled here.**
 
 ## 3. The sim model (the measurable deliverable)
@@ -65,20 +97,41 @@ supply this quantity and is not reused for it. Three regimes:
   - **slots/token → ≈ 1 ONLY when the gossip front outpaces the spend rate** (`gossip` propagation per
     acceptor ≪ `token_spend_interval`). The rate-limit is real **only in this regime.**
   - **slots/token → D (NO rate-limit) for a BURST holder** that spends to its co-present neighbors faster
-    than `nf` can spread (`token_spend_interval → 0`, or any per-hop `gossip_delay` ≳ the interval). A
-    static holder surrounded by D neighbors it can spend to near-simultaneously **defeats the gossip
-    entirely** — §9.3's "D → 1" is an **instantaneous-gossip idealization**, not a physical guarantee.
+    than `nf` can spread (`token_spend_interval → 0`, or any per-hop `gossip_delay` ≳ the interval).
+    **Physicality of the burst endpoint (AF-6):** a **single radio cannot spend "near-simultaneously"** —
+    serialized BLE handshakes floor `token_spend_interval` at **`t_setup`** (a real connect + GATT +
+    spend-handshake is **hundreds of ms, never 0**). So the **`token_spend_interval = 0` / D endpoint is
+    the multi-radio O(K) regime** (K physical radios spending in parallel) — the already-disclosed
+    K-radio farm residual (§9.6) — **not a one-device defeat.** The **single-radio worst case is the
+    rate-ratio evaluated at `token_spend_interval ≥ t_setup`**, and that is the number we report as the
+    single-radio result. **Honest caveat (kept):** a single radio can *still* reach the no-rate-limit
+    regime **without** bursting — via **slow gossip** (large venue diameter, or a fragmented venue below
+    `d_c ≈ 4.5` where `nf` may never arrive, see below); that geometry path is the genuine single-radio
+    residual and is bounded only by `Q`. §9.3's "D → 1" is an **instantaneous-gossip idealization**, not a
+    physical guarantee.
   - **`gossip_delay = 0` is an UNPHYSICAL optimistic edge** (instantaneous front) and must **never** be
     the headline; the deliverable is **slots/token as a function of the gossip-rate ÷ spend-rate ratio**,
-    spanning the win regime and the no-rate-limit regime.
+    spanning the win regime and the no-rate-limit regime. **The exclusion is applied honestly, not
+    asymmetrically (AF-6):** `gossip_delay = 0` is unreachable by *anyone* (the front is bounded by
+    handshake-time × diameter), so it is dropped; `token_spend_interval = 0` is reachable only by a
+    *multi-radio* holder, so it is **kept but labelled as the O(K) regime**, never presented as a single
+    device defeating the gossip.
   - The diffusion time also **grows with venue diameter** and in a **fragmented venue (below d_c ≈ 4.5)
     an `nf` may NEVER reach a disconnected pocket** (residual bounded only by the per-PHY quota Q). A
     **MOBILE** holder that moves to fresh neighborhoods faster than the front leaks more than a static
     one. The measurement must include both burst and serialized spending, and both static and mobile
-    holders — the static-burst case is the honest worst case the headline must not hide.
+    holders — the honest worst cases the headline must not hide are **(i) the multi-radio burst endpoint
+    (O(K), AF-6)** and **(ii) the single-radio slow-gossip / fragmented-venue case** (bounded only by `Q`).
 - **Per-PHY-session quota `Q`** (orthogonal, all regimes): even presenting **many** tokens, slots granted
-  to one PHY-radio-session ≤ `Q` — the §9.5 fail-closed backstop. The harness must exercise the
-  many-tokens case so Q's bound (and the residual it leaves) is exposed, not assumed.
+  to one **observed** PHY-radio-session ≤ `Q` — the §9.5 fail-closed backstop. The harness must exercise
+  the many-tokens case so Q's bound (and the residual it leaves) is exposed, not assumed.
+  **Attacker-rotation arm (AF-3, added):** because the commodity-defender session key is the
+  per-connection/RPA handshake (not a device-stable identity), the harness must **also** measure slots
+  when the holder **rotates its session id / RPA per spend** — the only way `Q` is actually attacked.
+  Against a session-rotating attacker `Q` does **not** bound total slots; it caps slots **per observed
+  session** only, so total slots scale as ≈ `Q × window / t_setup` per radio (× K radios). The optimism
+  of the "one-session-many-tokens" measurement is recorded in the §5 honesty rows and §7 fidelity row,
+  not hidden.
 
 **Metered outputs (residuals reported in the SAME units as the headline):** mean & p95 **slots/token**
 per regime; the **epidemic-propagation residual** (slots leaked before `nf` arrives) **vs density AND
@@ -102,7 +155,11 @@ every existing slice bit-identical).
   nothing)** and (b) the sparse/fragmented case (`nf` never propagates → residual bounded only by `Q`)
   both explicitly surfaced. This is the operational meaning of §9.3's "modulo gossip-propagation delay" —
   and the honest correction that §9.3's "D → 1" is an instantaneous-gossip idealization.
-- **Quota backstop:** max slots/PHY-session ≤ `Q` in **every** regime even under many tokens.
+- **Quota backstop:** max slots **per observed PHY-session** ≤ `Q` in **every** regime even under many
+  tokens — **but** the session key is the rotating per-connection/RPA handshake (AF-3), so this bounds
+  **per session, not per device**; the **attacker-rotation arm** measures total slots when the holder
+  rotates its RPA/connection per spend (where `Q` buys only per-session friction, residual folded into
+  §9.6).
 - **Must-demonstrate-attack gate (pre-registered, density-honest):** BROKEN must yield slots/token
   **≥ a pre-registered fraction of the realized distinct-acceptor count at the tested density** (not a
   bare "> 1", which is trivial) — else the "fix helps" claim is vacuous (mirrors the anonymity slices'
@@ -119,17 +176,23 @@ BROKEN (no rate-limit) = **D = 11 slots/token** (n = 38). The gossip arm as a fu
 | 0.5 – 1.0 | 1.4 | works |
 | 2.0 | 2.6 | partial |
 | 4.0 | 4.8 | partial |
-| **burst** (`token_spend_interval = 0`) | **11.0 = D** | **NO rate-limit** |
+| **burst** (`token_spend_interval = 0` → **multi-radio O(K) endpoint**, AF-6) | **11.0 = D** | **NO rate-limit** |
 
 *(Reproduce: `token_race_sweep(sweep_cfg(), density=6.0, reps=5, race_points=[(0.5,4),(0.5,2),(1,2),(2,2),(2,1),(4,1),(1,0)], holder="static")`; exact arena in `sim/tests/test_token.py::sweep_cfg`. `gossip_delay=0` is excluded as an unphysical instantaneous front.)*
 
 **The honest headline (corrects §9.3):** the token-anchored nullifier + gossip delivers the "≈ 1
 slot/token" rate-limit **only when seen-`nf` gossip keeps pace with the holder's serialized spend rate
-(rate-ratio ≲ 1)**; it degrades through a partial regime; and against a **burst** holder that spends to
-its co-present neighbors faster than `nf` can spread, it provides **essentially no rate-limit
-(slots/token → D)**. §9.3's unconditional "D → 1 venue-wide" is an **instantaneous-gossip idealization**;
-the physical guarantee is **conditional on the gossip-vs-spend race**, and the static-burst case is the
-worst case the headline must not hide.
+(rate-ratio ≲ 1)**; it degrades through a partial regime; and against a holder that spends to its
+co-present neighbors faster than `nf` can spread, it provides **essentially no rate-limit
+(slots/token → D)**, bounded then **only by the §9.5 per-PHY quota `Q`** (itself per-observed-session
+friction — AF-3). §9.3's unconditional "D → 1 venue-wide" is an **instantaneous-gossip idealization**;
+the physical guarantee is **conditional on the gossip-vs-spend race**, and that case is the worst case the
+headline must not hide. **Single- vs multi-radio (AF-6):** the `token_spend_interval = 0` burst endpoint
+requires **multiple parallel radios** (it is the §9.6 K-radio farm residual); a **single radio is floored
+at `token_spend_interval ≥ t_setup` (~hundreds of ms per BLE connect+GATT+spend)** and reaches the
+no-rate-limit regime only through **slow gossip** (large diameter / sub-`d_c` fragmentation), not through
+bursting. So the single-radio headline number is the rate-ratio evaluated at that floor, and the D
+endpoint is reported as the multi-radio O(K) regime — keeping the worst case honest **and physical**.
 
 **Mobility (two distinct worst-case axes):** a **mobile** holder leaks a much larger **absolute**
 residual (it meets far more acceptors, D ≈ 75–149 vs 8–14). Its residual **fraction** depends on the
@@ -140,7 +203,10 @@ the front). So "mobile always evades more" is false — it is true only in the s
 mobile is unconditionally worse for *total* leak. *(All spend times are capped at the acceptor's contact
 `exit_` — a serialized spend can never occur after the holder is out of range; this corrects a round-2
 bug where unphysically-late spends gave the gossip front extra time, understating the mobile leak ~3×.)*
-This **qualifies the §9.3 public anti-flood claim** and is carried to release-blockers at campaign close-out.
+This **qualifies the §9.3 public anti-flood claim** and is tracked as the **anti-flood rate-limit
+efficacy residual** in [release-blockers.md](../release-blockers.md) (under B4, added 2026-06-29 for
+AF-2/AF-3/AF-6) — the entry that **resolves this forward-reference**, which previously pointed at a
+close-out section carrying no matching item (AF-2).
 
 ## 5. Invariant & honesty check
 
@@ -163,8 +229,12 @@ This **qualifies the §9.3 public anti-flood claim** and is carried to release-b
   measured + reported (incl. the unbounded fragmented case); (3) gossip-of-seen-`nf` **airtime** is, in
   this PR, modeled as out-of-band of the §11 airtime budget — an **optimistic** simplification flagged in
   the fidelity row (the seen-`nf` flood does compete for airtime; folding it into §11 is a follow-up);
-  (4) discount curve + ZK are research. **Every number is an UPPER BOUND on the rate-limit's quality**
-  (equivalently a lower bound on slots an adversary leaks).
+  (4) discount curve + ZK are research; (5) **`Q`-per-PHY-session assumes session-pinnability the
+  commodity defender lacks → optimistic (AF-3):** the "one session, many tokens" measurement holds the
+  session id fixed, but a commodity phone keys a session only by the rotating per-connection/RPA handshake
+  and an attacker can rotate it per spend; the **attacker-rotation arm** measures this, and the residual
+  folds into the §9.6 funded-device-count bound. **Every number is an UPPER BOUND on the rate-limit's
+  quality** (equivalently a lower bound on slots an adversary leaks).
 - **No "quota" claim:** the deliverable is "the anchored nullifier + gossip turns ~D into ≈ 1 + residual
   slots/token," **never** "per-device rate is capped" (impossible, §9.1/§9.6).
 
@@ -184,8 +254,9 @@ This **qualifies the §9.3 public anti-flood claim** and is carried to release-b
    must use the engine's **acquisition-time causality path**, NOT `percolation.temporal_reachable` (whose
    docstring warns it ignores `created_at` and is wrong for a blob/marker born mid-run). Acceptor-local
    seen-sets; the 3 regimes; a **mobile** adversary holder (worst case) alongside static; the per-PHY `Q`
-   cap (under many tokens). Slot = token accepted by a distinct acceptor. Default-inert (bit-identical
-   when off).
+   cap (under many tokens) **plus a session-rotating attacker arm (rotates its RPA/connection per spend,
+   so `Q` is attacked not assumed — AF-3)**. Slot = token accepted by a distinct acceptor. Default-inert
+   (bit-identical when off).
 3. Scenario: token rate-limit sweep over density **and venue size/diameter** → slots/token per regime,
    amplification, the **measured** epidemic residual (incl. fragmented→unbounded), max-slots/PHY vs `Q`;
    pre-registered must-demonstrate gate.
@@ -194,5 +265,9 @@ This **qualifies the §9.3 public anti-flood claim** and is carried to release-b
    determinism.
 5. Bounded measure (low reps, capped density+size); document; fidelity row "tokens: §9 rate-limit modeled
    (anchored-nf + epidemic gossip); device-count residual + seen-nf gossip airtime NOT modeled →
-   optimistic; nf is a per-token pseudonym (handshake-layer linkability)."
+   optimistic; **`Q`-per-PHY-session assumes session-pinnability a commodity phone lacks (RPA rotation) →
+   optimistic unless the rotation arm is run (AF-3)**; nf is a per-token pseudonym (handshake-layer
+   linkability)." **B1 audit item (AF-3):** is `Q` a real backstop on real commodity BLE, or does it
+   collapse to per-connection friction under RPA rotation? — tracked in
+   [release-blockers.md](../release-blockers.md) (B1 + B4).
 6. Fan-out code+security review; PR; merge.

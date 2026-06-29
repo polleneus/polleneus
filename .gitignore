@@ -1,3 +1,8 @@
 # External contributors' raw notes — kept OUT of the public repo permanently (privacy of contributors).
 # Findings derived from these live in docs/originator-anonymity-limit.md (anonymized), not the raw notes.
 docs/riddle/
+
+# Local hardware-spike lab + operational runbook — kept OUT of the public repo permanently.
+# Holds device serials, LAN IPs, machine paths, and polleneus-dev GitHub mechanics (identity boundary).
+# The sanitized roadmap/ledger lives in docs/superpowers/ instead.
+spike/

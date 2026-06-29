@@ -3,6 +3,9 @@ name = "soup_sim"
 version = "0.1.0"
 description = "Simulator for the polleneus pure-flooding uniform-soup model (delivery + airtime vs density)"
 requires-python = ">=3.11"
+# Supply-chain (external review M4): floor pins are fine for the research sim (no shipped artifact, no
+# secrets beyond the default CI token). OWED before this dependency surface feeds any client build:
+# a hash-pinned constraints/lockfile (pip-compile --generate-hashes). Tracked, not yet generated.
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]

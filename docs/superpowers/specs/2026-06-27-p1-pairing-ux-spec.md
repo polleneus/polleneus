@@ -29,15 +29,17 @@ honesty, and this is where that honesty either reaches the user or doesn't.
 Shown once at first launch, dismissible but re-readable from settings; **lead with the honest bottle
 metaphor**, never "leave no durable trace."
 
-- **Protects:** *who threw the bottle* and *who it's for* are hidden; a single message in a dense crowd
-  is roughly anonymous; content is sealed end-to-end.
+- **Protects:** *what's in the bottle* and *who it's for* are hidden (content sealed end-to-end, recipient
+  unlinkable on the wire); a **single** message in a dense crowd blends into the crowd (origin ≈ 1/concurrent
+  originators). It does **not** make *who threw it* anonymous — see below.
 - **Does NOT protect:** the finder can keep your message (screenshots, backups, a hostile relay); a
   **persistent** author is deanonymizable under multi-session intersection + device fingerprinting (B2);
   running the app is itself detectable as mesh membership (mitigated by blending toward ordinary
   BLE — constant ID-free advertisements, parent §8 — but **not** eliminated; no undetectability claim);
   needs a dense gathering to deliver at all.
-- **One-line honest promise**, verbatim from the parent: *"We hide who threw the bottle and who it's
-  for. We can't stop the finder from keeping it."*
+- **One-line honest promise**, verbatim from the parent v0.6: *"We hide **what's in the bottle** and **who
+  it's for**. We **cannot fully hide who threw it** — a one-off throw blends into the crowd, but a persistent
+  thrower or a dense sensor grid can localize the origin. And we can't stop the finder from keeping it."*
 - **Acceptance gate:** the card set must be reviewed against the **measured B2 numbers** before any build
   ships; no card may imply sender-unlinkability or undetectability.
 

@@ -151,8 +151,18 @@ the MAC `transcript = sealed_blob_ciphertext_bytes ‖ version ‖ global-TTL �
 creation_ts ‖ domain_label` (i.e. the actual ciphertext bytes — true Encrypt-then-MAC — **plus** the mutable
 wire-header fields the parent design §5.2 declares authenticated, so a relay cannot alter TTL/version
 undetected; this reconciles design §5.2's "authenticated transcript" with this section). `K_auth =
-HKDF(K_pair, "…senderauth…")` and the per-contact root `K_pair = HKDF(X25519(my_id_sk, peer_id_pk) ‖ stored
-ML-KEM-768 shared secret)` is established **once at pairing** and persisted. Because **both** peers hold
+HKDF(K_pair, "…senderauth…")` and the per-contact root
+`K_pair = HKDF(ikm = X25519(my_id_sk, peer_id_pk) ‖ ml_kem_ss, salt = "polleneus-pair-v0", info =
+lower(bundleA,bundleB) ‖ higher(bundleA,bundleB))` is established **once at pairing** and persisted, where:
+- `ml_kem_ss` is the **single** ML-KEM-768 shared secret from pairing (Approach C: the responder encapsulates
+  once to the initiator's ML-KEM identity key; both peers hold it — so there is **no "ordering of two
+  secrets"** ambiguity), and
+- `lower/higher` apply the **canonical unsigned-lexicographic ordering of the two identity bundles** — the
+  **same ordering and byte-transcript the SAS uses (P1 §5.2/§5.3)** — so the HKDF `info` **binds both peers'
+  identity public keys** and the derivation is byte-identical across both roles.
+- **Contribution validation (DSA-03 audit item):** before the static-static DH, **reject a peer X25519 public
+  key that is a low-order / identity point** (RFC 7748 §6 contributory-behaviour check); validate ML-KEM
+  encaps/decaps per FIPS 203. A tie (equal bundles) aborts. Because **both** peers hold
 `K_pair`, either could have forged the tag → it is non-transferable (deniable). Being symmetric, the
 authenticator is **post-quantum as a symmetric primitive**. The *general* feasibility basis is
 Dodis–Katz–Smith–Walfish (TCC 2009): strong deniable authentication is impossible in the PKI/signature setting
@@ -278,8 +288,12 @@ cannot measure handset crypto/battery).
    the recipient device**; **verify NO in-envelope non-repudiable signature/transcript undercuts it** (the
    parent §4/§5.2 "signed transcript" must not be transferable). Do **not** ship on an unproven claim.
 5. **X-Wing combiner** + transcript binding; no single-component downgrade; flag-day enforcement.
-6. **Spend primitive** (blind-RSA vs BBS) unforgeability + nullifier binding under the **parent §9.3**
-   token-anchored gossiped seen-set — the *integration*, not just the textbook primitive.
+6. **Spend primitive — v1 pinned to blind-RSA** (RSA-BSSA; BBS-show DEFERRED — it has no stable nullifier
+   without a k-times-AA / double-spend-tag extension; P2 token-source-spec §2). Audit: blind-RSA **one-more
+   unforgeability**, and that the nullifier `nf = H("nf" ‖ σ)` (σ = the deterministic unblinded signature) is
+   **binding** — one token cannot yield two accepted `nf`, and `nf` does not re-link the spender — under the
+   **parent §9.3** token-anchored gossiped seen-set. The *integration*, not just the textbook primitive. (Also
+   audit the §9.5 quota `Q` enforceability under commodity-BLE RPA rotation — release-blockers AF-3.)
 7. **Crypto-erase actually erases** on the target NAND/SE/TEE (no remnant).
 8. **SE/TEE write-rate / endurance** under per-sub-epoch ratchet rewrites over ≤7 d (may force coarser
    sub-epochs — interacts with the FS granularity vs feasibility trade).

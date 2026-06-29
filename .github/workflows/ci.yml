@@ -8,6 +8,10 @@ on:
   push:
   pull_request:
 
+# Least-privilege token: this CI only reads the repo + runs the sim test suite (no writes/packages).
+permissions:
+  contents: read
+
 defaults:
   run:
     working-directory: sim
@@ -18,8 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20          # bound the job (a sweep must never hang CI — the engine is super-linear)
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (SHA-pinned, supply-chain)
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5 (SHA-pinned, supply-chain)
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
@@ -32,8 +36,8 @@ jobs:
     env:
       POLLENEUS_OFFLINE_CI: "1"   # conftest blocks the socket connection entry points (in-process) for the session
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (SHA-pinned, supply-chain)
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5 (SHA-pinned, supply-chain)
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]"   # build-time dep fetch (network OK); the guard activates only at test time

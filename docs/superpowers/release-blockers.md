@@ -189,8 +189,22 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   pseudorandom (PR-ID-CPA, anonymity proven under MDDH/SXDH) and BBG is not anonymous. Validated by **FoSAM** (the
   same construction, Android prototype). The spec carries the build plan (M-FS1…4) + the B1 list: replicate FoSAM's
   cross-instance key-privacy proof, **new BKP-on-mcl code is the top audit surface**, constant-time trial-decap +
-  uniform all-G1 serialization, and **StrongBox crypto-erase latency/endurance (still UNMEASURED — next on-device
-  task)**. FS-on still gated on M-FS1…4 + B1; **stays DEFERRED**.
+  uniform all-G1 serialization, and **StrongBox crypto-erase latency/endurance (still UNMEASURED)**. FS-on gated on
+  M-FS2…4 + the proof + B1; **stays DEFERRED**.
+- **M-FS1 DONE (2026-07-01) — BKP HIBKEM built + KAT-correct + benchmarked on real low-end hardware.** Construction
+  pinned by a derive+adversarially-verify workflow (4 derivations; 3 agree, verifiers confirm decap inverts).
+  Implemented on mcl (Setup/KeyGen/Encap/Decap/Delegate); **KATs ALL PASS** (round-trip depth 1/8/15, cross-id
+  isolation, `millerLoopVec`==stepwise, 4-level delegation — round-trip = ground truth). Tab A9+ (SD-695, generic-C),
+  big/little core: **Decap (trial-decrypt hot path) 2.16 / 12.2 ms** (the headline is constant-time-exact — no
+  secret mul in the hot path), Encap 5.29 / 31.8, KeyGen 0.91 / 5.19, Delegate 8.29 / 47.7. **Ciphertext = 192 B
+  (4 G1) CONSTANT** — *correcting the earlier "ct grows with depth"*: the identity aggregates into `Z_id` before
+  encryption, so ℓ grows only the on-device key state, not the wire ct. **Size budget now FITS:** 192 B + ML-KEM
+  1088 B ≈ 1.28 KB < 1.8 KB (≈1.47 KB with the ~2× byte-uniform encoding). **Anonymity finding (adversarial
+  verification):** in our model `dk` is recipient-PRIVATE (only mpk/G1 public) → the HIBKEM linking test has no G2
+  leg and every passive distinguisher collapses to DDH-in-G1 ⇒ **plausibly avoids the research-grade AHIBKEM**, but
+  **DEFERRED-pending an SXDH key-privacy proof + a "only public G2 is P2" invariant**. 2 pre-audit bugs found+fixed
+  (reject zero-id; Delegate `p<L` guard). STILL OPEN: M-FS2 (CHK tree + `mulCT` + byte-uniform encoding), M-FS3
+  (StrongBox erase), the key-privacy proof, boot-reset gap, B1.
 - **Anti-flood rate-limit EFFICACY residual (added 2026-06-29, AF-2 + AF-3 + AF-6) · MEASURED-IN-SIM —
   resolves the [p2-token-source-spec §4](specs/2026-06-27-p2-token-source-spec.md) "carried to
   release-blockers" forward-reference, which previously had no matching entry:**

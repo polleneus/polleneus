@@ -1,8 +1,8 @@
 # P5-FS — Forward-Secure KEM construction spec (BKP-HIBE + CHK time-tree on X-Wing)
 
-**Status:** DRAFT · **UNAUDITED** · spec-before-build (the loop's *spec* step) · **2026-06-30**
-**Feature posture:** **DEFERRED in v1** — this spec defines the *target* construction to build + benchmark; it
-ships nothing. Gated on B4 (cost — *compute sub-result measured, see below*) and B1 (audit). Extends
+**Status:** DRAFT · **UNAUDITED** · spec + **M-FS1 built/measured** · **2026-06-30 (rev 2026-07-01: M-FS1)**
+**Feature posture:** **DEFERRED in v1** — the *construction* is now implemented + KAT-correct + benchmarked (M-FS1,
+§7/§9); FS still ships nothing in v1. Gated on B4 (cost — *full BKP scheme measured + KAT-correct*) and B1 (audit). Extends
 [p5-key-management-spec.md](2026-06-28-p5-key-management-spec.md) §2/§6 and the FS decision (release-blockers B4;
 parent design §5.2). Evidence base: measured B4 primitive benchmark (2026-06-30), the FS decision memo, and a
 multi-agent source-cited research stop (anonymous-HIBE selection + FoSAM corroboration).
@@ -36,6 +36,20 @@ recipient's public key**, or an observer deanonymizes traffic and byte-uniformit
   Making BBG anonymous (Boyen–Waters) costs O(ℓ) ct / O(ℓ²) keys — loses the size win. (Detail: the FS memo's
   original "BBG-HIBE" pick is **superseded by BKP** for the anonymity requirement.)
 
+### 2.1 Anonymity in OUR model — likely avoids the deferred AHIBKEM (M-FS1 adversarial verification)
+The literature caveat is that the **plain HIBKEM with a PUBLIC delegation key `dk` is NOT anonymous for L>1** (a
+pairing linking test `e(c0, Σf_i(Ēᵢ;d̄ᵢ)) =? e(c1,[b]₂)` decides the recipient — but it **consumes only G2 `dk`
+material**). **In CHK-FS, `dk` is the recipient's PRIVATE delegation state; only `mpk` (all G1) is the public
+address.** Adversarial verification (M-FS1) established: with `dk` private, a passive/contact adversary's only G2
+element is the bare generator `P2`, so the linking test **has no G2 leg to stand on at any depth** — and every
+passive/contact distinguisher (cross-ct linkage, "is this ct for known mpk `[a]₁`?") **collapses to DDH-in-G1**,
+hard under SXDH (you cannot pair two G1 elements, and `r` lives only in G1). **⇒ the private-`dk` HIBKEM is
+plausibly recipient-anonymous, which would let us AVOID the research-grade AHIBKEM.** This is a legitimate downgrade
+"research-blocked AHIBKEM → engineering + an SXDH key-privacy proof," but it is **DEFERRED-pending-proof, NOT
+proven** (§8.1): BKP proved IND-CPA (secrecy of K), *not* key-privacy. Honest non-leaks to state: anyone holding the
+recipient's `usk`/`dk` (the recipient, or a delegated parent up the CHK chain) links **by design** — anonymity is
+only against **non-recipients**.
+
 ## 3. Forward secrecy = CHK transform over BKP
 Canetti–Halevi–Katz: a HIBE + a binary tree of time periods ⇒ a forward-secure (key-evolving) PKE. The recipient
 holds the key for the **current epoch leaf** plus the **right-sibling node keys along the root→current path** (which
@@ -47,9 +61,11 @@ allow *forward-only* derivation), and **crypto-erases every consumed node key �
   `ℓ = ⌈log2(address_lifetime / Δt)⌉`. E.g. 1-hour epochs over **~2 years** ⇒ ~17 500 leaves ⇒ **ℓ ≈ 15**.
   (The earlier "ℓ=8" was wrong — depth-8 = 256 hourly leaves ≈ **11 days**, which would exhaust the address in
   ~11 days; corrected here.) Secret key = O(ℓ) node keys; when the tree exhausts, the address must be **OOB
-  re-paired** — state that horizon. **Cost note:** unlike BBG (constant 3-element ct), **BKP ciphertext size grows
-  with the identity length (~depth)**, so ℓ feeds directly into the ct-size budget (§7/§8) and must be measured at
-  the chosen ℓ in M-FS1.
+  re-paired** — state that horizon. **Cost note (CORRECTED by the M-FS1 measurement):** BKP ciphertext is
+  **constant — 4 G1 = 192 B, depth-INDEPENDENT** (the identity aggregates into `Z_id = Σ f_i Z_i` *before*
+  encryption, so `c1` is a fixed 2-vector regardless of ℓ). ℓ only grows the *secret-key / delegation* state
+  (O(ℓ) G2 stored on-device), **not** the wire ciphertext. (This retracts the earlier "ct grows with depth"
+  assumption inherited from the research stop.)
 - **Smooth epoch rollover (adopt, from FoSAM §6.4):** advance every **Δt/2** but retain the *previous* epoch key,
   so a blob sent just before a boundary still decrypts.
 - **FS window ≥ TTL — a *limit*, by construction in the target design:** the device must read in-flight unexpired
@@ -88,34 +104,51 @@ Type-3 pairing on BLS12-381. **Group assignment (BKP/FoSAM): ciphertext in G1, u
 - `FS.KeyGen() → (pk, sk_0)` — master keypair; `sk_0` = root node key.
 - `FS.Update(sk_i) → sk_{i+1}` — CHK tree walk: derive next epoch node via `BKP.Del` (re-randomized), **erase**
   the consumed parent/elapsed nodes (StrongBox wrapping-key crypto-erase, not file unlink).
-- `FS.Encap(pk, epoch) → (ct, K)` — pairing-free: ~4–6 G1 muls + 1 G_T-exp; `ct` is all-G1 (uniform).
-- `FS.Decap(sk_epoch, ct) → K | ⊥` — ~1–2 pairings (batch with `millerLoopVec` + one `finalExp`) + small G_T;
-  `⊥` on the wrong epoch / not-ours (trial-decrypt). **The ⊥ path must be constant-time/indistinguishable.**
+- `FS.Encap → (ct = 4 G1 = 192 B, K∈G_T)` — `c0=(ar,r)`, `c1=Z_id·r` (`Z_id=Σf_i Z_i`), `K=e(r·[z0]₁,P2)`.
+  **Measured 5.29 ms** (one pairing in K; can be made pairing-free via a precomputed `e(P1,P2)` + GT-exp — M-FS2 opt).
+- `FS.Decap → K` — `millerLoopVec` over 4 pairs `{(c0[0],v),(c0[1],u),(−c1[0],t0),(−c1[1],t1)}` + one `finalExp`
+  (the `−c1` fold makes it the quotient `e(c0,(v;u))·e(c1,t)⁻¹`). **Measured 2.16 ms big / 12.2 ms little — the
+  trial-decrypt hot path.** The KEM `Decap` has **no in-function failure branch** (no secret-dependent branch or
+  memory access — verified); a wrong key surfaces later as the AEAD/DEM tag mismatch, which must itself be const-time.
 
-## 7. Cost budget (measured primitives → estimate)
-From the 2026-06-30 mcl benchmark on a SD-695-class low-end phone (generic-C, no asm), big / little core:
-pairing 1.15 / 6.34 ms · G1mul 0.12 / 0.68 · G2mul 0.23 / 1.25 · GT-exp 0.38 / 2.05 ms.
+## 7. Cost — MEASURED (M-FS1, the REAL BKP scheme; 2026-07-01)
+SD-695-class low-end phone (mcl generic-C, **no asm**), big / little core, depth **L=15** (~2 yr hourly), N=200,
+`CLOCK_MONOTONIC`. **KATs ALL PASS** (round-trip depth 1/8/15, cross-id isolation, `millerLoopVec`==stepwise-4-pairings,
+4-level delegation) → construction functionally correct (round-trip = ground truth).
 
-| op | estimate (big / little) | note |
-|---|---|---|
-| `Encap` | ~1 / ~5–6 ms | pairing-free; ≈ FoSAM's real Pixel-6 5.22 ms |
-| **`Decap` (TRIAL-DECRYPT HOT PATH)** | **~1.6 / ~9–13 ms** | 1–2 pairings; FoSAM's real Pixel-6 decrypt 6.70 ms sits *inside* this [big,little] bracket; **× inbound-blob rate = the real budget** |
-| `Update`(+erase) | ~tens–~120 ms, once/epoch | FoSAM Pixel-6 ratchet 120 ms; background, not hot |
+| op | big core | little core (worst) | note |
+|---|---|---|---|
+| Encap | 5.29 ms | 31.8 ms | ≈ FoSAM Pixel-6 5.22 ms |
+| **Decap — TRIAL-DECRYPT HOT PATH** | **2.16 ms (p99 2.2)** | **12.2 ms (p99 15)** | 4-pairing `millerLoopVec`; FoSAM Pixel-6 6.70 ms |
+| KeyGen | 0.91 ms | 5.19 ms | per recipient key |
+| Delegate (1 level) | 8.29 ms | 47.7 ms | background, per epoch advance |
+| **ciphertext** | **192 B (4 G1) — CONSTANT** | — | depth-independent |
+| usk-core | 384 B (4 G2) | — | + O(ℓ) G2 delegation state on-device |
 
-These are **structure-derived estimates from the measured BBG-shaped primitives** (not a published BKP op-table or a
-reference impl); M-FS1 replaces them with the real BKP-at-depth-ℓ scheme numbers. **Verdict (on the estimates):**
-they sit well inside any plausible interactive target; the formal B4 threshold stays TBD-pending the B2
-field-airtime anchor. The binding constraint is **Decap × inbound-flood rate** (every new blob is trial-decapped
-with the current-epoch key — one attempt per blob, gated by the seen-set), not single-op latency.
+**Honesty:** the **Decap headline is exact** — its hot path has no secret-scalar mul (only `millerLoopVec`+`finalExp`+
+negation), so it is byte-for-byte identical in a constant-time build. **Encap/KeyGen/Delegate use non-CT
+`G1::mul`/`G2::mul` over secret scalars → those three are slightly *optimistic lower bounds* vs a hardened (`mulCT`)
+build.** **Size budget re-derived for BKP:** ct 192 B + ML-KEM-768 1088 B ≈ **1.28 KB** < 1.8 KB; with a ~2×
+byte-uniform encoding on the 192 B G1 part → ~1.47 KB, still fits. Binding constraint = **Decap × inbound-flood
+rate** (one decap per new blob, seen-set-gated) → fine within a ~10 s mesh cycle. Formal B4 pass threshold still
+TBD-pending the B2 field-airtime anchor.
 
 ## 8. Security obligations & implementation hazards (→ B1 audit list)
-1. **Replicate FoSAM's cross-instance key-privacy proof.** BKP's native anonymity is *within one master key*; we
-   need **PR-HID-CPA ⇒ FS-ANON** across instances (FoSAM §7.2). Do not assume — reprove for our composition.
-2. **No reference BKP on a raw C pairing lib exists** — this is **new crypto code** (the affine-MAC HIBE *and*
-   the pseudorandomness that anonymity rests on). The single biggest B1 surface. (FoSAM's Rust code is
-   unreleased / not mcl.)
-3. **Constant-time:** secret-dependent muls via `mclBnG1_mulCT`/`mclBnG2_mulCT` (default `mul` is NOT CT);
-   **constant-time / indistinguishable trial-decrypt failure path**.
+1. **Key-privacy / pseudorandom-ct proof under SXDH (the core gap — gates "anonymous without AHIBKEM").** Prove
+   `ct=([r]₁,[ra]₁,[r·Z_id]₁)` is computationally indistinguishable from **4 uniform G1 elements**, given `mpk`
+   (all G1) + many other ciphertexts, **multi-instance**, reducing to DDH/U₁-MDDH in G1 — this yields
+   recipient-anonymity + cross-ct unlinkability + id/depth privacy at once (§2.1). **New work:** BKP proved
+   IND-CPA, *not* key-privacy. PLUS: enforce the **"only public G2 element is `P2`" invariant** across all
+   delegation/FS code (if any `[a]₂/[Z_i]₂/[b]₂/d̄ᵢ/Ēᵢ` ever leaks to G2, or `dk` leaves the device, the linking
+   test fires and anonymity collapses), and prove the **CCA / sealed-blob wrapper** is anonymous too (uniform vk,
+   no recipient tag, constant length, fresh `r`).
+2. **No reference BKP on a raw C pairing lib exists** — the M-FS1 mcl code is **new crypto code** (the affine-MAC
+   HIBE *and* the pseudorandomness anonymity rests on). The single biggest B1 surface. (FoSAM's Rust code is
+   unreleased / not mcl.) Spec-fidelity was adversarially traced (decap telescopes to `r·z0`; delegation correct
+   at all depths); KATs are ground truth — but a formal audit is still owed.
+3. **Constant-time:** the M-FS1 code uses non-CT `G1::mul`/`G2::mul` for secret scalars (`a,b,x_i,Y_i,r,s,s'`) —
+   port to `mclBnG1_mulCT`/`mclBnG2_mulCT` for production (Encap/KeyGen/Delegate). **Decap's hot path has no
+   secret-scalar mul → already CT-safe** (verified). Keep the trial-decap failure (AEAD tag check) const-time.
 3b. **Byte-uniformity of the FS leg — OPEN (flagged, NOT solved).** PR-ID-CPA gives pseudorandom-*as-a-group-element*,
    which is **not** uniform-random-*bytes-on-the-wire* (invariant #1). A compressed BLS12-381 **G1 point is NOT
    byte-uniform** — fixed flag bits, only ~½ of x-values valid — so it is distinguishable from random 48-byte
@@ -130,12 +163,18 @@ with the current-epoch key — one attempt per blob, gated by the seen-set), not
    production; pin a reviewed version; verify `hashAndMapTo` DST (draft-06/07/EIP-2537, not final RFC 9380).
 6. **Type-3 discipline:** ct∈G1 / keys∈G2 exact; validate peer points (subgroup/low-order); FIPS-203 checks on
    the static ML-KEM leg unchanged.
+7. **M-FS1 bugs found by adversarial verification + FIXED (pre-audit):** (a) **zero-identity components rejected**
+   (`id_j≠0`) — else the level term vanishes and a parent key decaps a child ciphertext (id collision); (b)
+   **`Delegate` guarded `p<L`** — was an out-of-bounds read of `udk[L+1]` if delegating from a full-depth key.
+   KATs re-pass after both fixes. (Harness never tripped either — ids are hashed; bench delegates `L-1→L`.)
 
 ## 9. Build plan (milestones)
-1. **M-FS1:** minimal BKP-HIBE (SXDH) Encap/Decap/Del on mcl as a standalone arm64 module + KATs; bench the
-   *real* scheme on the low-end phone (replace the §7 primitive-estimate with measured scheme numbers).
-2. **M-FS2:** CHK binary time-tree (epoch from `creation_ts`, smooth Δt/2 rollover, node erase) + constant-time
-   trial-decap + uniform serialization; property tests (anonymity self-test: ct indistinguishable across keys).
+1. **M-FS1 — DONE (2026-07-01).** BKP HIBKEM Setup/KeyGen/Encap/Decap/Delegate on mcl + KATs (all pass); real
+   scheme benchmarked on the low-end phone (§7); construction derived + adversarially verified; 2 pre-audit bugs
+   fixed; private-`dk` anonymity established (pending the §2.1/§8.1 proof). Code: `spike`/`fsbench/bkp_hibe.cpp`.
+2. **M-FS2 (next):** CHK binary time-tree (epoch from `creation_ts`, smooth Δt/2 rollover, node erase) +
+   **constant-time `mulCT` port** + **byte-uniform wire encoding** (Elligator-class, §8.3b) + a pairing-free Encap
+   (precomputed `e(P1,P2)`); property tests incl. an anonymity self-test (ct indistinguishable across keys).
 3. **M-FS3:** StrongBox key-wrapping + crypto-erase; **measure erase latency + endurance** (closes the last B4
    on-device unknown).
 4. **M-FS4:** X-Wing integration (FS classical leg + static ML-KEM, committing AEAD w/ epoch-AAD) behind a flag;
@@ -143,9 +182,12 @@ with the current-epoch key — one attempt per blob, gated by the seen-set), not
 5. **Gate:** B1 audit of the BKP-on-mcl code + the key-privacy proof + erasure guarantee → only then FS-on ships.
 
 ## 10. Honest status line
-FS **compute feasibility is de-risked via measured pairing *primitives* + estimates** — the **full BKP/CHK scheme is
-NOT yet benchmarked** (M-FS1), and the **size budget is estimated, not measured, and must be re-derived for BKP**
-(all-G1 *depth-dependent* ct ≠ BBG's constant 3-element ct, + the ~2× byte-uniform encoding of §8.3b). The
-**construction is selected and precedented** (BKP + CHK, per FoSAM). FS is **NOT built, NOT shipped, NOT audited,
-and byte-uniformity of the FS leg is OPEN.** v1 remains **static key + FS DEFERRED + in-app disclosure**. This spec
-is the green light to *build M-FS1*, nothing more.
+**M-FS1 DONE:** the BKP anonymous-HIBE FS-KEM is **implemented on mcl, KAT-correct, and benchmarked on real
+low-end hardware** — Decap **2.16 ms big / 12.2 ms little** (the trial-decrypt hot path), ciphertext **192 B
+constant**, corroborated by FoSAM; construction pinned by a derive+adversarially-verify workflow; 2 pre-audit bugs
+fixed. The size budget now **fits** (ct 192 B + ML-KEM ≈ 1.28 KB < 1.8 KB). FS is still **NOT shipped, NOT
+audited.** Remaining before FS-on: **M-FS2** (CHK time-tree + constant-time `mulCT` + byte-uniform wire encoding —
+still OPEN), **M-FS3** (StrongBox crypto-erase — the deletion FS rests on, still **unmeasured**), **M-FS4** (hybrid
+integration + CCA/committing wrapper), the **SXDH key-privacy proof + the "only public G2 is P2" invariant**
+(§2.1/§8.1), the **boot-reset gap** (§4), and **B1 audit**. v1 remains **static key + FS DEFERRED + in-app
+disclosure**.

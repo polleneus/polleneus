@@ -145,21 +145,31 @@ median. **Open — §10.1.**
 Sender authentication should be **deniable** (a recipient can verify the sender but cannot produce
 **transferable proof** of authorship to a third party) — so a *recipient* cannot later incriminate a sender.
 
-**v1 construction (decided — research-backed):** a **static pairwise shared-key MAC**. Carry an outer
-Encrypt-then-MAC tag `HMAC-SHA-256(K_auth, transcript)` over the X-Wing / key-committing-AEAD ciphertext, where
-the MAC `transcript = sealed_blob_ciphertext_bytes ‖ version ‖ global-TTL ‖ message-ID ‖ ephemeral_pk ‖
-creation_ts ‖ domain_label` (i.e. the actual ciphertext bytes — true Encrypt-then-MAC — **plus** the mutable
-wire-header fields the parent design §5.2 declares authenticated, so a relay cannot alter TTL/version
-undetected; this reconciles design §5.2's "authenticated transcript" with this section). `K_auth =
-HKDF(K_pair, "…senderauth…")` and the per-contact root
-`K_pair = HKDF(ikm = X25519(my_id_sk, peer_id_pk) ‖ ml_kem_ss, salt = "polleneus-pair-v0", info =
-lower(bundleA,bundleB) ‖ higher(bundleA,bundleB))` is established **once at pairing** and persisted, where:
+**v1 construction (decided — research-backed; this section is reconciled to the as-built spike code, which is
+the source of truth).** A **static pairwise shared-key MAC**. The outer Encrypt-then-MAC tag is, as built:
+`tag = HMAC-SHA-256( K_auth, SHA-256(sealedBlob) ‖ "polleneus-senderauth-v0" )` (32 B), where `sealedBlob` is
+the inner X-Wing / key-committing-AEAD ciphertext and the wire blob is `sealedBlob ‖ tag`. **HMAC-SHA-256 only**
+(collision-resistant / committing) — never Poly1305/GMAC (partitioning-oracle risk).
+- **As-built MAC scope (honest correction).** The tag binds the **sealed ciphertext + domain label only**. It
+  does **NOT** currently bind the mutable wire-header (`version`, `global-TTL`). Content and the seal are
+  protected, and the message-ID + whole wire blob are content-addressed by SHA-256 — but a relay **could alter
+  the wire `global-TTL` / `version` undetected by the recipient's sender-auth check** (the §5.1 hop-energy
+  backstop bounds life-*extension*). **OPEN hardening item (B1, was DSA-02):** decide whether to extend the MAC
+  transcript to also cover `version ‖ global-TTL ‖ message-ID ‖ ephemeral_pk ‖ creation_ts` (the parent §5.2
+  "authenticated transcript"). This is **not yet implemented**; the earlier wording here that claimed it was
+  has been corrected to match the code.
+- `K_auth = HKDF-SHA256(ikm = K_pair, salt = "" , info = "polleneus-senderauth-v0")` (32 B).
+- The per-contact root, as built:
+  `K_pair = HKDF-SHA256(ikm = X25519(my_x25519_priv, peer_x25519_pub) ‖ ml_kem_ss, salt = "polleneus-pair-v0",
+  info = lower(myX25519Pub, peerX25519Pub) ‖ higher(myX25519Pub, peerX25519Pub))`, established **once at
+  pairing** and persisted, where:
 - `ml_kem_ss` is the **single** ML-KEM-768 shared secret from pairing (Approach C: the responder encapsulates
   once to the initiator's ML-KEM identity key; both peers hold it — so there is **no "ordering of two
   secrets"** ambiguity), and
-- `lower/higher` apply the **canonical unsigned-lexicographic ordering of the two identity bundles** — the
-  **same ordering and byte-transcript the SAS uses (P1 §5.2/§5.3)** — so the HKDF `info` **binds both peers'
-  identity public keys** and the derivation is byte-identical across both roles.
+- the HKDF `info` is the **two X25519 identity public keys, ordered unsigned-lexicographically** (NOT the full
+  bundles) — the same ordering *basis* the SAS uses (P1 §5.3) — so the derivation is byte-identical across both
+  roles. (The SAS itself hashes the full bundles in that order; `K_pair`'s `info` uses just the X25519 keys —
+  both are pinned to the as-built code.)
 - **Contribution validation (DSA-03 audit item):** before the static-static DH, **reject a peer X25519 public
   key that is a low-order / identity point** (RFC 7748 §6 contributory-behaviour check); validate ML-KEM
   encaps/decaps per FIPS 203. A tie (equal bundles) aborts. Because **both** peers hold

@@ -155,15 +155,23 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   clear B4.** The doubt that drove the deferral was the per-blob **pairing-decrypt** cost (all prior numbers were a
   2014-Snapdragon-801 *proxy*: ~55 ms). Measured directly on a **SD-695-class low-end Android** (Cortex-A78 prime +
   A55 littles), using **mcl** BLS12-381 on the **generic-C path (no arm64 assembly → conservative)**, a faithful
-  BBG-HIBE decrypt proxy (**decrypt = exactly 2 pairings, depth-independent** — BBG's headline property):
-  **big core ≈ 1.65 ms (p99 1.72), little core ≈ 9.2 ms (p99 12.9)** per decrypt; a full pairing ≈ 1.1 / 6.3 ms;
-  G2 mul ≈ 0.23 / 1.25 ms (KeyUpdate is a handful of muls, once/hour → trivial). **Worst case (slowest core, no asm)
-  is ~5–10× under the 50/150 ms budget.** Sizes (derived from BBG's 3-element ct): FS-leg ct ≈ ~150 B + ML-KEM-768
-  ct 1088 B ≈ ~1.2 KB → **fits the 1.8 KB byte-uniform blob**; sk O(ℓ) ≈ ~1 KB at ℓ=8 → fits StrongBox.
+  BBG-HIBE decrypt proxy (BBG decrypt = **2 Miller loops + 1 *shared* final-exponentiation** — a product-of-pairings,
+  hence *cheaper* than 2 standalone pairings; depth-independent, BBG's headline property):
+  **big core ≈ 1.65 ms (p99 1.72), little core ≈ 9.2 ms (p99 12.9)** for the proxy; a standalone pairing ≈ 1.1 / 6.3 ms;
+  G2 mul ≈ 0.23 / 1.25 ms (KeyUpdate is a handful of muls, once/hour → trivial). Full per-blob decrypt adds the
+  X-Wing X25519 op + ML-KEM-768 decap + KDF/DEM + serialization on top of this dominant cost. **Even worst-case
+  (slowest core, no asm) this is well inside any plausible interactive-latency target — the formal B4 threshold is
+  still TBD-pending the B2 field-airtime anchor.** Sizes (derived from BBG's 3-element ct): FS-leg ct ≈ ~150 B +
+  ML-KEM-768 ct 1088 B ≈ ~1.2 KB → **fits the assumed ~1.8 KB X-Wing hybrid envelope** (the PQ ct alone is 1088 B,
+  so the hybrid PDU is necessarily larger than the classical-only ~1 KB; exact envelope = a pending hybrid-size
+  decision); sk O(ℓ) ≈ ~1 KB at ℓ=8 → fits StrongBox.
   **Dependency posture improved:** the feared `libforwardsec` is dead (won't build on a 2026 toolchain), but **mcl**
   (BSD-3, actively maintained) and **jedi-pairing** (BSD-3, self-contained, hand-written AArch64 asm) are healthy
-  foundations — a far smaller B1 surface than "research-grade unmaintained." Prior art: **FoSAM** (arXiv 2603.12871,
-  2026) — forward-secret receiver-public-key-only ad-hoc messaging w/ an Android prototype — to read + cite.
+  foundations — a far smaller B1 surface than "research-grade unmaintained." Prior art (read 2026-06-30): **FoSAM**
+  (arXiv 2603.12871, KIT) — forward-secret receiver-public-key-only *anonymous* ad-hoc messaging w/ an Android
+  prototype — independently corroborates this approach (its Pixel-6 full-scheme decrypt of **6.70 ms** sits inside
+  our measured bracket) and motivates an **anonymous/key-private HIBE** (sealed-sender needs ciphertext-key
+  unlinkability — plain BBG is not anonymous; FoSAM uses Blazy-MDDH); polleneus's X-Wing adds the **PQ leg FoSAM lacks**.
   **STILL OPEN before B4 clears / FS-on ships:** (i) a **full BBG-HIBE + CHK time-tree** impl (the proxy measures the
   dominant cost, not the scheme), (ii) **StrongBox crypto-erase latency + flash endurance** for hourly key-erase —
   *the deletion mechanism FS actually rests on, still unmeasured*, (iii) the **boot-reset clock gap** (P5 §10.1,

@@ -1,6 +1,10 @@
 # polleneus — P1: Pairing & truth-in-labeling UX (honest send/trust states)
 
-**Version:** v0.2 — 2026-06-29 (was v0.1 — 2026-06-27) · **Roadmap:** P1 (*highest-ROI, zero-tradeoff wins* — the UX half)
+**Version:** v0.3 — 2026-06-30 (was v0.2 — 2026-06-29; v0.1 — 2026-06-27) · **Roadmap:** P1 (*highest-ROI, zero-tradeoff wins* — the UX half)
+*v0.3 — reconciled §5 to the as-built spike (M2 + external-review): the **SAS hashes the two identity bundles
+ONLY** (the ML-KEM ct is NOT in the SAS; its integrity is the key-confirmation step), the pairing is the
+**COMMIT→REVEAL→CT→KC** ceremony (commit-before-reveal **resolves** the grinding caveat), `K_pair` `info` = the
+ordered X25519 keys, and **send is gated on the durable human-verified flag (H1)**, not on `K_pair` presence.*
 **Parent design:** [polleneus v0.5 §13](2026-06-25-polleneus-design.md#13-ux--operational-security-truth-in-labeling)
 · **Sibling:** [P1 reconciliation](2026-06-27-p1-reconciliation-spec.md).
 *v0.2 — pinned the SAS as a quantified security parameter, defined the pairing transcript it binds,
@@ -97,9 +101,11 @@ that is the same false-positive family as a false "Delivered."
 
 The SAS is the app's strongest trust signal, so it is specified as a quantified parameter, not a vibe.
 
-- **Definition.** The SAS is a fixed-length **truncation of `SHA-256(pairing_transcript)`** (transcript
-  defined in §5.2) rendered for human compare. Both devices compute it independently from the same
-  transcript bytes; the two humans read their screens to each other and each taps "matches."
+- **Definition (as built — reconciled to the spike code, source of truth).** The SAS is a fixed-length
+  **truncation of `SHA-256("polleneus-pair-sas-v0" ‖ lower_bundle ‖ higher_bundle)`** over the **two identity
+  bundles ONLY** (`bundle = mlkemPub ‖ x25519Pub`; the ML-KEM **ciphertext is NOT in the SAS** — see §5.2),
+  ordered canonically (§5.3), rendered for human compare. Both devices compute it independently; the two humans
+  read their screens to each other and each taps "matches."
 - **Canonical form = 6 decimal digits.** Entropy and the active-MITM bound, shown explicitly:
   - `log₂(10) = 3.3219 bits/digit` ⇒ **6 digits = 6 × 3.3219 = 19.93 bits**; value space `10⁶ = 1 000 000`.
   - **Active-MITM bound = 2⁻ᵇⁱᵗˢ per pairing attempt ≈ 2⁻¹⁹·⁹³ ≈ 1 / 10⁶ ≈ 1.0 × 10⁻⁶.**
@@ -128,57 +134,51 @@ The SAS is the app's strongest trust signal, so it is specified as a quantified 
   64 bits); digit form `= SAS_int mod 10ᵈ` zero-padded to `d` digits; symbol forms read successive
   base-`N` digits of `SAS_int` (`N = 1024` or `2048`). Taking ≥ 8 digest bytes keeps the modulo/base
   reduction bias `< 2⁻⁶⁴` (negligible).
-- **Computed over the COMPLETE transcript (no grindable leftover).** Commit-before-reveal of a *SAS value*
-  is **not applicable** — there is no human-entered nonce; the SAS is a pure display of a hash. The
-  anti-grind property instead comes from hashing the **entire** transcript (both identity bundles **and**
-  the ML-KEM ciphertext, §5.2): **no honest party and no tamperer can leave any field free to steer the
-  displayed value** — every input is fixed and included before the SAS is shown. (This closes the
-  "partial-transcript" grind where only identity keys were bound and the ciphertext could be chosen
-  afterward.)
-- **HONEST load-bearing caveat (audit item, §5.6).** The clean "~one online guess per ceremony" bound
-  (hence `2⁻¹⁹·⁹³`) holds **only if a relay/wormhole attacker cannot *adaptively* grind its substituted
-  key contribution toward a SAS collision.** Key contributions are public and cheap to regenerate, so an
-  attacker that can choose its *second-direction* substitution **after** learning the peer's contribution
-  can run an in-window target search (~`2ᵇⁱᵗˢ` work — seconds of compute at 20 bits), which 6 digits does
-  **NOT** withstand. The one-guess bound therefore requires the ceremony to **fix (commit) each side's
-  contribution before the peer's is revealed.** Whether the as-built sequential bundle exchange already
-  provides this, or whether an explicit **commit-before-reveal of each bundle** must be added, is a **B1
-  audit item (§5.6)**; if it is not provided, the SAS must be **lengthened** to withstand in-window
-  grinding rather than relying on the one-guess bound. *(This is the line between online-guess resistance
-  and grinding resistance — keep them distinct.)*
+- **Grinding resistance via COMMIT-BEFORE-REVEAL (as built — this is what makes the ~one-guess bound hold).**
+  The clean `2⁻¹⁹·⁹³` "one online guess per ceremony" bound holds **only if a relay/wormhole attacker cannot
+  *adaptively* grind its substituted contribution toward a SAS collision** (it otherwise could choose its
+  second-direction substitution *after* seeing the peer's bundle and run an in-window ~`2ᵇⁱᵗˢ` search — seconds
+  at 20 bits). The spike now defeats this with an explicit **commit-before-reveal round** (Vaudenay SAS / ZRTP):
+  each side first sends `C = SHA-256("polleneus-pair-commit-v1" ‖ bundle)`, and **only after both commitments
+  are exchanged** are the bundles revealed and checked against the commitments (mismatch ⇒ ABORT). A
+  wormhole therefore must commit its substituted bundle(s) **before** learning the peer's, so it cannot grind →
+  success drops to `2⁻²⁰` per attempt. (See `design-commit-before-reveal-pairing.md` and §5.2.) **Status:
+  IMPLEMENTED + hardware-validated; remains a B1 item to ratify** (was the open caveat in the prior revision).
 
 ### 5.2 The pairing transcript the SAS binds (normative — closes red-team F2 + DSA-04)
 
-Both `K_pair` **and** the SAS must bind the **full exchanged material** so that any tamper produces a
-divergent SAS the humans catch. The transcript is the **identical byte string** feeding both — only the
-domain label / KDF differs — so a tamper diverges **both** `K_pair` (pairing silently fails) and the SAS
-(humans see a mismatch).
+**The as-built ceremony is four CHR_PAIR rounds (initiator = central; responder = peripheral):**
 
 ```
 let (lo, hi) = order_by_x25519(bundle_A, bundle_B)     # canonical ordering, §5.3
+                                                       # bundle = mlkemPub(1206B) ‖ x25519Pub(44B)
 
-pairing_transcript :=
-      lo.mlkemPub      [1206 B]      # ML-KEM-768 identity pubkey, as carried in the bundle
-    ‖ lo.x25519Pub     [  44 B]      # X25519 identity pubkey,  as carried in the bundle
-    ‖ hi.mlkemPub      [1206 B]
-    ‖ hi.x25519Pub     [  44 B]
-    ‖ kem_ct                         # ML-KEM-768 ciphertext, responder→initiator
-                                     #   (1088 B per FIPS 203; exact on-wire encoded length = the spike's
-                                     #    — confirm byte-for-byte at audit)
-
-SAS_digest := SHA-256( "polleneus-pair-sas-v0" ‖ pairing_transcript )   # 32 B, domain-separated
-SAS_int    := big-endian-uint( SAS_digest[0..7] )
-SAS_6dig   := decimal( SAS_int mod 10⁶ ), zero-padded to 6 digits        # canonical (§5.1)
+1. COMMIT   each side sends   C = SHA-256("polleneus-pair-commit-v1" ‖ bundle)   (32 B)
+            — BOTH commitments exchanged before any bundle is revealed.
+2. REVEAL   each side sends its bundle; the peer checks SHA-256(commit-dom ‖ bundle) == C  (mismatch ⇒ ABORT).
+3. SAS      SAS = decimal( be_uint( SHA-256("polleneus-pair-sas-v0" ‖ lo ‖ hi)[0..7] ) mod 10^6 )   # bundles only
+            — the two humans compare the 6 digits and tap match / no-match.
+4. CT       responder encapsulates ml_kem_ct to the (now revealed+verified) initiator ML-KEM key; both derive
+            K_pair = HKDF(X25519(static,static) ‖ ml_kem_ss, salt="polleneus-pair-v0",
+                          info = lo.x25519Pub ‖ hi.x25519Pub)              # info = the X25519 keys, ordered
+5. KC       each side sends   kc = HMAC(K_pair, "polleneus-pair-kc-v1" ‖ role)  (role = "I"/"R");
+            the peer verifies it (mismatch ⇒ ABORT).
 ```
 
-- Field byte-lengths shown (`mlkemPub = 1206 B`, `x25519Pub = 44 B`) are the **bundle's as-carried**
-  sizes (memo §1.1); the ML-KEM ciphertext length is the spike's on-wire form. The transcript byte-layout
-  and ordering MUST be **byte-for-byte identical to the spike's `K_pair` derivation input across both
-  roles** — that agreement is itself a conformance/audit item (§5.6).
-- **Integrity note (DSA-04).** Today the ML-KEM ciphertext has **no integrity check at establishment
-  except via this SAS** — folding it into the transcript **is** the integrity mechanism. Therefore
-  **"pairing key-agreement integrity" is flagged for addition to the P5 §10 audit list** (cross-ref only;
-  P5 not edited here).
+- **The SAS binds the two identity BUNDLES only** (step 3). The **ML-KEM ciphertext is NOT in the SAS** — its
+  integrity rides on the now-authenticated identities plus the **key-confirmation** (step 5): a tampered `ct`
+  yields a divergent `K_pair`, so the `kc` HMACs mismatch and the ceremony **ABORTs with no contact persisted**
+  (this is the integrity mechanism that the prior revision wrongly assigned to "ct-in-the-SAS"; DSA-04 is thus
+  satisfied by the kc step, not the SAS).
+- **Why the SAS need not include the ct:** once the SAS authenticates both identity keys (and commit-before-
+  reveal, §5.1, blocks grinding), there is no MITM in the channel; the `ct` is encapsulated to the *authenticated*
+  initiator key, so only the genuine initiator can decapsulate it, and the kc proves both sides reached the same
+  `K_pair`. (The responder cannot commit to the ct early anyway — it needs the initiator's ML-KEM key, learned
+  only at REVEAL — which is why the SAS-over-bundles + kc split is the chosen design.)
+- **Conformance/audit item (§5.6):** the SAS input (ordered bundles) and the `K_pair` `info` (ordered
+  `x25519Pub`) must be **byte-for-byte identical across both roles** to the spike code (`Crypto.sasOverBundles`
+  / `Crypto.deriveKpairPq`). bundle sizes: `mlkemPub = 1206 B`, `x25519Pub = 44 B` (memo §1.1); `ml_kem_ct`
+  ≈ 1088 B (FIPS 203) — confirm exact on-wire length at audit.
 
 ### 5.3 Canonical ordering, idempotent re-pair, race handling (normative — closes red-team F6)
 
@@ -192,10 +192,11 @@ SAS_6dig   := decimal( SAS_int mod 10⁶ ), zero-padded to 6 digits        # can
 - **Idempotent re-pair.** A second **successful** pairing (mutual SAS confirmed) with an existing contact
   **REPLACES** that contact's stored identity keys + `K_pair` atomically — it **never creates a duplicate
   contact entry.**
-- **Abort-and-restart on race / partial exchange.** If a race or partial/incomplete exchange is detected
-  (missing ciphertext, truncated bundle, or — decisively — a **divergent SAS**), **neither side commits
-  any state**: no `K_pair` persisted, no contact created or modified, until **both** humans confirm the
-  SAS. **Divergent SAS ⇒ neither side commits** and the ceremony restarts.
+- **Persist PENDING on kc; verify on the human SAS; abort leaves nothing (as-built H1).** On a clean
+  ceremony (commitments verified, **kc** verified) each side persists the contact **PENDING**
+  (`verified=false`, non-sendable); the **human SAS-match** then flips it to **verified** (durable), and
+  "doesn't match" **deletes** it. Any failure — commit mismatch, **kc mismatch**, truncated/raced exchange,
+  or disconnect — **ABORTs with no contact persisted**. Re-pair is idempotent (replace, never duplicate).
 
 ### 5.4 Persistent trust states & badges (extends parent §4 — closes red-team F5)
 
@@ -216,10 +217,13 @@ MUST be shown distinctly. None of the non-verified states may look like a positi
   — and/or the X25519 / ML-KEM identity keys) **no longer matches** the stored one, **detected at a direct
   contact / in-person key exchange** (see §5.5 for the precise trigger). Potential MITM / re-pair / duress
   rotation.
-- **Gate verified-send on `K_pair`.** The "send authenticated (recipient sees `from <you> [verified]`)"
-  control is available **iff `K_pair` is present.** Without `K_pair` it is disabled with the
-  cannot-authenticate indicator; a plain sealed message may still be sendable to that contact's address
-  but **arrives unauthenticated** (no sender-MAC), and the UI must say so.
+- **Gate SEND on VERIFIED (as-built H1 — stronger than gating on `K_pair`).** On key-confirmation a contact
+  is persisted **PENDING** (`K_pair` present, `verified=false`); **sending is REFUSED to a PENDING/unverified
+  contact** — `handleSeal` rejects it (`SEAL refused … UNVERIFIED/PENDING`) and the Send control is disabled —
+  **until the human SAS-match flips it to verified.** The verified flag is **persisted in the service**
+  (survives restart; NOT process-local UI). Human "doesn't match" **deletes** the pending contact. So `K_pair`
+  alone never authorizes a send — the human comparison is **enforced, not advisory.** (A no-contact send fails
+  closed; the world-known fixed-recipient test key was removed — see the B1 hardening checklist.)
 - **On `Key-changed!`: quarantine, never silently drop or silently accept.** Hold the contact's traffic
   behind an explicit tap with a clear warning (parent §4) — the user decides to re-pair or reject.
 - **Red is reserved** strictly for **`Key-changed!`** — never for ordinary states (no-peers, expired,
@@ -255,17 +259,19 @@ server**, so detection is necessarily **local + at-next-contact**; this gap is *
 
 **Audit items this spec ADDS (P5 §10 currently omits them — cross-ref only; P5 not edited here):**
 
-- **SAS construction.** Confirm the §5.2 transcript byte-layout is **byte-for-byte identical** to the
-  spike's `K_pair` derivation input across both roles; confirm the digit/symbol rendering + modulo
-  reduction bias; ratify the ≥ 19.93-bit floor and the `2⁻ᵇⁱᵗˢ` bound.
-- **SAS grinding-resistance / commitment property.** Confirm whether the as-built sequential bundle
-  exchange prevents a relay attacker from **adaptively grinding** its substitution toward a SAS collision
-  (§5.1). If not: **either** add explicit **commit-before-reveal of each bundle**, **or** lengthen the
-  SAS. This determines whether the bound is the clean one-guess `2⁻¹⁹·⁹³` or degrades toward in-window
-  grinding.
-- **Pairing key-agreement integrity.** The ML-KEM ciphertext has **no integrity check at establishment
-  except the human SAS compare** (§5.2). **Add "pairing key-agreement integrity" to P5 §10** (red-team
-  DSA-04 / F2).
+- **SAS construction.** Confirm the §5.2 **SAS input (the two ordered bundles)** and the **`K_pair` `info`
+  (the two ordered `x25519Pub`)** are **byte-for-byte identical across both roles** to the spike code
+  (`Crypto.sasOverBundles` / `Crypto.deriveKpairPq`); confirm the digit/symbol rendering + modulo reduction
+  bias; ratify the ≥ 19.93-bit floor and the `2⁻ᵇⁱᵗˢ` bound.
+- **SAS grinding-resistance / commitment property — ADDRESSED (ratify at B1).** Commit-before-reveal is now
+  **implemented** (§5.1/§5.2 COMMIT round) and hardware-validated, so the clean one-guess `2⁻¹⁹·⁹³` bound
+  holds (a wormhole must commit its substitution before learning the peer's). B1 should **ratify** the
+  construction: commitment hiding/binding, and that every abort path (commit mismatch, kc mismatch, race,
+  disconnect) leaves no usable contact.
+- **Pairing key-agreement integrity (ct).** The ML-KEM ciphertext's integrity is established by the **key-
+  confirmation step** (kc HMAC over `K_pair`, §5.2 step 5) — a tampered ct ⇒ divergent `K_pair` ⇒ kc mismatch
+  ⇒ ABORT. B1 should ratify that this is sufficient (it replaces the prior "ct-in-the-SAS" claim). **Add
+  "pairing key-agreement integrity" to P5 §10** (red-team DSA-04 / F2).
 
 **Residual limits (disclosed, behind B1):**
 

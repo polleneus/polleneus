@@ -137,6 +137,47 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   sustained + **worst-case** load, SE/TEE write-endurance) on a named low-end Android. Thresholds are
   **TBD-pending the P0 field-airtime anchor (B2)** — a gate can't pass against a TBD. **Owed:** the run on
   real hardware (the simulator cannot measure handset crypto/battery).
+- **FS construction DECIDED (target); v1 ships FS DEFERRED (ratified 2026-06-30, FS decision memo).** The
+  forward-secrecy *primitive* is settled by the invariants: **CHK03-shape forward-secure PKE on the classical
+  X25519 leg** of X-Wing (BBG-HIBE/BTE), **ML-KEM-768 static**, default **1-hour sub-epochs (ℓ=8)**, crypto-erase
+  driven by the FJB monotonic boot-clock. **Guaranteed FS window ≥ TTL.** Honesty guard: classical FS and PQ
+  confidentiality defend **disjoint** adversaries — never claim "post-quantum *and* forward-secret" against a
+  quantum-capable seizing adversary in v1; **PQ-FS DEFERRED** (no standardized mobile PQ-FS-PKE exists). Per-message
+  BFE/puncture **rejected** for v1 (MB–GB keys / O(n) decrypt). **Two real gates before FS-on ships:** (i) **this B4
+  benchmark** — per-blob *pairing decrypt* in the trial-decrypt hot path on a named low-end phone (the dominant open
+  cost; 2014-SoC proxies are not authoritative), plus StrongBox erase/endurance + 1.8 KB byte-uniform fit at ℓ=8;
+  and (ii) a **B1 audit of the research-grade pairing dependency** (`libforwardsec`/RELIC-class, ~unmaintained — the
+  practical blocker, more than the crypto math). **Honest interim (now):** ship **static recipient key + FS DEFERRED,
+  disclosed in-app**; **no FS theatre** (a retained static decap key with a side-derived `k_e` gives *zero* FS). The
+  current spike crypto is verified clean of FS theatre (static-key X-Wing seal, no epoch key-derivation). Design doc
+  reconciled v0.7 (§4/§5.2/threat-table); the prior "FS by default" headline was an overclaim and is retracted.
+- **FS COMPUTE sub-result — MEASURED on low-end hardware (2026-06-30). De-risks the compute concern; does NOT
+  clear B4.** The doubt that drove the deferral was the per-blob **pairing-decrypt** cost (all prior numbers were a
+  2014-Snapdragon-801 *proxy*: ~55 ms). Measured directly on a **SD-695-class low-end Android** (Cortex-A78 prime +
+  A55 littles), using **mcl** BLS12-381 on the **generic-C path (no arm64 assembly → conservative)**, a faithful
+  BBG-HIBE decrypt proxy (BBG decrypt = **2 Miller loops + 1 *shared* final-exponentiation** — a product-of-pairings,
+  hence *cheaper* than 2 standalone pairings; depth-independent, BBG's headline property):
+  **big core ≈ 1.65 ms (p99 1.72), little core ≈ 9.2 ms (p99 12.9)** for the proxy; a standalone pairing ≈ 1.1 / 6.3 ms;
+  G2 mul ≈ 0.23 / 1.25 ms (KeyUpdate is a handful of muls, once/hour → trivial). Full per-blob decrypt adds the
+  X-Wing X25519 op + ML-KEM-768 decap + KDF/DEM + serialization on top of this dominant cost. **Even worst-case
+  (slowest core, no asm) this is well inside any plausible interactive-latency target — the formal B4 threshold is
+  still TBD-pending the B2 field-airtime anchor.** Sizes (derived from BBG's 3-element ct): FS-leg ct ≈ ~150 B +
+  ML-KEM-768 ct 1088 B ≈ ~1.2 KB → **fits the assumed ~1.8 KB X-Wing hybrid envelope** (the PQ ct alone is 1088 B,
+  so the hybrid PDU is necessarily larger than the classical-only ~1 KB; exact envelope = a pending hybrid-size
+  decision); sk O(ℓ) ≈ ~1 KB at ℓ=8 → fits StrongBox.
+  **Dependency posture improved:** the feared `libforwardsec` is dead (won't build on a 2026 toolchain), but **mcl**
+  (BSD-3, actively maintained) and **jedi-pairing** (BSD-3, self-contained, hand-written AArch64 asm) are healthy
+  foundations — a far smaller B1 surface than "research-grade unmaintained." Prior art (read 2026-06-30): **FoSAM**
+  (arXiv 2603.12871, KIT) — forward-secret receiver-public-key-only *anonymous* ad-hoc messaging w/ an Android
+  prototype — independently corroborates this approach (its Pixel-6 full-scheme decrypt of **6.70 ms** sits inside
+  our measured bracket) and motivates an **anonymous/key-private HIBE** (sealed-sender needs ciphertext-key
+  unlinkability — plain BBG is not anonymous; FoSAM uses Blazy-MDDH); polleneus's X-Wing adds the **PQ leg FoSAM lacks**.
+  **STILL OPEN before B4 clears / FS-on ships:** (i) a **full BBG-HIBE + CHK time-tree** impl (the proxy measures the
+  dominant cost, not the scheme), (ii) **StrongBox crypto-erase latency + flash endurance** for hourly key-erase —
+  *the deletion mechanism FS actually rests on, still unmeasured*, (iii) the **boot-reset clock gap** (P5 §10.1,
+  unsolved), (iv) the **B1 pairing-dependency audit**. **FS stays DEFERRED** until these clear; the static-key interim
+  + in-app disclosure stands. (Bench: native arm64 binary via NDK r27d clang → `adb push` to `/data/local/tmp`;
+  N=300/op, CLOCK_MONOTONIC; tool + raw logs local in `spike/`.)
 - **Anti-flood rate-limit EFFICACY residual (added 2026-06-29, AF-2 + AF-3 + AF-6) · MEASURED-IN-SIM —
   resolves the [p2-token-source-spec §4](specs/2026-06-27-p2-token-source-spec.md) "carried to
   release-blockers" forward-reference, which previously had no matching entry:**

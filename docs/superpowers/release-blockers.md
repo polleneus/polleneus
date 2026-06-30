@@ -139,7 +139,9 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   real hardware (the simulator cannot measure handset crypto/battery).
 - **FS construction DECIDED (target); v1 ships FS DEFERRED (ratified 2026-06-30, FS decision memo).** The
   forward-secrecy *primitive* is settled by the invariants: **CHK03-shape forward-secure PKE on the classical
-  X25519 leg** of X-Wing (BBG-HIBE/BTE), **ML-KEM-768 static**, default **1-hour sub-epochs (ℓ=8)**, crypto-erase
+  X25519 leg** of X-Wing (an **anonymous** HIBE — **BKP/SXDH**, superseding the earlier BBG pick; see
+  [fs-kem-spec](specs/2026-06-30-fs-kem-spec.md)), **ML-KEM-768 static**, **1-hour epochs** (tree depth ℓ sized to
+  the *address lifetime*, not the TTL), crypto-erase
   driven by the FJB monotonic boot-clock. **Guaranteed FS window ≥ TTL.** Honesty guard: classical FS and PQ
   confidentiality defend **disjoint** adversaries — never claim "post-quantum *and* forward-secret" against a
   quantum-capable seizing adversary in v1; **PQ-FS DEFERRED** (no standardized mobile PQ-FS-PKE exists). Per-message
@@ -161,10 +163,13 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   G2 mul ≈ 0.23 / 1.25 ms (KeyUpdate is a handful of muls, once/hour → trivial). Full per-blob decrypt adds the
   X-Wing X25519 op + ML-KEM-768 decap + KDF/DEM + serialization on top of this dominant cost. **Even worst-case
   (slowest core, no asm) this is well inside any plausible interactive-latency target — the formal B4 threshold is
-  still TBD-pending the B2 field-airtime anchor.** Sizes (derived from BBG's 3-element ct): FS-leg ct ≈ ~150 B +
-  ML-KEM-768 ct 1088 B ≈ ~1.2 KB → **fits the assumed ~1.8 KB X-Wing hybrid envelope** (the PQ ct alone is 1088 B,
-  so the hybrid PDU is necessarily larger than the classical-only ~1 KB; exact envelope = a pending hybrid-size
-  decision); sk O(ℓ) ≈ ~1 KB at ℓ=8 → fits StrongBox.
+  still TBD-pending the B2 field-airtime anchor.** Sizes — **earlier BBG-based estimate, now KNOWN-STALE for BKP and
+  to be RE-DERIVED** (fs-kem-spec §3/§8.3b/§10): BBG's constant 3-element ct (~150 B) was the basis, but **BKP ct is
+  all-G1 and grows with depth ℓ**, and **byte-uniformity needs an ~2× Elligator-class encoding** (BLS12-381 G1 is
+  not byte-uniform) — so the FS-leg ct is larger and the **~1.8 KB hybrid-envelope fit is no longer assured**
+  (ML-KEM ct alone is 1088 B; classical-only PDU was ~1 KB; envelope = a pending decision). sk = O(ℓ) node keys at
+  the *address-lifetime* ℓ (not ℓ=8) → KB-scale, expected to fit StrongBox. **All FS sizes are an M-FS1 measurement,
+  not settled.**
   **Dependency posture improved:** the feared `libforwardsec` is dead (won't build on a 2026 toolchain), but **mcl**
   (BSD-3, actively maintained) and **jedi-pairing** (BSD-3, self-contained, hand-written AArch64 asm) are healthy
   foundations — a far smaller B1 surface than "research-grade unmaintained." Prior art (read 2026-06-30): **FoSAM**
@@ -172,7 +177,7 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   prototype — independently corroborates this approach (its Pixel-6 full-scheme decrypt of **6.70 ms** sits inside
   our measured bracket) and motivates an **anonymous/key-private HIBE** (sealed-sender needs ciphertext-key
   unlinkability — plain BBG is not anonymous; FoSAM uses Blazy-MDDH); polleneus's X-Wing adds the **PQ leg FoSAM lacks**.
-  **STILL OPEN before B4 clears / FS-on ships:** (i) a **full BBG-HIBE + CHK time-tree** impl (the proxy measures the
+  **STILL OPEN before B4 clears / FS-on ships:** (i) a **full anonymous-HIBE (BKP) + CHK time-tree** impl (the proxy measures the
   dominant cost, not the scheme), (ii) **StrongBox crypto-erase latency + flash endurance** for hourly key-erase —
   *the deletion mechanism FS actually rests on, still unmeasured*, (iii) the **boot-reset clock gap** (P5 §10.1,
   unsolved), (iv) the **B1 pairing-dependency audit**. **FS stays DEFERRED** until these clear; the static-key interim

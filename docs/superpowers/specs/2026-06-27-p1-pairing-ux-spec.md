@@ -332,12 +332,16 @@ hardware-and-crypto-conditional** guarantee (P5 §3).
   indicator; `Key-changed!` quarantines (never silently drops or accepts).
 - The SAS is specified as a **quantified parameter** (§5.1): canonical **6 decimal digits ≈ 19.93 bits**,
   active-MITM bound **≈ 2⁻¹⁹·⁹³ ≈ 1-in-10⁶ per ceremony**, floor **≥ ~20 bits**; any alt (emoji/word) form
-  is **entropy-matched** to that floor (or dropped). The SAS hashes the **complete** transcript (§5.2).
-- The pairing **transcript** (§5.2) binds **both identity bundles + the ML-KEM ciphertext** under a
-  canonical **lower/higher x25519 ordering** used **identically** for `K_pair` and the SAS; the layout is
-  byte-for-byte the spike's `K_pair` input.
+  is **entropy-matched** to that floor (or dropped). The SAS hashes the **two ordered identity bundles only**
+  (§5.2); the ML-KEM ciphertext is **not** in the SAS.
+- The **SAS binds the two ordered bundles only** under a canonical **lower/higher x25519Pub ordering**; the
+  **ML-KEM ciphertext's integrity is the key-confirmation (KC) step** (a tampered ct ⇒ divergent `K_pair` ⇒ kc
+  mismatch ⇒ ABORT), and `K_pair`'s HKDF `info` = the **ordered X25519 keys** — all byte-for-byte the spike
+  code (§5.2). **Grinding is blocked by commit-before-reveal** (§5.1).
 - A **scanned-but-no-`K_pair`** contact renders as a distinct **`Cannot authenticate`** state (not
-  `Unverified`, not trusted), and the **verified-send UI is gated on `K_pair` presence** (§5.4).
+  `Unverified`, not trusted). **Send is gated on the durable, in-service human-verified flag (H1):** a contact
+  persists **PENDING** on key-confirmation and is **not sendable** until the human SAS-match (§5.3/§5.4) —
+  `K_pair` presence alone does **not** authorize a send.
 - **Re-pair is idempotent (replace, never duplicate); a detected race / divergent SAS commits nothing on
   either side** (§5.3).
 - A **failed sender-MAC on a flooded blob never raises `Key-changed!`**; `Key-changed!` / needs-re-verify

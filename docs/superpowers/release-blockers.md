@@ -178,6 +178,14 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   unsolved), (iv) the **B1 pairing-dependency audit**. **FS stays DEFERRED** until these clear; the static-key interim
   + in-app disclosure stands. (Bench: native arm64 binary via NDK r27d clang → `adb push` to `/data/local/tmp`;
   N=300/op, CLOCK_MONOTONIC; tool + raw logs local in `spike/`.)
+- **FS construction now SPECCED (2026-06-30) — [fs-kem-spec.md](specs/2026-06-30-fs-kem-spec.md), DRAFT/UNAUDITED.**
+  After a source-cited research stop, the anonymous-HIBE pick is **Blazy–Kiltz–Pan (BKP, SXDH) HIBE + CHK binary
+  time-tree on mcl** — *not* BBG: sealed-sender trial-decrypt **requires key-privacy**, BKP ciphertexts are
+  pseudorandom (PR-ID-CPA, anonymity proven under MDDH/SXDH) and BBG is not anonymous. Validated by **FoSAM** (the
+  same construction, Android prototype). The spec carries the build plan (M-FS1…4) + the B1 list: replicate FoSAM's
+  cross-instance key-privacy proof, **new BKP-on-mcl code is the top audit surface**, constant-time trial-decap +
+  uniform all-G1 serialization, and **StrongBox crypto-erase latency/endurance (still UNMEASURED — next on-device
+  task)**. FS-on still gated on M-FS1…4 + B1; **stays DEFERRED**.
 - **Anti-flood rate-limit EFFICACY residual (added 2026-06-29, AF-2 + AF-3 + AF-6) · MEASURED-IN-SIM —
   resolves the [p2-token-source-spec §4](specs/2026-06-27-p2-token-source-spec.md) "carried to
   release-blockers" forward-reference, which previously had no matching entry:**

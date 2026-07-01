@@ -203,8 +203,21 @@ behind the §9.5 non-ZK fail-closed quota — not a v1 blocker.)
   verification):** in our model `dk` is recipient-PRIVATE (only mpk/G1 public) → the HIBKEM linking test has no G2
   leg and every passive distinguisher collapses to DDH-in-G1 ⇒ **plausibly avoids the research-grade AHIBKEM**, but
   **DEFERRED-pending an SXDH key-privacy proof + a "only public G2 is P2" invariant**. 2 pre-audit bugs found+fixed
-  (reject zero-id; Delegate `p<L` guard). STILL OPEN: M-FS2 (CHK tree + `mulCT` + byte-uniform encoding), M-FS3
-  (StrongBox erase), the key-privacy proof, boot-reset gap, B1.
+  (reject zero-id; Delegate `p<L` guard).
+- **M-FS2 DONE-with-caveats (2026-07-01) — CHK forward-secure time-tree + pairing-free Encap + a best-effort
+  masking port, built on the M-FS1 BKP core and measured on the Tab A9+.** **Forward secrecy PROVEN** by an
+  exhaustive 64-leaf sweep (aged-out epochs un-decryptable *and* structurally unreachable from frontier+`dk`,
+  holding **after `msk` erasure**); epoch←`creation_ts`, TTL window, anonymity linking-test control all PASS.
+  **Decap unchanged at 2.16 / 12.2 ms** (the `mulCT` port did not touch the hot path). **In-loop adversarial
+  review forced two honesty retractions before merge:** (a) **"constant-time" → best-effort masking** — mcl's
+  `mulCT` is NOT constant-time (`ec.hpp:1263` "// not const time"; length-dependent loop + secret table index);
+  **true CT DEFERRED** to a hardened ladder + dudect; (b) a tree-walk RAM-residue leak of past-reaching keys —
+  **fixed** (transients now wiped), but real irreversible erasure is still **M-FS3**. **Byte-uniform encoding —
+  DECIDED (Research Stop #4: Elligator-Squared over the full curve + full-cofactor handling) but DEFERRED**: ct
+  grows to **~397–512 B** (not 384; the earlier ≈1.47 KB is understated → **~1.49–1.60 KB < 1.8 KB**), decode is
+  on the hot path (+40–45% MODEL-est, **UNMEASURED**), and uniformity needs a novel proof — 3 gates before it
+  holds. STILL OPEN: the byte-uniform encoding spike, true constant-time, M-FS3 (StrongBox erase), the key-privacy
+  proof, boot-reset gap, B1.
 - **Anti-flood rate-limit EFFICACY residual (added 2026-06-29, AF-2 + AF-3 + AF-6) · MEASURED-IN-SIM —
   resolves the [p2-token-source-spec §4](specs/2026-06-27-p2-token-source-spec.md) "carried to
   release-blockers" forward-reference, which previously had no matching entry:**

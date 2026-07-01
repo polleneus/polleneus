@@ -54,7 +54,9 @@ hardest gate and gates every other "ship" decision.
     external intent extras (the deliberate adb `--es` test interface). The client must NOT accept externally
     supplied control extras — make the activity non-exported except for LAUNCHER (or gate to self/signature
     intents); never rely on `service exported=false` behind an exported proxy. (The unbounded `handleInject`
-    alloc is being bounded by `MAX_BLOB` now.)
+    alloc is being bounded by `MAX_BLOB` now.) *Scope note (2026-07-01):* the forwarded `pair` extra now also
+    drives the scan duty cycler — a co-located app can force continuous screen-off scanning or burn
+    scan-budget cycles (bounded local DoS) via the same proxy; covered by the same strip requirement.
   - [ ] **Fixed deterministic recipient key (H3):** the world-known `RECIPIENT_SEED` test scaffold + any
     default-recipient send path must be **removed**; no-contact send must **fail closed** (being removed now).
   - [ ] **Sensitive logging (H7):** the spike logs decrypted plaintext, SAS, pairing tokens, contact IDs by
@@ -114,6 +116,13 @@ No unqualified "anonymous" claim. The honest, evidence-backed posture (reframed 
   copy must say so.
 - **Existence of mesh traffic is detectable** — running the app is a membership signal in the most
   repressive settings (unavoidable for any radio protocol); blend toward ordinary BLE.
+- **Scan-cadence side channel (added 2026-07-01, transport duty-cycle review finding D1):** the
+  screen-state-aware scan duty cycler ([duty-cycle doc](specs/2026-07-01-background-discovery-duty-cycle.md) §5)
+  makes a node's ACTIVE scanning pattern (SCAN_REQ emissions: continuous when the screen is on,
+  10s/50–60s windows when pocketed) observable to a passive BLE sniffer — leaking screen state /
+  user presence and giving a bounded authorship hint when a screen-on transition correlates with a
+  new flooded message. Must be reflected in the honest posture copy; a screen-decoupled cadence is a
+  possible future mitigation (latency/battery cost).
 - **Reframe note (CTO decision 2026-06-28):** originator-anonymity is **not** a release blocker we must
   *engineer away* — it is a **bounded property we must honestly disclose.** B3 is cleared by truthful
   copy, not by achieving sender-unlinkability (which is impossible for a flood). The crypto research into
@@ -275,3 +284,8 @@ airtime + anonymity gates kept green as the model evolves.
   residual** (under B4, AF-2 + AF-3 + AF-6) — resolving the dangling `p2-token-source-spec` "carried to
   release-blockers" forward-reference — and a **B1 anti-flood transport audit item** on the §9.5 quota
   `Q` enforceability under commodity-BLE RPA rotation (AF-3). No release blocker cleared.
+- 2026-07-01 — **transport: background-discovery duty cycler built + validated** (the mission test's
+  "both-screens-off fresh discovery" failure now passes on hardware; see
+  [the duty-cycle doc](specs/2026-07-01-background-discovery-duty-cycle.md)). Added the **B3
+  scan-cadence side-channel** disclosure (review finding D1) and the **C1 scope note** (duty-cycler
+  control via the exported test proxy). No release blocker cleared.

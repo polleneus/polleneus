@@ -1,8 +1,11 @@
 # P5-FS — Forward-Secure KEM construction spec (BKP-HIBE + CHK time-tree on X-Wing)
 
-**Status:** DRAFT · **UNAUDITED** · spec + **M-FS1 built/measured** · **2026-06-30 (rev 2026-07-01: M-FS1)**
-**Feature posture:** **DEFERRED in v1** — the *construction* is now implemented + KAT-correct + benchmarked (M-FS1,
-§7/§9); FS still ships nothing in v1. Gated on B4 (cost — *full BKP scheme measured + KAT-correct*) and B1 (audit). Extends
+**Status:** DRAFT · **UNAUDITED** · spec + **M-FS1 + M-FS2 built/measured** · **2026-06-30 (rev 2026-07-01: M-FS2)**
+**Feature posture:** **DEFERRED in v1** — construction implemented + KAT-correct + benchmarked (M-FS1); CHK
+forward-secure time-tree built + FS proven by exhaustive sweep + pairing-free Encap (M-FS2, §7/§9); FS still ships
+nothing in v1. **Two M-FS2 honesty retractions (in-loop adversarial review, §8):** (a) the "constant-time" port is
+**best-effort masking only — mcl's `mulCT` is NOT constant-time**; true CT DEFERRED; (b) byte-uniform wire encoding
+is **DECIDED but DEFERRED** (own bounded spike + 3 gates, §8.3b). Gated on B4 (cost) and B1 (audit). Extends
 [p5-key-management-spec.md](2026-06-28-p5-key-management-spec.md) §2/§6 and the FS decision (release-blockers B4;
 parent design §5.2). Evidence base: measured B4 primitive benchmark (2026-06-30), the FS decision memo, and a
 multi-agent source-cited research stop (anonymous-HIBE selection + FoSAM corroboration).
@@ -126,12 +129,32 @@ SD-695-class low-end phone (mcl generic-C, **no asm**), big / little core, depth
 | usk-core | 384 B (4 G2) | — | + O(ℓ) G2 delegation state on-device |
 
 **Honesty:** the **Decap headline is exact** — its hot path has no secret-scalar mul (only `millerLoopVec`+`finalExp`+
-negation), so it is byte-for-byte identical in a constant-time build. **Encap/KeyGen/Delegate use non-CT
-`G1::mul`/`G2::mul` over secret scalars → those three are slightly *optimistic lower bounds* vs a hardened (`mulCT`)
-build.** **Size budget re-derived for BKP:** ct 192 B + ML-KEM-768 1088 B ≈ **1.28 KB** < 1.8 KB; with a ~2×
-byte-uniform encoding on the 192 B G1 part → ~1.47 KB, still fits. Binding constraint = **Decap × inbound-flood
-rate** (one decap per new blob, seen-set-gated) → fine within a ~10 s mesh cycle. Formal B4 pass threshold still
-TBD-pending the B2 field-airtime anchor.
+negation). The M-FS1 Encap/KeyGen/Delegate numbers here used non-CT `G1::mul`/`G2::mul` and were *optimistic lower
+bounds*; **M-FS2 (§7.1) re-measured them through `mulCT`** — the honest (if still not truly constant-time, §8.3)
+figures. **Size budget:** ct 192 B + ML-KEM-768 1088 B ≈ **1.28 KB** < 1.8 KB *before* wire-uniformity; the earlier
+"~2× → ~1.47 KB" was **understated** — the M-FS2 encoding research (§8.3b) puts the byte-uniform ct at **~397–512 B**
+(not 384 B) → total **~1.49–1.60 KB**, still < 1.8 KB but with ~200–300 B headroom. Binding constraint = **Decap ×
+inbound-flood rate** (one decap per new blob, seen-set-gated) → fine within a ~10 s mesh cycle; the (deferred) decode
+step adds an estimated +40–45% to that (UNMEASURED, §8.3b). Formal B4 pass threshold still TBD-pending the B2
+field-airtime anchor.
+
+## 7.1 Cost — MEASURED (M-FS2, CHK tree + `mulCT`-masked + pairing-free; 2026-07-01)
+Same Tab A9+ (SM-X210, SD-695-class, generic-C, no asm), L=15, N=200, big / little (cpu0-pinned, worst) core.
+**All tests PASS (0 failures):** M-FS1 KATs + `EncapPF==Decap` + **forward-secrecy exhaustive 64-leaf sweep (484
+checks)** + TTL-window/rollover + epoch←`creation_ts` + the anonymity linking-test-needs-dk control.
+
+| op | big core | little core (worst) | note |
+|---|---|---|---|
+| **Decap — TRIAL-DECRYPT HOT PATH** | **2.16 ms (p99 2.2)** | **12.2 ms (p99 14.5)** | unchanged from M-FS1 (no secret mul) → confirms the `mulCT` port did not touch the hot path |
+| Encap* (pairing-based, default) | 5.50 ms | 32.8 ms | `mulCT`-masked (was 5.29 non-CT) |
+| Encap-PF (pairing-free `gtBase^r`) | 4.58 ms | 27.3 ms | −17%, but GT-pow over secret `r` is NOT CT → not the default |
+| KeyGen* | 1.31 ms | 7.54 ms | `mulCT`-masked (was 0.91 non-CT) |
+| Delegate* | 8.69 ms | 50.2 ms | `mulCT`-masked; per CHK epoch advance |
+| CHK `advance` (per epoch tick) | ~2.8 ms amortized | ~16.8 ms amortized | background/hourly; ~0 when the next leaf is already a materialized right-sibling, bounded worst case ≈ 2L delegations on a carry-ripple epoch |
+
+**`*` = best-effort masked via mcl `mulCT`, NOT constant-time (§8.3).** Pairing-free Encap is faster but trades a
+CT gap (GT-pow); since Encap runs once per *send* (not per relay), the masked pairing-based Encap stays the default.
+Code: `spike`/`fs/fs_chk.cpp`.
 
 ## 8. Security obligations & implementation hazards (→ B1 audit list)
 1. **Key-privacy / pseudorandom-ct proof under SXDH (the core gap — gates "anonymous without AHIBKEM").** Prove
@@ -146,19 +169,48 @@ TBD-pending the B2 field-airtime anchor.
    HIBE *and* the pseudorandomness anonymity rests on). The single biggest B1 surface. (FoSAM's Rust code is
    unreleased / not mcl.) Spec-fidelity was adversarially traced (decap telescopes to `r·z0`; delegation correct
    at all depths); KATs are ground truth — but a formal audit is still owed.
-3. **Constant-time:** the M-FS1 code uses non-CT `G1::mul`/`G2::mul` for secret scalars (`a,b,x_i,Y_i,r,s,s'`) —
-   port to `mclBnG1_mulCT`/`mclBnG2_mulCT` for production (Encap/KeyGen/Delegate). **Decap's hot path has no
-   secret-scalar mul → already CT-safe** (verified). Keep the trial-decap failure (AEAD tag check) const-time.
-3b. **Byte-uniformity of the FS leg — OPEN (flagged, NOT solved).** PR-ID-CPA gives pseudorandom-*as-a-group-element*,
-   which is **not** uniform-random-*bytes-on-the-wire* (invariant #1). A compressed BLS12-381 **G1 point is NOT
-   byte-uniform** — fixed flag bits, only ~½ of x-values valid — so it is distinguishable from random 48-byte
-   strings *even with zero encoding bias*, and **BLS12-381 G1 has no clean Elligator**. Wire-uniformity for the
-   all-G1 FS-leg ct needs an **Elligator-squared-class encoding at ~2× expansion** — a real ct-size cost. **Until
-   that is designed, byte-uniformity of the FS leg is OPEN/DEFERRED (do not assert it holds)**; the ~2× expansion
-   must be booked into the (to-be-re-derived) BKP ct-size budget.
+3. **Constant-time — PARTIALLY DONE + a RETRACTION (M-FS2 review finding F2).** M-FS2 ported the secret-scalar
+   sites (Setup/KeyGen/Encap-`r`/Delegate-`sp`) to mcl's `mulCT`. **But mcl's `mulCT` is NOT constant-time** —
+   verified against the pinned source: `ec.hpp:1263` literally reads `// not const time`, and its `mulGLV_CT` has
+   (a) a scalar-length-dependent loop count (`getBitSize`), (b) a secret 4-bit window digit used as a **direct
+   table index** (cache-timing / FLUSH+RELOAD leak) with a `v==0` identity branch, and (c) per-limb sign branches.
+   So the port is **best-effort masking, not full CT** — do NOT claim constant-time. **TRUE CT (a fixed-window
+   ladder + a linear/constant-time table scan + a dudect timing-variance test in the harness) is DEFERRED to B1.**
+   `Decap`'s hot path has no secret-scalar mul (pairing is fixed-flow) → the CT-strongest op, but full Decap CT
+   still owes a B1 timing check. Keep the trial-decap failure (AEAD tag check) const-time.
+   **EncapPF caveat:** the pairing-free Encap's `gtBase^r` uses mcl's GT-pow over the secret `r`, which is likewise
+   not CT (no masked variant) → the masked pairing-based Encap is the default.
+3b. **Byte-uniformity of the FS leg — DECIDED but still OPEN/DEFERRED (Research Stop #4, 2026-07-01).** PR-ID-CPA
+   gives pseudorandom-*as-a-group-element*, which is **not** uniform-random-*bytes-on-the-wire* (invariant #1): a
+   compressed BLS12-381 **G1 point is NOT byte-uniform** (fixed flag bits, x < p, only ~½ of x-values on-curve →
+   a passive observer distinguishes it from random 48-byte strings with a range-check + one Legendre symbol). The
+   M-FS2 code's `ANON compressed-wire non-uniform` self-test **confirms this on-device** (a fixed `0x60` mask in
+   the top byte). BLS12-381 G1 has **no clean Elligator** (odd order → no Elligator 1/2, no Ristretto/Decaf).
+   - **DECIDED approach:** **Elligator-Squared-class encoding over the FULL curve E(Fp) + mandatory cofactor
+     handling** (SW / SwiftEC map): encode randomizes P into a full-curve `Q = P + T` with `T` uniform over the
+     **entire** cofactor group, represents `Q` as a field-element pair, and de-biases to uniform bytes; decode
+     re-maps and re-enters G1 (project/clear, or the UNVERIFIED "pairing-absorbs-cofactor" shortcut).
+   - **Load-bearing correction:** the tempting "E(Fp) is cyclic → blind with one h-torsion generator" is **WRONG**
+     — the G1 cofactor group is **non-cyclic** (h_eff=(1-z) is 64-bit ≪ the 126-bit h1), so one generator covers
+     ~2⁻⁶² → a passive distinguisher. Randomization must sample the **full cofactor group**.
+   - **Cost/size (corrected):** expansion is **~397–512 B** for the 4-point ct (not the earlier 384 B) → total
+     w/ ML-KEM-768 **~1.49–1.60 KB < 1.8 KB** (thinner headroom). **Decode runs on the trial-decrypt hot path**;
+     estimated **+40–45%** on Decap (cheap cofactor-clear) up to a **1×–3× slowdown** (full projection) — **all
+     MODEL-DERIVED, UNMEASURED.**
+   - **Stays OPEN/DEFERRED until 3 gates close:** (1) a **novel uniformity proof** (PR-ID-CPA ∘ full-cofactor
+     randomization; cofactor structure computed); (2) **measured** decode hot-path cost on the low-end target;
+     (3) **B1 audit** of the new encode/decode + mandatory subgroup validation on decode. **Do NOT assert the
+     FS-leg wire is byte-uniform** in any spec/UX text until these close. Separable interim win (take anytime):
+     **Elligator2 on the X-Wing X25519 leg** (cheap, deployed by Tor/obfs4) makes the classical half uniform.
+   - Full evidence + sources + the rejected-approach table: local `spike/research-stop-4-byteuniform-memo.md`.
 4. **Erasure is the thing FS rests on** — must be **StrongBox wrapping-key crypto-erase**, not file deletion;
-   **measure erase latency + flash endurance** (still UNMEASURED — the next on-device task). If erasure isn't
+   **measure erase latency + flash endurance** (still UNMEASURED — the M-FS3 on-device task). If erasure isn't
    irreversible on the target TEE/flash, the FS claim is theatre even classically.
+   **M-FS2 review finding F1 (fixed):** the CHK `advance` tree-walk left un-erased value-copies of *past-reaching*
+   internal-node keys in freed RAM (with the retained `dk`, a RAM-image attacker could reopen whole past ranges) —
+   `advance`/`Delegate` now `eraseUSK`/`clear` every transient. **But this is best-effort in-mem hygiene only:**
+   live plaintext USK still exists in RAM during compute and mcl `clear()` is **elidable** (not `explicit_bzero`).
+   The real, irreversible erasure guarantee remains **M-FS3 (StrongBox)** + a secure-erase primitive — a B1 item.
 5. **mcl audit caveats** (Quarkslab/EF): library is audited but flagged reliability issues to fix before
    production; pin a reviewed version; verify `hashAndMapTo` DST (draft-06/07/EIP-2537, not final RFC 9380).
 6. **Type-3 discipline:** ct∈G1 / keys∈G2 exact; validate peer points (subgroup/low-order); FIPS-203 checks on
@@ -172,9 +224,16 @@ TBD-pending the B2 field-airtime anchor.
 1. **M-FS1 — DONE (2026-07-01).** BKP HIBKEM Setup/KeyGen/Encap/Decap/Delegate on mcl + KATs (all pass); real
    scheme benchmarked on the low-end phone (§7); construction derived + adversarially verified; 2 pre-audit bugs
    fixed; private-`dk` anonymity established (pending the §2.1/§8.1 proof). Code: `spike`/`fsbench/bkp_hibe.cpp`.
-2. **M-FS2 (next):** CHK binary time-tree (epoch from `creation_ts`, smooth Δt/2 rollover, node erase) +
-   **constant-time `mulCT` port** + **byte-uniform wire encoding** (Elligator-class, §8.3b) + a pairing-free Encap
-   (precomputed `e(P1,P2)`); property tests incl. an anonymity self-test (ct indistinguishable across keys).
+2. **M-FS2 — DONE-with-caveats (2026-07-01).** Built the **CHK binary time-tree** (epoch←`creation_ts`,
+   suffix-cover frontier for forward-only derivation, TTL-deep readable window subsuming Δt/2 rollover, per-advance
+   node erase) + **pairing-free Encap** + a **best-effort `mulCT` masking port** + property tests. **Forward
+   secrecy PROVEN by an exhaustive 64-leaf sweep** (aged-out epochs un-decryptable *and* structurally unreachable
+   from frontier+`dk`, holding **after `msk` erasure**); measured on the Tab A9+ (§7.1). Anonymity linking-test
+   control passes. Code: `spike`/`fs/fs_chk.cpp`. **In-loop adversarial review (§8) forced two honesty
+   corrections before merge:** F1 — the tree-walk left un-erased past-reaching key copies in RAM (**fixed**);
+   F2 — mcl `mulCT` is **not** constant-time so the "CT port" is **retracted to best-effort masking** (true CT
+   DEFERRED). **Byte-uniform wire encoding — DECIDED but DEFERRED** to its own bounded spike + 3 gates (§8.3b),
+   NOT shipped in M-FS2. Review record: local `spike/fs-chk-verification.md`.
 3. **M-FS3:** StrongBox key-wrapping + crypto-erase; **measure erase latency + endurance** (closes the last B4
    on-device unknown).
 4. **M-FS4:** X-Wing integration (FS classical leg + static ML-KEM, committing AEAD w/ epoch-AAD) behind a flag;
@@ -182,12 +241,15 @@ TBD-pending the B2 field-airtime anchor.
 5. **Gate:** B1 audit of the BKP-on-mcl code + the key-privacy proof + erasure guarantee → only then FS-on ships.
 
 ## 10. Honest status line
-**M-FS1 DONE:** the BKP anonymous-HIBE FS-KEM is **implemented on mcl, KAT-correct, and benchmarked on real
-low-end hardware** — Decap **2.16 ms big / 12.2 ms little** (the trial-decrypt hot path), ciphertext **192 B
-constant**, corroborated by FoSAM; construction pinned by a derive+adversarially-verify workflow; 2 pre-audit bugs
-fixed. The size budget now **fits** (ct 192 B + ML-KEM ≈ 1.28 KB < 1.8 KB). FS is still **NOT shipped, NOT
-audited.** Remaining before FS-on: **M-FS2** (CHK time-tree + constant-time `mulCT` + byte-uniform wire encoding —
-still OPEN), **M-FS3** (StrongBox crypto-erase — the deletion FS rests on, still **unmeasured**), **M-FS4** (hybrid
-integration + CCA/committing wrapper), the **SXDH key-privacy proof + the "only public G2 is P2" invariant**
-(§2.1/§8.1), the **boot-reset gap** (§4), and **B1 audit**. v1 remains **static key + FS DEFERRED + in-app
-disclosure**.
+**M-FS1 + M-FS2 DONE (with caveats):** the BKP anonymous-HIBE FS-KEM is **implemented on mcl, KAT-correct, and
+benchmarked on real low-end hardware** (Decap **2.16 ms big / 12.2 ms little**, ct **192 B constant**, FoSAM-
+corroborated), and the **CHK forward-secure time-tree** is built on top with **forward secrecy proven by an
+exhaustive on-device sweep** + a pairing-free Encap (§7.1). **Two honest retractions from the in-loop review:**
+the "constant-time" port is **best-effort masking only** (mcl `mulCT` is not CT — true CT DEFERRED), and
+**byte-uniform wire encoding is DECIDED but DEFERRED** (own bounded spike + 3 gates; ct grows to ~397–512 B →
+~1.49–1.60 KB < 1.8 KB). FS is still **NOT shipped, NOT audited.** Remaining before FS-on: **the byte-uniform
+encoding spike** (§8.3b — measure decode + prove uniformity), **true constant-time** (hardened ladder + dudect,
+§8.3), **M-FS3** (StrongBox crypto-erase — the deletion FS rests on, still **unmeasured**; M-FS2 added only
+best-effort in-mem wiping), **M-FS4** (hybrid integration + CCA/committing wrapper), the **SXDH key-privacy proof
++ the "only public G2 is P2" invariant** (§2.1/§8.1), the **boot-reset gap** (§4), and **B1 audit**. v1 remains
+**static key + FS DEFERRED + in-app disclosure**.

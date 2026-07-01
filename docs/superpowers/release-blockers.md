@@ -289,3 +289,9 @@ airtime + anonymity gates kept green as the model evolves.
   [the duty-cycle doc](specs/2026-07-01-background-discovery-duty-cycle.md)). Added the **B3
   scan-cadence side-channel** disclosure (review finding D1) and the **C1 scope note** (duty-cycler
   control via the exported test proxy). No release blocker cleared.
+- 2026-07-02 — **honesty correction to the above:** the duty-cycle validation proves **transport**
+  convergence (full-blob delivery ≤5–10s, all-dark, 2- and 3-node) — the test blobs used a forged-id
+  inject path and were correctly REJECTED at content-address validation after transfer, so
+  store-and-relay of a valid blob under the duty cycler is still owed
+  ([doc §4 correction note](specs/2026-07-01-background-discovery-duty-cycle.md)). Caught by
+  re-reading raw receiver logs the same night; wording corrected everywhere.

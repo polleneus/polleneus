@@ -62,9 +62,24 @@ hardest gate and gates every other "ship" decision.
   - [ ] **Sensitive logging (H7):** the spike logs decrypted plaintext, SAS, pairing tokens, contact IDs by
     design (the lab tests grep them). The client must **redact / DEBUG-gate** all of these — a logcat ring
     buffer of plaintext + SAS is real data-at-rest under the seizure threat model.
-  - [ ] **Raw key material at rest (H4):** spike `identity.dat` / `contacts.dat` store private keys + `K_auth`
-    **unwrapped** (app-sandboxed but not keystore-wrapped). The **SE/TEE/StrongBox wrapping required by P5 §2**
-    is owed at/before B1. (Spike caveat: keys are currently raw-at-rest — honest disclosure.)
+  - [~] **Raw key material at rest (H4) — BUILT + hardware-validated in the spike (2026-07-02); B1 items remain.**
+    `identity.dat` / `contacts.dat` are now **keystore-wrapped** (`spike/Vault.java`): one non-exportable
+    **AES-256-GCM** key in AndroidKeyStore — **StrongBox where available** (measured: S21U Knox Vault backs the
+    standard StrongBox API), **TEE fallback** (Tab A9+); no user-auth/unlocked-device gate (mesh must run
+    locked+screen-off). Envelope `PLV1` (GCM AAD = file role), legacy raw files auto-migrated on first load,
+    **panic wipe now deletes the wrap key first** (OS-side revoke; measured delete: S21U StrongBox ~11ms /
+    S21U TEE ~2ms / Tab TEE ~20ms) then overwrites. Validated on BOTH the StrongBox (S21U) and TEE (Tab)
+    paths, machine-asserted **ALL-PASS**: wrapped-at-rest (`PLV1` envelope magic — the definitive
+    ciphertext proof), unwrap-survives-restart, and a strong panic test (old envelope restored byte-for-byte
+    after panic **fails to unwrap** → the wrap key was truly revoked).
+    HONEST BOUNDARY (Research Stop #6, source-cited — `spike/research-stop-6-keystore-memo.md`): protects
+    powered-off / before-first-unlock / off-device-flash (ciphertext under FBE + device-bound KEK); does **NOT**
+    protect a booted device with app-UID/root code (can USE, not extract, the key); extraction resistance is
+    implementation/patch-dependent (Samsung CVE-2021-25444/-25490 precedent). **Still B1:** X25519/ML-KEM
+    identity keys are software-sealed (StrongBox can't hold them — no Curve25519/ML-KEM in KeyMint), so
+    "hardware-backed" describes the WRAP key only; the honest posture wording must say so. See also the M-FS3
+    crypto-erase residual (deleteEntry is not a guaranteed flash-erase; rooted restore-test owed) in
+    [fs-kem-spec §9/§10](specs/2026-06-30-fs-kem-spec.md).
   - [ ] **Pairing-trust gate (H1) + inbound-pairing consent (H2):** contact persistence + send must be gated on
     the **human SAS-match** (not key-confirmation alone), and inbound pairing must be **rejected when pair mode
     is off** (both being fixed in the spike now; carry the gate into the client spec as a build requirement).

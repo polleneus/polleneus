@@ -17,6 +17,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -88,7 +91,7 @@ fun PnButton(
         modifier
             .background(bg)
             .border(1.dp, border)
-            .clickable(onClick = onClick)
+            .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = if (sub == null) 14.dp else 11.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
@@ -155,7 +158,10 @@ fun Chevron(modifier: Modifier = Modifier, color: Color = Pn.InkGhost) {
 @Composable
 fun BackChevron(onClick: () -> Unit, modifier: Modifier = Modifier) {
     androidx.compose.foundation.Canvas(
-        modifier.size(16.dp).clickable(onClick = onClick),
+        modifier
+            .size(16.dp)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = "Back" },
     ) {
         val p = androidx.compose.ui.graphics.Path().apply {
             moveTo(size.width * 0.62f, size.height * 0.19f)

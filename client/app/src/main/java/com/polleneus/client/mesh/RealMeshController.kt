@@ -114,6 +114,14 @@ class RealMeshController(
             _meshState.value = MeshState.PAUSED
             return
         }
+        val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager).adapter
+        if (adapter == null || !adapter.isEnabled) {
+            // X5 degraded-signal guard: bluetooth off = no radio. PAUSED is honest (home
+            // names the reason from the real adapter state); resume retries once it's on.
+            Log.w("PN-CTRL", "transport not started — bluetooth is off")
+            _meshState.value = MeshState.PAUSED
+            return
+        }
         val t = MeshTransport(
             ctx, meshStore,
             onBlob = { idHex, wire -> onBlobReceived(idHex, wire) },

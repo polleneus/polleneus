@@ -28,8 +28,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
@@ -47,6 +54,7 @@ import com.polleneus.client.ui.components.StatusWord
 import com.polleneus.client.ui.components.TFoot
 import com.polleneus.client.ui.components.TLabel
 import com.polleneus.client.ui.components.blinkAlpha
+import com.polleneus.client.ui.theme.Archivo
 import com.polleneus.client.ui.theme.MartianMono
 import com.polleneus.client.ui.theme.Pn
 import java.time.Instant
@@ -92,7 +100,12 @@ fun HomeScreen(
             Spacer(Modifier.width(5.dp))
             Box(Modifier.size(width = 8.dp, height = 13.dp).alpha(blinkAlpha()).background(Pn.Accent))
             Spacer(Modifier.weight(1f))
-            SettingsGlyph(Modifier.clickable(onClick = onOpenSettings).padding(4.dp))
+            SettingsGlyph(
+                Modifier
+                    .clickable(role = Role.Button, onClick = onOpenSettings)
+                    .semantics { contentDescription = "Settings" }
+                    .padding(4.dp),
+            )
         }
 
         // ---- faceplate ----
@@ -176,6 +189,16 @@ fun HomeScreen(
                 KeyCode(if (key.isEmpty()) "— nothing stored —" else key,
                     color = if (key.isEmpty()) Pn.InkGhost else Pn.InkDim)
             }
+
+            // X5 — the honest context tile (review-05): alone and paused are states the
+            // instrument explains, never error-styles. Both read REAL device signals.
+            if (paused) {
+                HDivider()
+                PausedMeansTile(carrying)
+            } else if (nearby == 0) {
+                HDivider()
+                AloneTile()
+            }
         }
 
         Spacer(Modifier.height(12.dp))
@@ -184,7 +207,8 @@ fun HomeScreen(
         Row(
             Modifier.fillMaxWidth()
                 .border(1.dp, if (paused) Pn.Accent.copy(alpha = 0.45f) else Pn.Line)
-                .clickable { if (paused) controller.resume() else controller.pause() }
+                .clickable(role = Role.Switch) { if (paused) controller.resume() else controller.pause() }
+                .semantics { stateDescription = if (paused) "Mesh paused" else "Mesh active" }
                 .padding(horizontal = 14.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -235,6 +259,71 @@ fun HomeScreen(
             onComplete = onPanic,
         )
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+/** Zero-nearby is the app working, not failing (design system §5 / review-05 frame 1). */
+@Composable
+private fun AloneTile() {
+    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+        TLabel("Nothing nearby right now")
+        Spacer(Modifier.height(6.dp))
+        BasicText(
+            buildAnnotatedString {
+                append(
+                    "That's normal. Leave it running — it listens from your pocket and " +
+                        "joins in the moment another phone appears. ",
+                )
+                withStyle(SpanStyle(color = Pn.Ink, fontWeight = FontWeight.W600)) {
+                    append("To send your first message, pair with someone in person.")
+                }
+            },
+            style = TextStyle(
+                fontFamily = Archivo, fontSize = 13.sp, lineHeight = 21.sp, color = Pn.InkDim,
+            ),
+        )
+    }
+}
+
+/**
+ * Paused names its social cost and reads two REAL device signals: the battery level the
+ * pause is presumably saving, and whether bluetooth is even on (the mesh can't resume
+ * without it). No stealth claim anywhere — pausing stops the app's radio work; it does
+ * not make the phone unobservable (Q6 wording rule).
+ */
+@Composable
+private fun PausedMeansTile(carrying: Int) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val battery = remember {
+        (ctx.getSystemService(android.content.Context.BATTERY_SERVICE) as android.os.BatteryManager)
+            .getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    }
+    val btOn = remember {
+        (ctx.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as android.bluetooth.BluetoothManager)
+            .adapter?.isEnabled == true
+    }
+    Column(Modifier.fillMaxWidth().padding(14.dp)) {
+        TLabel("What paused means")
+        Spacer(Modifier.height(6.dp))
+        BasicText(
+            buildAnnotatedString {
+                append("Messages for you can't arrive")
+                if (carrying > 0) {
+                    append(", and the $carrying you're holding ${if (carrying == 1) "waits" else "wait"}")
+                }
+                append(". People counting on this phone as a relay lose it. ")
+                withStyle(SpanStyle(color = Pn.Ink, fontWeight = FontWeight.W600)) {
+                    append("Good for saving battery — $battery% left.")
+                }
+            },
+            style = TextStyle(
+                fontFamily = Archivo, fontSize = 13.sp, lineHeight = 21.sp, color = Pn.InkDim,
+            ),
+        )
+        if (!btOn) {
+            Spacer(Modifier.height(8.dp))
+            TFoot("bluetooth is off — the mesh has no radio until it's back on", color = Pn.Accent)
+        }
     }
 }
 

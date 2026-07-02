@@ -36,16 +36,17 @@ import androidx.compose.ui.unit.sp
 import com.polleneus.client.mesh.LocalEvent
 import com.polleneus.client.mesh.MeshController
 import com.polleneus.client.mesh.MeshState
+import androidx.compose.ui.geometry.Offset
 import com.polleneus.client.ui.components.BigNum
 import com.polleneus.client.ui.components.Faceplate
 import com.polleneus.client.ui.components.HDivider
+import com.polleneus.client.ui.components.HoldToConfirm
 import com.polleneus.client.ui.components.KeyCode
 import com.polleneus.client.ui.components.Radar
 import com.polleneus.client.ui.components.StatusWord
 import com.polleneus.client.ui.components.TFoot
 import com.polleneus.client.ui.components.TLabel
 import com.polleneus.client.ui.components.blinkAlpha
-import com.polleneus.client.ui.components.hatched
 import com.polleneus.client.ui.theme.MartianMono
 import com.polleneus.client.ui.theme.Pn
 import java.time.Instant
@@ -53,7 +54,11 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 @Composable
-fun HomeScreen(controller: MeshController) {
+fun HomeScreen(
+    controller: MeshController,
+    onOpenSettings: () -> Unit = {},
+    onPanic: () -> Unit = {},
+) {
     val state by controller.meshState.collectAsState()
     val nearby by controller.nearbyDevices.collectAsState()
     val carrying by controller.carryingCount.collectAsState()
@@ -86,6 +91,8 @@ fun HomeScreen(controller: MeshController) {
             )
             Spacer(Modifier.width(5.dp))
             Box(Modifier.size(width = 8.dp, height = 13.dp).alpha(blinkAlpha()).background(Pn.Accent))
+            Spacer(Modifier.weight(1f))
+            SettingsGlyph(Modifier.clickable(onClick = onOpenSettings).padding(4.dp))
         }
 
         // ---- faceplate ----
@@ -220,25 +227,28 @@ fun HomeScreen(controller: MeshController) {
         Spacer(Modifier.weight(1f))
         Spacer(Modifier.height(16.dp))
 
-        // ---- panic strip (visual in X1; the two-step ceremony arrives in X4) ----
-        Column(
-            Modifier.fillMaxWidth()
-                .border(1.dp, Pn.Danger.copy(alpha = 0.5f))
-                .hatched(Pn.DangerDim)
-                .padding(13.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            BasicText(
-                "▲ PANIC WIPE — HOLD 2S",
-                style = TextStyle(
-                    fontFamily = MartianMono, fontSize = 11.sp, fontWeight = FontWeight.W700,
-                    letterSpacing = 0.15.em, color = Pn.DangerText,
-                ),
-            )
-            Spacer(Modifier.height(5.dp))
-            TFoot("local erase only · other phones keep what they carry", color = Pn.InkFaint)
-        }
+        // ---- panic strip: STEP 1 of the two-step ceremony (a completed 2s hold opens the
+        // confirm screen; a tap does nothing — design system §4/§5) ----
+        HoldToConfirm(
+            text = "▲ Panic wipe — hold 2s",
+            sub = "local erase only · other phones keep what they carry",
+            onComplete = onPanic,
+        )
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun SettingsGlyph(modifier: Modifier = Modifier) {
+    androidx.compose.foundation.Canvas(modifier.size(18.dp)) {
+        val s = size.minDimension
+        val w = s * 0.075f
+        // instrument sliders: three rails, three offset knobs
+        listOf(0.25f, 0.5f, 0.75f).forEachIndexed { i, y ->
+            drawLine(Pn.InkFaint, Offset(s * 0.08f, s * y), Offset(s * 0.92f, s * y), w)
+            val x = listOf(0.32f, 0.68f, 0.45f)[i]
+            drawCircle(Pn.InkDim, radius = s * 0.1f, center = Offset(s * x, s * y))
+        }
     }
 }
 

@@ -29,6 +29,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -120,6 +122,7 @@ fun SettingsScreen(
                     Prefs.setDiscreet(ctx, discreet)
                     MeshService.refresh(ctx)
                 },
+                toggled = discreet,
             ) {
                 InstrumentSwitch(on = discreet)
             }
@@ -187,11 +190,35 @@ private fun SettingRow(
     sub: String,
     nameColor: Color = Pn.Ink,
     onClick: (() -> Unit)?,
+    /** Non-null = this row IS a switch; TalkBack announces role + on/off state. */
+    toggled: Boolean? = null,
     trailing: @Composable () -> Unit,
 ) {
     Row(
         Modifier.fillMaxWidth()
-            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
+            .let {
+                if (onClick != null) {
+                    it.clickable(
+                        role = if (toggled != null) {
+                            androidx.compose.ui.semantics.Role.Switch
+                        } else {
+                            androidx.compose.ui.semantics.Role.Button
+                        },
+                        onClick = onClick,
+                    )
+                } else {
+                    it
+                }
+            }
+            .let {
+                if (toggled != null) {
+                    it.semantics {
+                        toggleableState = androidx.compose.ui.state.ToggleableState(toggled)
+                    }
+                } else {
+                    it
+                }
+            }
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

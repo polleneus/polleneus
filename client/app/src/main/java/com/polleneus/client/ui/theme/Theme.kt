@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 
 /**
@@ -25,9 +26,14 @@ private val PnColorScheme = darkColorScheme(
 
 @Composable
 fun PolleneusTheme(content: @Composable () -> Unit) {
+    val reduced by com.polleneus.client.ui.components.rememberReducedMotion()
     MaterialTheme(colorScheme = PnColorScheme) {
-        androidx.compose.foundation.layout.Box(
-            Modifier.fillMaxSize().background(Pn.Bg)
-        ) { content() }
+        androidx.compose.runtime.CompositionLocalProvider(
+            com.polleneus.client.ui.components.LocalReducedMotion provides reduced,
+        ) {
+            androidx.compose.foundation.layout.Box(
+                Modifier.fillMaxSize().background(Pn.Bg)
+            ) { content() }
+        }
     }
 }

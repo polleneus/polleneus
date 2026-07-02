@@ -12,6 +12,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.polleneus.client.ui.theme.Pn
 
 /**
@@ -21,7 +23,10 @@ import com.polleneus.client.ui.theme.Pn
  */
 @Composable
 fun Radar(nodes: Int, sweeping: Boolean, modifier: Modifier = Modifier) {
-    val rings = if (sweeping) {
+    // reduced motion (§7): the radar becomes a static live ring + the node dots —
+    // liveness color survives, the sweep goes. `sweeping` still means "mesh is on".
+    val animate = sweeping && !LocalReducedMotion.current
+    val rings = if (animate) {
         val t = rememberInfiniteTransition(label = "radar")
         listOf(0, 1066, 2133).map { offset ->
             val p by t.animateFloat(
@@ -42,11 +47,18 @@ fun Radar(nodes: Int, sweeping: Boolean, modifier: Modifier = Modifier) {
         Offset(0.36f, 0.62f), Offset(0.72f, 0.52f),
     )
 
-    Canvas(modifier) {
+    val desc = if (sweeping) {
+        "Radar — $nodes ${if (nodes == 1) "device" else "devices"} nearby"
+    } else {
+        "Radar — paused"
+    }
+    Canvas(
+        modifier.semantics { contentDescription = desc },
+    ) {
         val r = size.minDimension / 2f
         val c = Offset(size.width / 2f, size.height / 2f)
 
-        if (sweeping) {
+        if (animate) {
             rings.forEach { p ->
                 val scale = 0.12f + p * 0.88f
                 drawCircle(
@@ -58,7 +70,7 @@ fun Radar(nodes: Int, sweeping: Boolean, modifier: Modifier = Modifier) {
             }
         } else {
             drawCircle(
-                color = Pn.LineStrong,
+                color = if (sweeping) Pn.Data.copy(alpha = 0.45f) else Pn.LineStrong,
                 radius = r * 0.64f,
                 center = c,
                 style = Stroke(width = 1.dp.toPx()),

@@ -108,7 +108,10 @@ public final class Vault {
             strongBox = readBackStrongBox(key);
             return key;
         }
-        boolean wantSb = ctx.getPackageManager().hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE);
+        // X5 lint hardening: StrongBox APIs exist from 28; the feature flag alone happened to
+        // guard this (the constant can't be reported pre-28), but an explicit floor is correct.
+        boolean wantSb = android.os.Build.VERSION.SDK_INT >= 28
+                && ctx.getPackageManager().hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE);
         if (wantSb) {
             try {
                 key = genKey(true);
@@ -136,7 +139,7 @@ public final class Vault {
                 .setKeySize(256);
         // Deliberately NO setUserAuthenticationRequired / setUnlockedDeviceRequired: the mesh seals,
         // relays, and decrypts while the phone is locked in a pocket. Trade-off documented above.
-        if (sb) b.setIsStrongBoxBacked(true);
+        if (sb && android.os.Build.VERSION.SDK_INT >= 28) b.setIsStrongBoxBacked(true);
         KeyGenerator kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, STORE);
         kg.init(b.build());
         return kg.generateKey();

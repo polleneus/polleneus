@@ -135,6 +135,8 @@ fun HDivider(color: Color = Pn.Line) {
 
 @Composable
 fun blinkAlpha(): Float {
+    // reduced motion (§7): blinks go solid — the marker stays, the flicker goes
+    if (LocalReducedMotion.current) return 1f
     val t = rememberInfiniteTransition(label = "blink")
     val phase by t.animateFloat(
         initialValue = 0f, targetValue = 1f,

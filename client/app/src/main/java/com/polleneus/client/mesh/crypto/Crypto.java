@@ -192,7 +192,10 @@ public final class Crypto {
             long v = 0;
             for (int i = 0; i < 8; i++) v = (v << 8) | (h[i] & 0xffL);
             v &= Long.MAX_VALUE;                 // force non-negative
-            return String.format("%06d", v % 1000000L);
+            // Locale.ROOT (X5 port deviation, deliberate): default-locale %d can render
+            // non-Latin digit glyphs — two phones in different locales would then SHOW
+            // different-looking codes for the SAME SAS, sabotaging the human compare.
+            return String.format(java.util.Locale.ROOT, "%06d", v % 1000000L);
         } catch (Exception e) {
             throw new RuntimeException("sas failed: " + e, e);
         }
@@ -268,7 +271,9 @@ public final class Crypto {
             byte[] h = d.digest();
             long v = 0;
             for (int i = 0; i < 8; i++) v = (v << 8) | (h[i] & 0xffL);
-            return String.format("%06d", Long.remainderUnsigned(v, 1000000L));   // true be_uint mod 10^6
+            // Locale.ROOT: same deliberate deviation as sasFromKm — the SAS must render
+            // identical glyphs on both phones regardless of device locale.
+            return String.format(java.util.Locale.ROOT, "%06d", Long.remainderUnsigned(v, 1000000L));   // true be_uint mod 10^6
         } catch (Exception e) { throw new RuntimeException("sasOverBundles failed: " + e, e); }
     }
 

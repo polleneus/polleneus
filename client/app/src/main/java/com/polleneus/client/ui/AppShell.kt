@@ -28,6 +28,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -190,7 +194,11 @@ private fun MainTabs(controller: MeshController, onOpenSettings: () -> Unit, onP
 @Composable
 private fun ComposeFab(modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
-        modifier.size(52.dp).background(Pn.Data).clickable(onClick = onClick),
+        modifier
+            .size(52.dp)
+            .background(Pn.Data)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = "Compose a sealed message" },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.size(22.dp)) {
@@ -214,7 +222,10 @@ private fun BottomNav(current: Tab, onSelect: (Tab) -> Unit) {
             Tab.entries.forEach { t ->
                 val active = t == current
                 Column(
-                    Modifier.clickable { onSelect(t) }.padding(horizontal = 18.dp),
+                    Modifier
+                        .clickable(role = Role.Tab) { onSelect(t) }
+                        .semantics { selected = active }
+                        .padding(horizontal = 18.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     NavIcon(t, tint = if (active) Pn.Accent else Pn.InkGhost)

@@ -22,6 +22,9 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -82,6 +85,20 @@ fun HoldToConfirm(
                         pressing = false
                     }
                 })
+            }
+            // TalkBack first pass: a screen-reader double-tap counts as the completed hold.
+            // Deliberate a11y-vs-friction trade (X5): the double-tap gesture is itself
+            // deliberate, and the ceremony's protection is the TWO-step structure, not the
+            // motor difficulty of one hold. Flagged for the B1 audit to revisit.
+            .semantics {
+                contentDescription = "$text — $sub"
+                onClick(label = "confirm") {
+                    if (!fired) {
+                        fired = true
+                        onComplete()
+                    }
+                    true
+                }
             }
             .padding(horizontal = 16.dp, vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

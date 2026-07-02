@@ -1,11 +1,15 @@
 package com.polleneus.client.mesh
 
 import android.content.Context
+import android.util.Log
 import com.polleneus.client.mesh.ble.PairingManager
 import com.polleneus.client.mesh.crypto.Crypto
 import com.polleneus.client.mesh.store.ContactStore
 import com.polleneus.client.mesh.store.IdentityStore
 import com.polleneus.client.mesh.store.Vault
+import com.polleneus.client.mesh.transport.MeshStore
+import com.polleneus.client.mesh.transport.MeshTransport
+import com.polleneus.client.mesh.transport.validateWire
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -15,14 +19,17 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The real controller: real identity (H4-wrapped, restart-stable), real trust store, real
- * commit-before-reveal pairing over BLE. Honest about what is NOT real yet:
- * the message loop is X3 — send() refuses, the inbox is empty, nearby/carrying stay 0 and
- * the state is LISTENING. No number on screen is invented.
+ * commit-before-reveal pairing, and (X3b) real BLE flooding transport — send() seals & floods,
+ * the inbox receives & trial-opens, carrying counts relayed-blind blobs. Honest limit: this is
+ * SCREEN-ON interactive mesh; the pocket duty cycler + foreground-service notification are a
+ * deferred increment.
  */
 class RealMeshController(
     private val ctx: Context,
@@ -60,11 +67,20 @@ class RealMeshController(
     private val _inbox = MutableStateFlow<List<Message>>(emptyList())
     override val inbox: StateFlow<List<Message>> = _inbox.asStateFlow()
 
-    private val _maxPlaintext = MutableStateFlow(2048) // Q2 placeholder until transport pins it (X3)
+    // sealed-blob plaintext cap: X-Wing/AEAD overhead leaves room under a comfortable wire size.
+    private val _maxPlaintext = MutableStateFlow(2048)
     override val maxPlaintextBytes: StateFlow<Int> = _maxPlaintext.asStateFlow()
 
     private var pairingManager: PairingManager? = null
     @Volatile private var pendingIdHex: String? = null
+
+    private val meshStore = MeshStore()
+    private var transport: MeshTransport? = null
+    private val ID_LEN = 32   // contactId / content-address length
+    // ids I decrypted (mine) vs ids I only relay (blind) — carrying = relayed-blind count (design §4)
+    private val openedIds = ConcurrentHashMap.newKeySet<String>()
+    private val relayedIds = ConcurrentHashMap.newKeySet<String>()
+    private val messages = ConcurrentHashMap<String, Message>()
 
     // ---------------- lifecycle ----------------
 
@@ -73,17 +89,48 @@ class RealMeshController(
             val id = identityStore.load()               // mint-once; ML-KEM keygen is ms-scale
             _deviceKey.value = IdentityStore.keyChunk(Crypto.contactId(id))
             publishContacts()
-            _meshState.value = MeshState.LISTENING
+            startTransport()
+        }
+    }
+
+    private fun startTransport() {
+        if (transport != null) return
+        val t = MeshTransport(
+            ctx, meshStore,
+            onBlob = { idHex, wire -> onBlobReceived(idHex, wire) },
+            onPeers = { n ->
+                _nearby.value = n
+                if (_meshState.value != MeshState.PAUSED) {
+                    _meshState.value = if (n > 0) MeshState.RELAYING else MeshState.LISTENING
+                }
+            },
+        )
+        transport = t
+        t.start()
+        _meshState.value = MeshState.LISTENING
+        // periodic TTL sweep — faded blobs leave the store and tick the activity log
+        scope.launch(Dispatchers.IO) {
+            while (transport != null) {
+                kotlinx.coroutines.delay(30_000)
+                val dead = meshStore.sweep(System.currentTimeMillis())
+                if (dead.isNotEmpty()) {
+                    dead.forEach { relayedIds.remove(it); openedIds.remove(it); messages.remove(it) }
+                    refreshCounts(); republishInbox()
+                    _activity.emit(LocalEvent.Faded(Instant.now(), dead.size))
+                }
+            }
         }
     }
 
     override fun pause() {
         setPairingMode(false)
+        transport?.stop(); transport = null
+        _nearby.value = 0
         _meshState.value = MeshState.PAUSED
     }
 
     override fun resume() {
-        if (_deviceKey.value.isEmpty()) start() else _meshState.value = MeshState.LISTENING
+        if (_deviceKey.value.isEmpty()) start() else startTransport()
     }
 
     // ---------------- pairing ----------------
@@ -92,6 +139,11 @@ class RealMeshController(
         if (on == _pairingMode.value && (on == (pairingManager != null))) return
         _pairingMode.value = on
         if (on) {
+            // Free the radio for the ceremony. The client keeps pairing and mesh on separate GATT
+            // services, so running both at once collides on BLE — serialize them for now. (The spike
+            // unifies them onto one service; reconciling that is a follow-up.)
+            transport?.stop(); transport = null; _nearby.value = 0
+            _meshState.value = MeshState.PAUSED
             scope.launch(Dispatchers.IO) {
                 val id = identityStore.load()
                 val pm = PairingManager(ctx, id, Crypto.contactId(id)) { e -> onCeremonyEvent(e) }
@@ -101,6 +153,7 @@ class RealMeshController(
         } else {
             pairingManager?.stop()
             pairingManager = null
+            startTransport()   // resume the mesh once pairing closes
         }
     }
 
@@ -186,23 +239,113 @@ class RealMeshController(
         )
     }
 
-    // ---------------- messages (X3) ----------------
+    // ---------------- messages: seal & release ----------------
 
-    override fun send(toContactId: String, body: String, ttl: Duration): ReleaseResult =
-        ReleaseResult.Refused("messaging lands in X3 — pairing came first")
+    override fun send(toContactId: String, body: String, ttl: Duration): ReleaseResult {
+        val rec = contactStore.all().find { it.idHex == toContactId }
+            ?: return ReleaseResult.Refused("recipient is not a contact")
+        if (!rec.verified) return ReleaseResult.Refused("recipient is not verified — pairing comes first")
+        val bytes = body.toByteArray()
+        if (bytes.size > _maxPlaintext.value) return ReleaseResult.Refused("message is larger than the mesh can carry")
 
-    override fun wipeMyCopy(messageId: String) { /* no messages exist before X3 */ }
+        val me = identityStore.load()
+        val myId = Crypto.contactId(me)                       // 32B
+        val split = Crypto.splitBundle(rec.peerBundle)         // [mlkemPub, x25519Pub]
+
+        // inner plaintext = sender_contact_id(32) ‖ text — recipient learns the claimed sender on open
+        val inner = myId + bytes
+        val sealed = Crypto.seal(split[0], split[1], inner)
+        val tag = Crypto.senderTag(Crypto.kAuth(rec.kPair), sealed)  // outer EtM sender-auth
+        val bodyWire = sealed + tag
+        val creationMs = System.currentTimeMillis()
+        val ttlMs = ttl.toMillis().toInt()
+        val wire = Crypto.withTtlHeader(creationMs, ttlMs, bodyWire)
+        val id = MeshStore.hex(MeshStore.sha256(wire))
+
+        meshStore.add(id, wire, creationMs + ttl.toMillis())
+        openedIds.add(id)   // I authored it; it is not a relayed-blind carry
+        refreshCounts()
+        transport?.kick()
+        Log.i("PN-CTRL", "SEALED+RELEASED id=${id.take(12)} to=${toContactId.take(12)} len=${wire.size}")
+        scope.launch { _activity.emit(LocalEvent.Relayed(Instant.now())) }
+        return ReleaseResult.Released(Instant.now())
+    }
+
+    /** A complete wire blob arrived from a peer: validate, store, trial-open. Returns true if fresh. */
+    private fun onBlobReceived(idHex: String, wire: ByteArray): Boolean {
+        val now = System.currentTimeMillis()
+        val id = MeshStore.unhex(idHex)
+        val expiry = validateWire(id, wire, now) ?: run {
+            meshStore.rememberExpired(idHex); return false
+        }
+        if (!meshStore.add(idHex, wire, expiry)) return false   // dup
+
+        // strip TTL header, split the outer tag, trial-open
+        val bodyW = wire.copyOfRange(Crypto.TTL_HDR_LEN, wire.size)
+        var sealed = bodyW
+        var tag: ByteArray? = null
+        if (bodyW.size >= Crypto.SENDER_TAG_LEN + Crypto.HEADER_LEN) {
+            sealed = bodyW.copyOfRange(0, bodyW.size - Crypto.SENDER_TAG_LEN)
+            tag = bodyW.copyOfRange(bodyW.size - Crypto.SENDER_TAG_LEN, bodyW.size)
+        }
+        val me = identityStore.load()
+        val pt = Crypto.open(me, sealed)
+        if (pt != null && pt.size >= ID_LEN) {
+            val sid = pt.copyOfRange(0, ID_LEN)
+            val claimedHex = MeshStore.hex(sid)
+            val text = String(pt, ID_LEN, pt.size - ID_LEN, Charsets.UTF_8)
+            val rec = contactStore.all().find { it.idHex == claimedHex }
+            val verified = rec != null && tag != null &&
+                runCatching { Crypto.verifySenderTag(Crypto.kAuth(rec.kPair), sealed, tag) }.getOrDefault(false)
+            openedIds.add(idHex)
+            val creationMs = Crypto.ttlCreationMs(wire)
+            messages[idHex] = Message(
+                id = idHex,
+                sender = if (verified) Sender.VerifiedContact(claimedHex) else Sender.Unproven,
+                body = text,
+                receivedAt = Instant.ofEpochMilli(now),
+                fadesAt = Instant.ofEpochMilli(expiry),
+                openedLocally = false,
+            )
+            republishInbox()
+            Log.i("PN-CTRL", "DECRYPTED id=${idHex.take(12)} verified=$verified")
+            scope.launch { _activity.emit(LocalEvent.PickedUp(Instant.now())) }
+        } else {
+            relayedIds.add(idHex)   // carried, can't read — relayed-blind
+            scope.launch { _activity.emit(LocalEvent.Relayed(Instant.now())) }
+        }
+        refreshCounts()
+        return true
+    }
+
+    private fun refreshCounts() {
+        _carrying.value = relayedIds.size
+    }
+
+    private fun republishInbox() {
+        _inbox.value = messages.values.sortedByDescending { it.receivedAt }
+    }
+
+    override fun wipeMyCopy(messageId: String) {
+        messages.remove(messageId)
+        openedIds.remove(messageId)
+        republishInbox()
+    }
 
     // ---------------- panic ----------------
 
     override fun panicWipe() {
         scope.launch(Dispatchers.IO) {
             setPairingMode(false)
+            transport?.stop(); transport = null
+            meshStore.wipe(); openedIds.clear(); relayedIds.clear(); messages.clear()
             identityStore.panicWipe()      // wrap-key first (H4 contract), then file overwrite+delete
             contactStore.panicWipe()
             pendingIdHex = null
             _contacts.value = emptyList()
             _inbox.value = emptyList()
+            _carrying.value = 0
+            _nearby.value = 0
             _deviceKey.value = ""          // NOTHING STORED
             _meshState.value = MeshState.PAUSED
         }

@@ -13,3 +13,10 @@ spike/
 .agents/
 .codex/
 **/settings.local.json
+
+# Android client (Phase X) — build outputs and machine-local SDK path.
+# local.properties holds a machine path (identity/machine boundary): never commit it.
+client/.gradle/
+client/build/
+client/app/build/
+client/local.properties

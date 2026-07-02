@@ -43,6 +43,19 @@ jobs:
       - run: pip install -e ".[dev]"   # build-time dep fetch (network OK); the guard activates only at test time
       - run: pytest -q          # whole FAST suite under the socket guard -> no runtime network dependency
 
+  client:
+    name: client (X1 debug build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25          # first run downloads the AGP/Kotlin/Compose graph
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4 (SHA-pinned, supply-chain)
+      # Runner images ship JDK 17 (JAVA_HOME_17_X64) + Android SDK with licenses accepted.
+      # Debug build ONLY — no release artifacts exist before B1 (kickoff spec: policy, not accident).
+      - run: JAVA_HOME=$JAVA_HOME_17_X64 ./gradlew assembleDebug --no-daemon
+
 # The heavy realistic sweeps (-m slow: airtime n~154, intersection/defense) are minute-to-tens-of-minutes
 # scale (the engine is super-linear in crowd size) — they run NIGHTLY + on-demand in gates-nightly.yml, not
 # on every push, so per-change CI stays fast while the gates are still exercised regularly.

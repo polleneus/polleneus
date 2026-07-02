@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- X1: no BLE/service permissions yet — they arrive with the real service port (X2+),
+         each one justified against the spec when added. -->
+
+    <application
+        android:label="polleneus"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.Polleneus"
+        android:allowBackup="false">
+
+        <!-- allowBackup=false is load-bearing: cloud backup of identity/messages would
+             contradict local-only deletion (design system §5 / settings "deliberate absences"). -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

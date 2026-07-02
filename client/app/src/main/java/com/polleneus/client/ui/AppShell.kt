@@ -1,6 +1,7 @@
 package com.polleneus.client.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +37,8 @@ import com.polleneus.client.ui.components.TFoot
 import com.polleneus.client.ui.components.TLabel
 import com.polleneus.client.ui.contacts.ContactsScreen
 import com.polleneus.client.ui.home.HomeScreen
+import com.polleneus.client.ui.messages.ComposeScreen
+import com.polleneus.client.ui.messages.MessagesScreen
 import com.polleneus.client.ui.pairing.PairingScreen
 import com.polleneus.client.ui.theme.MartianMono
 import com.polleneus.client.ui.theme.Pn
@@ -47,12 +50,18 @@ fun AppShell(controller: MeshController) {
     var tab by remember { mutableStateOf(Tab.MESH) }
 
     var pairingOpen by remember { mutableStateOf(false) }
+    var composeOpen by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Box(Modifier.weight(1f)) {
             when (tab) {
                 Tab.MESH -> HomeScreen(controller)
-                Tab.MESSAGES -> ComingInMilestone("Messages", "the inbox lands in X3 — sealed, receipt-free")
+                Tab.MESSAGES ->
+                    if (composeOpen) {
+                        ComposeScreen(controller, onClose = { composeOpen = false })
+                    } else {
+                        MessagesScreen(controller)
+                    }
                 Tab.CONTACTS ->
                     if (pairingOpen) {
                         PairingScreen(controller, onClose = { pairingOpen = false })
@@ -60,22 +69,33 @@ fun AppShell(controller: MeshController) {
                         ContactsScreen(controller, onOpenPairing = { pairingOpen = true })
                     }
             }
+            // compose FAB — only on the (non-compose) Messages tab
+            if (tab == Tab.MESSAGES && !composeOpen) {
+                ComposeFab(
+                    Modifier.align(Alignment.BottomEnd).padding(20.dp),
+                    onClick = { composeOpen = true },
+                )
+            }
         }
-        BottomNav(tab, onSelect = { tab = it; if (it != Tab.CONTACTS) pairingOpen = false })
+        BottomNav(tab, onSelect = {
+            tab = it
+            if (it != Tab.CONTACTS) pairingOpen = false
+            if (it != Tab.MESSAGES) composeOpen = false
+        })
     }
 }
 
-/** Honest scaffolding: names the milestone instead of pretending. Removed as X2/X3 land. */
 @Composable
-private fun ComingInMilestone(title: String, note: String) {
-    Column(
-        Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+private fun ComposeFab(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Box(
+        modifier.size(52.dp).background(Pn.Data).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        TLabel(title, color = Pn.InkDim)
-        Spacer(Modifier.height(12.dp))
-        TFoot(note, color = Pn.InkFaint)
+        Canvas(Modifier.size(22.dp)) {
+            val s = size.minDimension
+            drawLine(Pn.Bg, Offset(s / 2, s * 0.2f), Offset(s / 2, s * 0.8f), s * 0.09f)
+            drawLine(Pn.Bg, Offset(s * 0.2f, s / 2), Offset(s * 0.8f, s / 2), s * 0.09f)
+        }
     }
 }
 

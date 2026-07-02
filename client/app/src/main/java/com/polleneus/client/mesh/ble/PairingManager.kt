@@ -515,6 +515,9 @@ class PairingManager(
                 val sas = Crypto.sasOverBundles(myBundle, pb)
                 Log.i(TAG, "ceremony complete (responder) sas=$sas")
                 onEvent(Event.KcVerified(ContactHex.of(pb), pb, k, pq = true, sas = sas))
+                // release the slot so a re-pair (the peer tapped "try again") can start fresh.
+                // The human is now on the SAS screen; a new real ceremony simply refreshes the code.
+                serverState = null
             }
         }
     }

@@ -20,3 +20,6 @@ client/.gradle/
 client/build/
 client/app/build/
 client/local.properties
+
+# Kotlin compiler session files (build-time artifact)
+client/.kotlin/

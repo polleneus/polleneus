@@ -1,8 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- X1: no BLE/service permissions yet — they arrive with the real service port (X2+),
-         each one justified against the spec when added. -->
+    <!-- X2b-2: BLE permissions for the pairing ceremony ONLY (advertise + scan + connect while
+         the pairing screen is open). SCAN is neverForLocation — the ceremony derives no location.
+         Legacy trio for API 26-30 (lab fleet is 33/36; minSdk floor keeps them). Mesh transport
+         (foreground service etc.) arrives in X3 with its own justification. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <application
         android:label="polleneus"

@@ -64,6 +64,18 @@ private sealed interface Stage {
     data class Sas(val code: String, val peerKey: String) : Stage
     data class Done(val contact: Contact) : Stage
     data object Rejected : Stage
+    data class Failed(val reason: String) : Stage   // transport hiccup — NOT an interception alarm
+}
+
+private fun blePerms(): Array<String> =
+    if (android.os.Build.VERSION.SDK_INT >= 31) arrayOf(
+        android.Manifest.permission.BLUETOOTH_SCAN,
+        android.Manifest.permission.BLUETOOTH_ADVERTISE,
+        android.Manifest.permission.BLUETOOTH_CONNECT,
+    ) else arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
+
+private fun hasBlePerms(ctx: android.content.Context): Boolean = blePerms().all {
+    ctx.checkSelfPermission(it) == android.content.pm.PackageManager.PERMISSION_GRANTED
 }
 
 @Composable
@@ -71,20 +83,75 @@ fun PairingScreen(controller: MeshController, onClose: () -> Unit) {
     var stage by remember { mutableStateOf<Stage>(Stage.Searching) }
     var lastPeerKey by remember { mutableStateOf("") }
 
-    LaunchedEffect(controller) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var permsGranted by remember { mutableStateOf(hasBlePerms(ctx)) }
+    val permLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result -> permsGranted = result.values.all { it } }
+
+    LaunchedEffect(Unit) {
+        if (!permsGranted) permLauncher.launch(blePerms())
+    }
+
+    LaunchedEffect(controller, permsGranted) {
+        if (!permsGranted) return@LaunchedEffect
         controller.setPairingMode(true)
         controller.pairing.collect { e ->
             stage = when (e) {
-                is PairingEvent.PeerFound -> { lastPeerKey = e.keyChunk; Stage.Found(e.peerId, e.keyChunk) }
+                is PairingEvent.PeerFound -> {
+                    lastPeerKey = e.keyChunk
+                    // continued scanning keeps emitting PeerFound; it must NOT clobber a ceremony
+                    // that has already advanced to the SAS / verified / reject screens.
+                    if (stage is Stage.Searching || stage is Stage.Found) Stage.Found(e.peerId, e.keyChunk)
+                    else stage
+                }
                 is PairingEvent.SasReady -> Stage.Sas(e.code, lastPeerKey)
                 is PairingEvent.Verified -> Stage.Done(e.contact)
                 is PairingEvent.Rejected -> Stage.Rejected
-                is PairingEvent.Failed -> Stage.Rejected
+                is PairingEvent.Failed -> Stage.Failed(e.reason)
             }
         }
     }
     DisposableEffect(controller) {
         onDispose { controller.setPairingMode(false) }
+    }
+
+    if (!permsGranted) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BackChevron(onClick = onClose)
+                Spacer(Modifier.width(12.dp))
+                BasicText(
+                    "PAIRING",
+                    style = TextStyle(
+                        fontFamily = MartianMono, fontSize = 13.sp, fontWeight = FontWeight.W700,
+                        letterSpacing = 0.14.em, color = Pn.Ink,
+                    ),
+                )
+            }
+            Faceplate {
+                Column(Modifier.padding(14.dp)) {
+                    TLabel("Bluetooth access needed")
+                    Spacer(Modifier.height(6.dp))
+                    BasicText(
+                        "Pairing talks phone-to-phone over Bluetooth — nothing else uses it, and " +
+                            "scanning is declared location-free to Android. Nothing leaves the two phones.",
+                        style = TextStyle(fontSize = 13.sp, lineHeight = 21.sp, color = Pn.InkDim),
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            PnButton(
+                "Grant Bluetooth access", BtnKind.PRIMARY, Modifier.fillMaxWidth(),
+                onClick = { permLauncher.launch(blePerms()) },
+            )
+            Spacer(Modifier.height(20.dp))
+            TFoot("also make sure Bluetooth itself is ON in quick settings")
+        }
+        return
     }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp).verticalScroll(rememberScrollState())) {
@@ -99,6 +166,7 @@ fun PairingScreen(controller: MeshController, onClose: () -> Unit) {
                     is Stage.Sas -> "CONFIRM CODES"
                     is Stage.Done -> "VERIFIED"
                     is Stage.Rejected -> "NOT VERIFIED"
+                    is Stage.Failed -> "PAIRING"
                     else -> "PAIRING"
                 },
                 style = TextStyle(
@@ -131,8 +199,57 @@ fun PairingScreen(controller: MeshController, onClose: () -> Unit) {
                     stage = Stage.Searching
                 },
             )
+            is Stage.Failed -> FailedResult(
+                reason = s.reason,
+                onDone = onClose,
+                onRetry = {
+                    controller.setPairingMode(false)
+                    controller.setPairingMode(true)
+                    stage = Stage.Searching
+                },
+            )
         }
     }
+}
+
+/* ---------------- transport failure — a hiccup, not an alarm ---------------- */
+
+@Composable
+private fun FailedResult(reason: String, onDone: () -> Unit, onRetry: () -> Unit) {
+    Faceplate {
+        Column(
+            Modifier.fillMaxWidth().padding(vertical = 30.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            StateRing(Pn.InkFaint, cross = true)
+            Spacer(Modifier.height(20.dp))
+            BasicText(
+                "COULDN'T CONNECT",
+                style = TextStyle(
+                    fontFamily = MartianMono, fontSize = 20.sp, fontWeight = FontWeight.W700,
+                    letterSpacing = 0.03.em, color = Pn.InkDim,
+                ),
+            )
+            Spacer(Modifier.height(10.dp))
+            TFoot("a bluetooth hiccup — not a security problem", color = Pn.InkFaint)
+        }
+        com.polleneus.client.ui.components.HDivider()
+        Column(Modifier.padding(14.dp)) {
+            TLabel("What happened")
+            Spacer(Modifier.height(6.dp))
+            BasicText(
+                reason.replaceFirstChar { it.uppercase() } + ". Keep both phones close, Bluetooth on, and try again.",
+                style = TextStyle(fontSize = 13.sp, lineHeight = 21.sp, color = Pn.InkDim),
+            )
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        PnButton("Done", BtnKind.PLAIN, Modifier.weight(1f), onClick = onDone)
+        PnButton("Try again", BtnKind.OUTLINE_DATA, Modifier.weight(1f), onClick = onRetry)
+    }
+    Spacer(Modifier.height(14.dp))
 }
 
 /* ---------------- act 1: broadcasting + peer found ---------------- */

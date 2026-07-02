@@ -22,6 +22,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.ParcelUuid
 import android.util.Log
+import com.polleneus.client.mesh.crypto.Crypto
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -52,15 +53,39 @@ import java.util.concurrent.ConcurrentHashMap
  *   server:  on OFFER, compute wanted = offered ∉ store; on REQUEST, serve wanted; on DATA,
  *            reassemble per (peer,id) → validate content-address+TTL → store → trial-open.
  *
- * All crypto is the JVM-tested Crypto; this class is transport only.
+ * V1 — UNIFIED PAIRING: the commit-before-reveal SAS ceremony (was a separate GATT stack in
+ * PairingManager) now lives on THIS one service as a 4th characteristic (CHR_PAIR). One
+ * advertiser (which adds the PAIR_SVC flag + tiebreak token while pairing), one scanner, one
+ * GATT server, one central client. The mesh keeps relaying THROUGH a pairing ceremony — no
+ * teardown/serialization — and the advertiser never churns (root-fix for V9). The ceremony's
+ * crypto SEQUENCE (COMMIT→REVEAL→CT→KC→SAS) is moved VERBATIM from PairingManager; only the BLE
+ * plumbing it rides on changed. A single `centralBusy` gate keeps flooding and the ceremony
+ * from ever contending for the one central GATT client.
+ *
+ * All crypto is the JVM-tested Crypto; this class is transport + ceremony sequencing only.
  */
 @SuppressLint("MissingPermission") // BLE perms are held by the foreground service that owns this
 class MeshTransport(
     ctx: Context,
     private val store: MeshStore,
+    private val identity: Crypto.Identity,          // V1: for the pairing ceremony (bundle/kem/kc)
+    myContactId: ByteArray,                          // V1: first 8 bytes = advertised tiebreak token
     private val onBlob: (id: String, wire: ByteArray) -> Boolean,  // returns true if fresh+stored
     private val onPeers: (Int) -> Unit,
+    private val onPairing: (PairEvent) -> Unit,      // V1: ceremony events to the controller
 ) {
+    /** Ceremony events surfaced to the controller (mirrors the old PairingManager.Event). */
+    sealed interface PairEvent {
+        data class PeerFound(val peerToken: String) : PairEvent
+        data class KcVerified(
+            val idHex: String, val peerBundle: ByteArray, val kPair: ByteArray,
+            val pq: Boolean, val sas: String,
+        ) : PairEvent
+        /** security=true ⇒ a commitment/key-confirmation check failed (possible interception);
+         *  security=false ⇒ a transport hiccup — never cry "interception" for that. */
+        data class Failed(val reason: String, val security: Boolean) : PairEvent
+    }
+
     companion object {
         private const val TAG = "PN-MESH"
         val SVC: UUID = UUID.fromString("0000b2b2-0000-1000-8000-00805f9b34fb")   // client mesh service
@@ -68,11 +93,27 @@ class MeshTransport(
         val CHR_REQUEST: UUID = UUID.fromString("0000b2c2-0000-1000-8000-00805f9b34fb")
         val CHR_DATA: UUID = UUID.fromString("0000b2c3-0000-1000-8000-00805f9b34fb")
 
+        // V1: pairing rides on the SAME service. PAIR_SVC is an ADVERT-ONLY flag UUID (not a
+        // second service) added to the advert while pairing; peers detect it in the scan record.
+        val CHR_PAIR: UUID = UUID.fromString("0000b1c4-0000-1000-8000-00805f9b34fb")
+        val PAIR_SVC: UUID = UUID.fromString("0000b1b3-0000-1000-8000-00805f9b34fb")
+
         private const val ID_LEN = MeshStore.ID_LEN            // 32
         private const val DATA_HDR = ID_LEN + 4 + 4           // id ‖ totalLen ‖ offset
         private const val CHUNK = 180
         private const val MTU = 517
         private const val CONNECT_COOLDOWN_MS = 8_000L        // don't re-flood the same peer too fast
+
+        // ---- pairing ceremony framing (moved verbatim from PairingManager) ----
+        private const val PAIR_TOKEN_LEN = 8
+        private const val PAIR_HDR = 9                        // [round:1][totalLen:4][offset:4]
+        private const val PAIR_CHUNK = 180
+        private const val PAIR_MAX_MSG = 8 * 1024
+        private const val CEREMONY_TIMEOUT_MS = 45_000L
+        private const val R_COMMIT = 1
+        private const val R_REVEAL = 2
+        private const val R_CT = 3
+        private const val R_KC = 4
 
         // ---- duty cycler (spike-validated values; see class doc + RS#5 memo) ----
         private const val DUTY_WINDOW_ON_MS = 10_000L
@@ -105,8 +146,18 @@ class MeshTransport(
     private var running = false
     private var server: BluetoothGattServer? = null
     private val peersSeen = ConcurrentHashMap<String, Long>()   // addr -> last connect attempt
-    private var flooding = false
+    // V1: one gate for the single central GATT client — true during a flood OR a ceremony, so the
+    // two never contend. (Was `flooding`; the ceremony sets it via `ceremonyRunning`.)
+    private var centralBusy = false
     private var centralGatt: BluetoothGatt? = null
+
+    // ---- V1 pairing state (moved from PairingManager) ----
+    private val myToken = myContactId.copyOf(PAIR_TOKEN_LEN)
+    private val myBundle = Crypto.bundle(identity)
+    @Volatile private var pairMode = false
+    private var peerDevice: BluetoothDevice? = null
+    private var peerToken: ByteArray? = null
+    private var ceremonyRunning = false
 
     // ---- duty-cycler state (mesh-handler thread unless noted) ----
     @Volatile private var screenOn = true           // written by screenRx (main) + start() seed
@@ -164,9 +215,11 @@ class MeshTransport(
         dutyWindowOpen = false
         try { adapter.bluetoothLeAdvertiser?.stopAdvertising(advCb) } catch (_: Exception) {}
         try { centralGatt?.disconnect(); centralGatt?.close() } catch (_: Exception) {}
-        centralGatt = null; flooding = false
+        centralGatt = null; centralBusy = false
         try { server?.close() } catch (_: Exception) {}
         server = null
+        // V1: clear pairing state too (the whole transport is going down)
+        pairMode = false; ceremonyRunning = false; peerDevice = null; peerToken = null; serverState = null
         peersSeen.clear(); sightings.clear(); onPeers(0)
         Log.i(TAG, "mesh transport OFF")
     }
@@ -178,7 +231,7 @@ class MeshTransport(
      */
     fun kick() = handler.post {
         peersSeen.clear()
-        if (running && !DutyPolicy.continuous(false, screenOn) && !dutyWindowOpen) openWindow("kick")
+        if (running && !DutyPolicy.continuous(pairMode, screenOn) && !dutyWindowOpen) openWindow("kick")
     }
 
     /**
@@ -189,7 +242,7 @@ class MeshTransport(
      */
     fun backstopKick() = handler.post {
         if (!running) return@post
-        if (DutyPolicy.continuous(false, screenOn)) return@post
+        if (DutyPolicy.continuous(pairMode, screenOn)) return@post
         val idle = android.os.SystemClock.elapsedRealtime() - lastSchedulerRun
         if (idle > 2 * (DUTY_WINDOW_ON_MS + DUTY_WINDOW_OFF_MS)) {
             Log.w(TAG, "DUTY backstop kick (scheduler idle ${idle}ms)")
@@ -232,8 +285,15 @@ class MeshTransport(
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setConnectable(true).build()
-        val data = AdvertiseData.Builder()
-            .addServiceUuid(ParcelUuid(SVC)).setIncludeDeviceName(false).build()
+        val dataB = AdvertiseData.Builder()
+            .addServiceUuid(ParcelUuid(SVC)).setIncludeDeviceName(false)
+        if (pairMode) {
+            // V1: while pairing, add the PAIR_SVC flag + tiebreak token so peers route this node
+            // to the ceremony. Both UUIDs are Bluetooth-base (16-bit in the advert), so SVC +
+            // PAIR_SVC + 8B token fits one legacy advert (spike-verified).
+            dataB.addServiceUuid(ParcelUuid(PAIR_SVC)).addServiceData(ParcelUuid(PAIR_SVC), myToken)
+        }
+        val data = dataB.build()
         // Stop any prior registration first — a lingering advertiser is the usual cause of
         // INTERNAL_ERROR on Samsung after rapid start/stop cycles.
         try { adv.stopAdvertising(advCb) } catch (_: Exception) {}
@@ -263,7 +323,7 @@ class MeshTransport(
         if (!running) return
         handler.removeCallbacks(windowTick)
         handler.removeCallbacks(preventiveRestart)
-        if (DutyPolicy.continuous(false, screenOn)) {
+        if (DutyPolicy.continuous(pairMode, screenOn)) {
             dutyWindowOpen = false
             deafWindows = 0        // stale dark-mode counts must not survive a healthy continuous period
             releaseWindowLock()
@@ -302,7 +362,7 @@ class MeshTransport(
         override fun run() {
             if (!running) return
             lastSchedulerRun = android.os.SystemClock.elapsedRealtime()
-            if (DutyPolicy.continuous(false, screenOn)) { applyScanPolicy("exit-windowed"); return }
+            if (DutyPolicy.continuous(pairMode, screenOn)) { applyScanPolicy("exit-windowed"); return }
             if (dutyWindowOpen) {
                 // Close the window. DEAF-NODE WATCHDOG: the OS quota denial is SILENT and the
                 // Samsung scan penalty also presents as a scan that delivers nothing — zero
@@ -342,7 +402,7 @@ class MeshTransport(
         override fun run() {
             if (!running) return
             lastSchedulerRun = android.os.SystemClock.elapsedRealtime()
-            if (!DutyPolicy.continuous(false, screenOn)) return
+            if (!DutyPolicy.continuous(pairMode, screenOn)) return
             if (scanRunning) {
                 dutyStopScan("preventive")
                 dutyStartScan("preventive")
@@ -410,13 +470,13 @@ class MeshTransport(
         dutyWindowOpen = false
         try { adapter?.bluetoothLeAdvertiser?.stopAdvertising(advCb) } catch (_: Exception) {}
         try { centralGatt?.disconnect(); centralGatt?.close() } catch (_: Exception) {}
-        centralGatt = null; flooding = false
+        centralGatt = null; centralBusy = false
         try { server?.close() } catch (_: Exception) {}
         server = null
         handler.postDelayed({
             if (!running) return@postDelayed
             startServer(); startAdvertising()
-            if (DutyPolicy.continuous(false, screenOn)) dutyStartScan("continuous/self-heal")
+            if (DutyPolicy.continuous(pairMode, screenOn)) dutyStartScan("continuous/self-heal")
             else openWindow("self-heal")
         }, SOFT_RESTART_MS)
     }
@@ -467,20 +527,39 @@ class MeshTransport(
         resultsThisWindow.incrementAndGet()
         sightings[addr] = now
         prunePeers()
-        if (flooding) return
+
+        // V1 ROUTING: a peer carrying the PAIR_SVC flag + token in its scan record is a pairing
+        // peer — surface it for the ceremony and do NOT flood to it. Only when we are ALSO in
+        // pair mode; otherwise a pairing peer is just a normal mesh neighbour we may relay to.
+        val pairSd = r.scanRecord?.getServiceData(ParcelUuid(PAIR_SVC))
+        if (pairMode && pairSd != null && pairSd.size >= PAIR_TOKEN_LEN) {
+            val token = pairSd.copyOf(PAIR_TOKEN_LEN)
+            if (!token.contentEquals(myToken) && peerDevice == null) {
+                peerDevice = r.device
+                peerToken = token
+                Log.i(TAG, "PAIR peer found addr=$addr token=${tokenHex(token)} rssi=${r.rssi}")
+                onPairing(PairEvent.PeerFound(tokenHex(token)))
+            }
+            return  // never flood to a pairing peer
+        }
+
+        // mesh flood path
+        if (centralBusy) return   // a flood OR a ceremony already owns the one central client
         val last = peersSeen[addr] ?: 0
         if (now - last < CONNECT_COOLDOWN_MS) return
         peersSeen[addr] = now
         // brief connect → reconcile → disconnect (the mandatory pattern from the transport findings)
-        flooding = true
+        centralBusy = true
         Log.i(TAG, "flood → $addr")
         centralGatt = r.device.connectGatt(app, false, centralCb, BluetoothDevice.TRANSPORT_LE)
     }
 
     private fun endFlood(ok: Boolean) {
         try { centralGatt?.disconnect(); centralGatt?.close() } catch (_: Exception) {}
-        centralGatt = null; flooding = false
+        centralGatt = null; centralBusy = false
     }
+
+    private fun tokenHex(b: ByteArray): String = b.joinToString("") { "%02x".format(it) }
 
     // ---------------- central flood client ----------------
 
@@ -571,11 +650,18 @@ class MeshTransport(
             BluetoothGattCharacteristic.PROPERTY_READ, BluetoothGattCharacteristic.PERMISSION_READ))
         svc.addCharacteristic(BluetoothGattCharacteristic(CHR_DATA,
             BluetoothGattCharacteristic.PROPERTY_WRITE, BluetoothGattCharacteristic.PERMISSION_WRITE))
+        // V1: the pairing ceremony rides on the SAME service (READ|WRITE).
+        svc.addCharacteristic(BluetoothGattCharacteristic(CHR_PAIR,
+            BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_WRITE,
+            BluetoothGattCharacteristic.PERMISSION_READ or BluetoothGattCharacteristic.PERMISSION_WRITE))
         s.addService(svc)
         server = s
     }
 
     private val serverCb = object : BluetoothGattServerCallback() {
+        override fun onConnectionStateChange(d: BluetoothDevice, status: Int, newState: Int) {
+            handler.post { onPairServerConnection(d, newState) }   // V1: ceremony responder lifecycle
+        }
         override fun onCharacteristicWriteRequest(
             d: BluetoothDevice, reqId: Int, chr: BluetoothGattCharacteristic,
             prep: Boolean, respond: Boolean, offset: Int, value: ByteArray,
@@ -593,6 +679,10 @@ class MeshTransport(
                         handleDataChunk(d.address, value)
                         if (respond) server?.sendResponse(d, reqId, BluetoothGatt.GATT_SUCCESS, offset, null)
                     }
+                    CHR_PAIR -> {
+                        if (respond) server?.sendResponse(d, reqId, BluetoothGatt.GATT_SUCCESS, 0, null)
+                        onPairServerWrite(d, value)
+                    }
                     else -> if (respond) server?.sendResponse(d, reqId, BluetoothGatt.GATT_FAILURE, offset, null)
                 }
             }
@@ -601,12 +691,14 @@ class MeshTransport(
             d: BluetoothDevice, reqId: Int, offset: Int, chr: BluetoothGattCharacteristic,
         ) {
             handler.post {
-                if (chr.uuid == CHR_REQUEST) {
-                    val want = wantedByPeer[d.address] ?: ByteArray(0)
-                    val slice = if (offset >= want.size) ByteArray(0) else want.copyOfRange(offset, want.size)
-                    server?.sendResponse(d, reqId, BluetoothGatt.GATT_SUCCESS, offset, slice)
-                } else {
-                    server?.sendResponse(d, reqId, BluetoothGatt.GATT_FAILURE, offset, null)
+                when (chr.uuid) {
+                    CHR_REQUEST -> {
+                        val want = wantedByPeer[d.address] ?: ByteArray(0)
+                        val slice = if (offset >= want.size) ByteArray(0) else want.copyOfRange(offset, want.size)
+                        server?.sendResponse(d, reqId, BluetoothGatt.GATT_SUCCESS, offset, slice)
+                    }
+                    CHR_PAIR -> onPairServerRead(d, reqId)
+                    else -> server?.sendResponse(d, reqId, BluetoothGatt.GATT_FAILURE, offset, null)
                 }
             }
         }
@@ -653,4 +745,319 @@ class MeshTransport(
     private fun getInt(b: ByteArray, o: Int): Int =
         ((b[o].toInt() and 0xff) shl 24) or ((b[o + 1].toInt() and 0xff) shl 16) or
             ((b[o + 2].toInt() and 0xff) shl 8) or (b[o + 3].toInt() and 0xff)
+
+    // ========================================================================================
+    // V1 — PAIRING CEREMONY (commit-before-reveal SAS), moved VERBATIM from PairingManager.
+    // The crypto SEQUENCE is identical; only the BLE plumbing (shared server/scanner/central/
+    // handler, centralBusy gate) changed. See docs/superpowers/specs/2026-07-02-v1-gatt-unification.md.
+    // ========================================================================================
+
+    /** Toggle pairing mode: flip the advert flag + the duty policy WITHOUT tearing down the mesh. */
+    fun setPairingMode(on: Boolean) = handler.post {
+        if (!running || on == pairMode) return@post
+        pairMode = on
+        if (!on) {
+            peerDevice = null; peerToken = null; ceremonyRunning = false; serverState = null
+        }
+        startAdvertising()          // re-advert with/without the PAIR_SVC flag (no mesh teardown)
+        applyScanPolicy("pairmode=$on")   // pairing forces continuous scan; off returns to duty
+        Log.i(TAG, "PAIR mode ${if (on) "ON token=${tokenHex(myToken)}" else "OFF"}")
+    }
+
+    /** The human tapped "Begin key exchange". Only the lower-token side drives (central). */
+    fun beginExchange() = handler.post { tryBeginExchange(0) }
+
+    private fun tryBeginExchange(attempt: Int) {
+        if (!running) return
+        val dev = peerDevice ?: return
+        val pt = peerToken ?: return
+        if (ceremonyRunning) return              // already pairing
+        if (centralBusy) {
+            // A brief background flood holds the single central client. Rather than preempt it
+            // (which risks the flood's async disconnect callback closing the ceremony's GATT),
+            // wait it out — floods are connect→reconcile→disconnect, ~1-2s.
+            if (attempt < 20) { handler.postDelayed({ tryBeginExchange(attempt + 1) }, 250); return }
+            pairFail("radio busy — try again"); return
+        }
+        val iAmInitiator = Crypto.compareUnsigned(myToken, pt) <= 0
+        if (!iAmInitiator) { Log.i(TAG, "PAIR responder — waiting for peer to connect"); return }
+        ceremonyRunning = true; centralBusy = true
+        armCeremonyTimeout()
+        Log.i(TAG, "PAIR initiator — connecting to ${dev.address}")
+        centralGatt = dev.connectGatt(app, false, pairingCentralCb, BluetoothDevice.TRANSPORT_LE)
+    }
+
+    private fun pairFail(reason: String) = pairAbort(reason, security = false)
+    private fun pairSecurityAbort(reason: String) = pairAbort(reason, security = true)
+
+    private fun pairAbort(reason: String, security: Boolean) {
+        Log.w(TAG, "PAIR ceremony ${if (security) "SECURITY-ABORT" else "FAILED"}: $reason")
+        ceremonyRunning = false
+        try { centralGatt?.disconnect(); centralGatt?.close() } catch (_: Exception) {}
+        centralGatt = null; centralBusy = false
+        serverState = null
+        onPairing(PairEvent.Failed(reason, security))
+    }
+
+    private fun armCeremonyTimeout() {
+        handler.postDelayed({
+            if (ceremonyRunning) pairFail("timed out — move the phones closer and try again")
+        }, CEREMONY_TIMEOUT_MS)
+    }
+
+    // ---- pairing framing + reassembly (verbatim) ----
+
+    private fun pairFrame(round: Int, msg: ByteArray, offset: Int): ByteArray {
+        val n = minOf(PAIR_CHUNK, msg.size - offset)
+        val f = ByteArray(PAIR_HDR + n)
+        f[0] = round.toByte()
+        var len = msg.size
+        for (i in 4 downTo 1) { f[i] = (len and 0xff).toByte(); len = len ushr 8 }
+        var off = offset
+        for (i in 8 downTo 5) { f[i] = (off and 0xff).toByte(); off = off ushr 8 }
+        System.arraycopy(msg, offset, f, PAIR_HDR, n)
+        return f
+    }
+
+    private class PairReasm {
+        var round = 0
+        var total = -1
+        var buf = ByteArray(0)
+        var got = 0
+        fun accept(f: ByteArray): ByteArray? {
+            if (f.size < PAIR_HDR) return null
+            val r = f[0].toInt()
+            var len = 0; for (i in 1..4) len = (len shl 8) or (f[i].toInt() and 0xff)
+            var off = 0; for (i in 5..8) off = (off shl 8) or (f[i].toInt() and 0xff)
+            if (len < 0 || len > PAIR_MAX_MSG) return null
+            if (r != round || total == -1) { round = r; total = len; buf = ByteArray(len); got = 0 }
+            val n = f.size - PAIR_HDR
+            if (off + n > total) return null
+            System.arraycopy(f, PAIR_HDR, buf, off, n)
+            got = off + n
+            return if (got >= total) { val out = buf; total = -1; out } else null
+        }
+    }
+
+    // ---- central / initiator (verbatim state machine) ----
+
+    private var pcReasm = PairReasm()
+    private var pcStage = 0
+    private var pcOutMsg = ByteArray(0)
+    private var pcOutRound = 0
+    private var pcOutOff = 0
+    private var pcPeerCommit: ByteArray? = null
+    private var pcPeerBundle: ByteArray? = null
+    private var pcKpair: ByteArray? = null
+
+    private val pairingCentralCb = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            handler.post {
+                if (newState == BluetoothProfile.STATE_CONNECTED) g.requestMtu(MTU)
+                else if (newState == BluetoothProfile.STATE_DISCONNECTED && ceremonyRunning) pairFail("connection lost")
+            }
+        }
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) { handler.post { g.discoverServices() } }
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            handler.post {
+                val chr = g.getService(SVC)?.getCharacteristic(CHR_PAIR)
+                    ?: return@post pairFail("peer has no pairing characteristic")
+                pcReasm = PairReasm(); pcStage = 0
+                pcPeerCommit = null; pcPeerBundle = null; pcKpair = null
+                pcSendMsg(g, chr, R_COMMIT, Crypto.commit(myBundle))   // stage 0: our COMMIT
+            }
+        }
+        override fun onCharacteristicWrite(g: BluetoothGatt, chr: BluetoothGattCharacteristic, status: Int) {
+            handler.post {
+                if (status != BluetoothGatt.GATT_SUCCESS) return@post pairFail("write failed ($status)")
+                if (pcOutOff < pcOutMsg.size) pcWriteNext(g, chr) else g.readCharacteristic(chr)
+            }
+        }
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicRead(g: BluetoothGatt, chr: BluetoothGattCharacteristic, status: Int) {
+            handler.post {
+                if (status != BluetoothGatt.GATT_SUCCESS) return@post pairFail("read failed ($status)")
+                val msg = pcReasm.accept(chr.value ?: ByteArray(0))
+                if (msg == null) { g.readCharacteristic(chr); return@post }
+                onPairCentralMsg(g, chr, msg)
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun pcWriteNext(g: BluetoothGatt, chr: BluetoothGattCharacteristic) {
+        val f = pairFrame(pcOutRound, pcOutMsg, pcOutOff)
+        pcOutOff += f.size - PAIR_HDR
+        chr.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        chr.value = f
+        g.writeCharacteristic(chr)
+    }
+
+    private fun pcSendMsg(g: BluetoothGatt, chr: BluetoothGattCharacteristic, round: Int, msg: ByteArray) {
+        pcOutMsg = msg; pcOutRound = round; pcOutOff = 0
+        pcWriteNext(g, chr)
+    }
+
+    private fun onPairCentralMsg(g: BluetoothGatt, chr: BluetoothGattCharacteristic, msg: ByteArray) {
+        when (pcStage) {
+            0 -> { // got peer COMMIT
+                if (msg.size != Crypto.PAIR_COMMIT_LEN) return pairFail("bad commitment")
+                pcPeerCommit = msg
+                pcStage = 1
+                pcSendMsg(g, chr, R_REVEAL, myBundle)
+            }
+            1 -> { // got peer REVEAL — verify against its commitment BEFORE trusting the bundle
+                if (!Crypto.verifyCommit(msg, pcPeerCommit)) {
+                    return pairSecurityAbort("peer bundle does not match its commitment — possible interference")
+                }
+                pcPeerBundle = msg
+                pcStage = 2
+                g.readCharacteristic(chr) // pull the CT
+            }
+            2 -> { // got CT
+                val pb = pcPeerBundle ?: return pairFail("state error")
+                val ss = try { Crypto.kemDecapsulate(identity, msg) } catch (e: Exception) { return pairFail("decapsulation failed") }
+                val peerX = Crypto.splitBundle(pb)[1]
+                val k = try { Crypto.deriveKpairPq(identity, peerX, ss) } catch (e: Exception) { return pairFail("key derivation failed: ${e.message}") }
+                pcKpair = k
+                pcStage = 3
+                pcSendMsg(g, chr, R_KC, Crypto.kc(k, "I"))
+            }
+            3 -> { // got peer KC
+                val k = pcKpair ?: return pairFail("state error")
+                val pb = pcPeerBundle ?: return pairFail("state error")
+                if (!Crypto.verifyKc(k, "R", msg)) return pairSecurityAbort("key confirmation failed — keys diverged")
+                ceremonyRunning = false; centralBusy = false
+                val sas = Crypto.sasOverBundles(myBundle, pb)
+                Log.i(TAG, "PAIR ceremony complete (initiator) sas=$sas")
+                onPairing(PairEvent.KcVerified(contactHex(pb), pb, k, pq = true, sas = sas))
+                try { g.disconnect(); g.close() } catch (_: Exception) {}
+                centralGatt = null
+            }
+        }
+    }
+
+    // ---- peripheral / responder (verbatim state machine) ----
+
+    private class PairServerState {
+        var deviceAddr: String? = null
+        val reasm = PairReasm()
+        var stage = 0
+        var outMsg = ByteArray(0)
+        var outRound = 0
+        var outOff = 0
+        var peerCommit: ByteArray? = null
+        var peerBundle: ByteArray? = null
+        var kPair: ByteArray? = null
+        var kcServed = false
+    }
+
+    private var serverState: PairServerState? = null
+
+    private fun onPairServerConnection(d: BluetoothDevice, newState: Int) {
+        // V1: serverState is now bound LAZILY on the first valid COMMIT (below), NOT on connect —
+        // the shared server also receives mesh flood connections, and binding on connect would let
+        // a flood peer's connect steal the slot from a pairing initiator (both connect before the
+        // COMMIT arrives), stalling the ceremony. We only care about the bound peer disconnecting.
+        if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+            val s = serverState ?: return
+            if (s.deviceAddr != d.address) return
+            if (s.stage > 0 && !s.kcServed && ceremonyRunning) {
+                pairFail("the other phone disconnected before finishing")
+            } else {
+                serverState = null
+            }
+        }
+    }
+
+    private fun onPairServerWrite(d: BluetoothDevice, value: ByteArray) {
+        // CONSENT (design brief §5): inbound pairing is rejected unless the human turned pairing
+        // mode ON. The server is now always up (it's the mesh server), so without this gate a peer
+        // could start a ceremony against a phone that never opened the pairing screen.
+        if (!pairMode) return
+
+        var s = serverState
+        if (s == null) {
+            // No ceremony yet — ONLY a valid COMMIT starts (and binds) one. A flood peer never
+            // writes CHR_PAIR, so the only writer here is a pairing initiator. (COMMIT is 32B ≤
+            // one frame, so this single frame completes it.)
+            val fresh = PairServerState().also { it.deviceAddr = d.address }
+            val msg = fresh.reasm.accept(value) ?: run { serverState = fresh; return } // hold a partial
+            if (msg.size != Crypto.PAIR_COMMIT_LEN) return   // not a COMMIT — ignore, stay unbound
+            serverState = fresh
+            fresh.peerCommit = msg
+            if (!ceremonyRunning) { ceremonyRunning = true; armCeremonyTimeout() }
+            fresh.stage = 1
+            pairServerQueue(fresh, R_COMMIT, Crypto.commit(myBundle))
+            return
+        }
+        if (s.deviceAddr != null && s.deviceAddr != d.address) return   // ceremony bound to another central
+        val msg = s.reasm.accept(value) ?: return
+        when (s.stage) {
+            0 -> { // provisional bind still awaiting its COMMIT
+                if (msg.size != Crypto.PAIR_COMMIT_LEN) { serverState = null; return }
+                s.peerCommit = msg
+                if (!ceremonyRunning) { ceremonyRunning = true; armCeremonyTimeout() }
+                s.stage = 1
+                pairServerQueue(s, R_COMMIT, Crypto.commit(myBundle))
+            }
+            1 -> { // REVEAL — verify against the commitment BEFORE trusting the bundle
+                if (!Crypto.verifyCommit(msg, s.peerCommit)) {
+                    return pairSecurityAbort("peer bundle does not match its commitment — possible interference")
+                }
+                s.peerBundle = msg
+                s.stage = 2
+                pairServerQueue(s, R_REVEAL, myBundle)
+            }
+            2 -> { // KC (CT was served between REVEAL and this)
+                val k = s.kPair ?: return pairFail("state error")
+                if (!Crypto.verifyKc(k, "I", msg)) return pairSecurityAbort("key confirmation failed — keys diverged")
+                s.stage = 3
+                s.kcServed = false
+                pairServerQueue(s, R_KC, Crypto.kc(k, "R"))
+            }
+        }
+    }
+
+    private fun onPairServerRead(d: BluetoothDevice, reqId: Int) {
+        val s = serverState
+        if (s == null || s.outMsg.isEmpty() || (s.deviceAddr != null && s.deviceAddr != d.address)) {
+            server?.sendResponse(d, reqId, BluetoothGatt.GATT_SUCCESS, 0, ByteArray(0)); return
+        }
+        val f = pairFrame(s.outRound, s.outMsg, s.outOff)
+        s.outOff += f.size - PAIR_HDR
+        server?.sendResponse(d, reqId, BluetoothGatt.GATT_SUCCESS, 0, f)
+        if (s.outOff >= s.outMsg.size) afterPairServed(s)
+    }
+
+    private fun pairServerQueue(s: PairServerState, round: Int, msg: ByteArray) {
+        s.outMsg = msg; s.outRound = round; s.outOff = 0
+    }
+
+    private fun afterPairServed(s: PairServerState) {
+        when (s.outRound) {
+            R_REVEAL -> { // our bundle fully read → encapsulate to the (verified) initiator key
+                val pb = s.peerBundle ?: return
+                val mlkemPub = Crypto.splitBundle(pb)[0]
+                val enc = try { Crypto.kemEncapsulateTo(mlkemPub) } catch (e: Exception) { return pairFail("encapsulation failed") }
+                val peerX = Crypto.splitBundle(pb)[1]
+                s.kPair = try { Crypto.deriveKpairPq(identity, peerX, enc.ss) } catch (e: Exception) { return pairFail("key derivation failed: ${e.message}") }
+                pairServerQueue(s, R_CT, enc.ct)
+            }
+            R_KC -> {
+                if (s.kcServed) return
+                s.kcServed = true
+                ceremonyRunning = false
+                val pb = s.peerBundle ?: return
+                val k = s.kPair ?: return
+                val sas = Crypto.sasOverBundles(myBundle, pb)
+                Log.i(TAG, "PAIR ceremony complete (responder) sas=$sas")
+                onPairing(PairEvent.KcVerified(contactHex(pb), pb, k, pq = true, sas = sas))
+                serverState = null   // release the slot so a re-pair (peer tapped "try again") starts fresh
+            }
+        }
+    }
+
+    private fun contactHex(bundle: ByteArray): String =
+        Crypto.contactIdFromBundle(bundle).joinToString("") { "%02x".format(it) }
 }

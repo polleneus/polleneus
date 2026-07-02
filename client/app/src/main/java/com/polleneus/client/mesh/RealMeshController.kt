@@ -2,7 +2,6 @@ package com.polleneus.client.mesh
 
 import android.content.Context
 import android.util.Log
-import com.polleneus.client.mesh.ble.PairingManager
 import com.polleneus.client.mesh.crypto.Crypto
 import com.polleneus.client.mesh.store.ContactStore
 import com.polleneus.client.mesh.store.IdentityStore
@@ -73,7 +72,6 @@ class RealMeshController(
     private val _maxPlaintext = MutableStateFlow(2048)
     override val maxPlaintextBytes: StateFlow<Int> = _maxPlaintext.asStateFlow()
 
-    private var pairingManager: PairingManager? = null
     @Volatile private var pendingIdHex: String? = null
 
     private val meshStore = MeshStore()
@@ -124,8 +122,9 @@ class RealMeshController(
             _meshState.value = MeshState.PAUSED
             return
         }
+        val me = identityStore.load()
         val t = MeshTransport(
-            ctx, meshStore,
+            ctx, meshStore, me, Crypto.contactId(me),
             onBlob = { idHex, wire -> onBlobReceived(idHex, wire) },
             onPeers = { n ->
                 _nearby.value = n
@@ -133,6 +132,7 @@ class RealMeshController(
                     _meshState.value = if (n > 0) MeshState.RELAYING else MeshState.LISTENING
                 }
             },
+            onPairing = { e -> onCeremonyEvent(e) },   // V1: ceremony now rides the mesh transport
         )
         transport = t
         t.start()
@@ -158,6 +158,7 @@ class RealMeshController(
         _meshState.value = MeshState.PAUSED
     }
 
+
     override fun resume() {
         if (_deviceKey.value.isEmpty()) start() else startTransport()
     }
@@ -170,41 +171,28 @@ class RealMeshController(
     // ---------------- pairing ----------------
 
     override fun setPairingMode(on: Boolean) {
-        if (on == _pairingMode.value && (on == (pairingManager != null))) return
+        if (on == _pairingMode.value) return
         _pairingMode.value = on
-        if (on) {
-            // Free the radio for the ceremony. The client keeps pairing and mesh on separate GATT
-            // services, so running both at once collides on BLE — serialize them for now. (The spike
-            // unifies them onto one service; reconciling that is a follow-up.)
-            transport?.stop(); transport = null; _nearby.value = 0
-            _meshState.value = MeshState.PAUSED
-            scope.launch(Dispatchers.IO) {
-                val id = identityStore.load()
-                val pm = PairingManager(ctx, id, Crypto.contactId(id)) { e -> onCeremonyEvent(e) }
-                pairingManager = pm
-                pm.start()
-            }
-        } else {
-            pairingManager?.stop()
-            pairingManager = null
-            startTransport()   // resume the mesh once pairing closes
-        }
+        // V1: pairing rides the ONE mesh transport now — no teardown, no serialization. The mesh
+        // keeps relaying through the ceremony; the transport flips its advert flag + duty policy.
+        if (on && transport == null) startTransport()   // fresh install / paused → bring it up first
+        transport?.setPairingMode(on)
     }
 
     override fun beginExchange(peerId: String) {
-        pairingManager?.beginExchange()
+        transport?.beginExchange()
     }
 
-    private fun onCeremonyEvent(e: PairingManager.Event) {
+    private fun onCeremonyEvent(e: MeshTransport.PairEvent) {
         scope.launch {
             when (e) {
-                is PairingManager.Event.PeerFound -> {
+                is MeshTransport.PairEvent.PeerFound -> {
                     val tokenBytes = e.peerToken.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                     _pairing.emit(
                         PairingEvent.PeerFound(e.peerToken, IdentityStore.keyChunk(tokenBytes)),
                     )
                 }
-                is PairingManager.Event.KcVerified -> {
+                is MeshTransport.PairEvent.KcVerified -> {
                     // pairing design doc step 6: kc persists PENDING; the human SAS-match authorizes use
                     contactStore.putPending(e.idHex, e.peerBundle, e.kPair, e.pq)
                     pendingIdHex = e.idHex
@@ -215,7 +203,7 @@ class RealMeshController(
                     _pairing.emit(PairingEvent.PeerFound(e.idHex, IdentityStore.keyChunk(peerIdBytes)))
                     _pairing.emit(PairingEvent.SasReady(e.sas.substring(0, 3) + " " + e.sas.substring(3)))
                 }
-                is PairingManager.Event.Failed ->
+                is MeshTransport.PairEvent.Failed ->
                     // a failed commitment/key-confirmation = the reject screen (possible interception);
                     // a transport hiccup = the calm "couldn't connect" screen. Never conflate them.
                     if (e.security) _pairing.emit(PairingEvent.Rejected)

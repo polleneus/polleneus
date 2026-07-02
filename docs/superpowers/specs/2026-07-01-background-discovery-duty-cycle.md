@@ -75,21 +75,38 @@ One controller owns all scan starts/stops (self-heal and lifecycle paths include
    burned two spurious soft-restarts in 75 s, each hiding the GATT server ~4 s); the peer table is
    pruned (RPA rotation adds an entry per neighbour per 7–15 min).
 
-## 4. Validation (mesh level, the previously-failing test)
+## 4. Validation (mesh level, the previously-failing test) — TRANSPORT semantics
+*(corrected 2026-07-02; the first published wording said "message crosses", which overclaimed — see
+the correction note below)*
 
 Both devices verified dozing (`mWakefulness=Dozing`) before app launch; apps launched fresh with
-screens already off; blob injected on the source; convergence = receiver holds the blob.
+screens already off; test blob injected on the source. Measured outcome = **full 2048-byte blob
+DELIVERED to the receiver over BLE** (dark discovery → connect → offer/request → chunked transfer).
 
-| test | before | after (3 runs) |
+| test (transport) | before | after (3 runs) |
 |---|---|---|
-| both-dark fresh launch → message crosses | no convergence in 30 s | **≤10 s, ≤10 s, ≤5 s** |
-| steady-state mid-gap rediscovery (receiver relaunched empty) | — | **≤45 s, ≤55 s, ≤5 s** (window-phase dependent; bound: 60 s period) |
+| both-dark fresh launch → full blob delivered | discovery never converged in 30 s | **≤10 s, ≤10 s, ≤5 s** |
+| steady-state mid-gap redelivery (receiver relaunched empty) | — | **≤45 s, ≤55 s, ≤5 s** (window-phase dependent; bound: 60 s period) |
 | screen-on recovery → continuous scan | — | pass (all runs) |
+| 3-node all-dark (1 run) | — | **≤5 s and ≤10 s** to the two receivers |
+
+**Correction note (what these runs do NOT prove).** The test harness used a legacy raw-inject path
+that forges the content address (id ≠ SHA-256 of the blob), so after the transfer every receiver
+**correctly rejected the blob at content-address validation** — the validate-before-store/relay
+discipline working exactly as designed. The runs therefore validate the duty cycler's job —
+screen-off discovery and transport — but **store-and-relay of a *valid* blob under the duty cycler,
+and a forced multi-hop topology, remain owed** (the store/relay code is unchanged since the earlier
+hardware-proven carry tests, but that is an argument, not this measurement). The same forged-id
+pitfall silently turned a first battery-soak start into a re-push loop (a rejected blob is re-pushed
+every few seconds; there is no reject-memory) — caught within minutes, soak restarted clean; noted
+here so no future test repeats it.
 
 The change also went through a multi-lens adversarial review (concurrency, state-machine, Android API,
 security surface, honesty audit of every number against the raw logs): 24 confirmed findings, all
 fixed before merge — including the session-age-aware preventive scheduling, the adapter-off retry
-path, teardown races, and the §5 side-channel disclosure below.
+path, teardown races, and the §5 side-channel disclosure below. This correction note is itself the
+same discipline applied one layer up: the flawed claim was caught by re-reading raw receiver logs
+hours after publication and retracted the same night.
 
 ## 5. Honest limits (nothing below is claimed)
 

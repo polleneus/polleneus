@@ -203,9 +203,21 @@ Code: `spike`/`fs/fs_chk.cpp`.
      FS-leg wire is byte-uniform** in any spec/UX text until these close. Separable interim win (take anytime):
      **Elligator2 on the X-Wing X25519 leg** (cheap, deployed by Tor/obfs4) makes the classical half uniform.
    - Full evidence + sources + the rejected-approach table: local `spike/research-stop-4-byteuniform-memo.md`.
-4. **Erasure is the thing FS rests on** — must be **StrongBox wrapping-key crypto-erase**, not file deletion;
-   **measure erase latency + flash endurance** (still UNMEASURED — the M-FS3 on-device task). If erasure isn't
-   irreversible on the target TEE/flash, the FS claim is theatre even classically.
+4. **Erasure is the thing FS rests on** — and **Research Stop #6 (2026-07-02) reshaped what it can be.**
+   Keystore key **`deleteEntry` is NOT a guaranteed crypto-erase**: apps **cannot request
+   `Tag::ROLLBACK_RESISTANCE`** (no `KeyGenParameterSpec` setter at any API level — verified against the whole
+   SDK; it is system-only), so the spec attaches **no required destructive effect** to deleting an untagged
+   key ("may or may not be rendered unusable… could be restored from backup"), and stale keyblobs can survive
+   on FTL flash (keystore2 does a plain SQLite DELETE, no `BLKSECDISCARD`). What deletion buys: against an
+   **off-device flash image** every epoch is already ciphertext under the in-SE/TEE KEK (unattackable); the
+   marginal FS win of *deletion* is confined to an adversary who captured blobs earlier **and** later runs
+   code on the **same intact device** (blob replay). So FS erasure = **revocation of the OS-side software copy
+   behind a device-bound KEK, NOT a proven flash-level crypto-erase** — FS-on must not claim crypto-erase from
+   `deleteEntry` alone. **The decisive restore-after-delete test needs ROOT; the stock lab devices can't run it
+   → documented residual** (`spike/research-stop-6-keystore-memo.md`). NOTE also (RS#6): StrongBox holds **no
+   Curve 25519 / ML-KEM** — the FS epoch keys are software objects sealed by an **AES-256-GCM Keystore wrap
+   key** (H4), never Keystore-resident themselves. If erasure isn't irreversible on the target TEE/flash, the
+   FS claim is theatre even classically — hence the residual stays open.
    **M-FS2 review finding F1 (fixed):** the CHK `advance` tree-walk left un-erased value-copies of *past-reaching*
    internal-node keys in freed RAM (with the retained `dk`, a RAM-image attacker could reopen whole past ranges) —
    `advance`/`Delegate` now `eraseUSK`/`clear` every transient. **But this is best-effort in-mem hygiene only:**
@@ -234,8 +246,12 @@ Code: `spike`/`fs/fs_chk.cpp`.
    F2 — mcl `mulCT` is **not** constant-time so the "CT port" is **retracted to best-effort masking** (true CT
    DEFERRED). **Byte-uniform wire encoding — DECIDED but DEFERRED** to its own bounded spike + 3 gates (§8.3b),
    NOT shipped in M-FS2. Review record: local `spike/fs-chk-verification.md`.
-3. **M-FS3:** StrongBox key-wrapping + crypto-erase; **measure erase latency + endurance** (closes the last B4
-   on-device unknown).
+3. **M-FS3 — PARTIAL (Research Stop #6, 2026-07-02):** StrongBox/TEE key-wrapping is BUILT + hardware-validated
+   as the H4 at-rest wrapper (`spike/Vault.java`; S21U Knox Vault backs the standard StrongBox API — AES-256-GCM
+   keygen ~82ms, delete ~10ms, 300-cycle churn zero-drift; Tab = TEE-only). **But the crypto-erase VERDICT is
+   negative as a guarantee** (see §9.4 note): `deleteEntry` on an untagged key is OS-side revocation, not proven
+   flash-erase, and the decisive **restore-after-delete test requires root the lab devices lack.** Still OWED:
+   the rooted restore test (per model), a ~10k-cycle churn/endurance soak, and StrongBox-vs-TEE latency at N=100.
 4. **M-FS4:** X-Wing integration (FS classical leg + static ML-KEM, committing AEAD w/ epoch-AAD) behind a flag;
    flag-day envelope-size handling; FS stays **OFF by default** until B1.
 5. **Gate:** B1 audit of the BKP-on-mcl code + the key-privacy proof + erasure guarantee → only then FS-on ships.
@@ -253,3 +269,10 @@ encoding spike** (§8.3b — measure decode + prove uniformity), **true constant
 best-effort in-mem wiping), **M-FS4** (hybrid integration + CCA/committing wrapper), the **SXDH key-privacy proof
 + the "only public G2 is P2" invariant** (§2.1/§8.1), the **boot-reset gap** (§4), and **B1 audit**. v1 remains
 **static key + FS DEFERRED + in-app disclosure**.
+
+**M-FS3 update (2026-07-02, Research Stop #6):** the StrongBox/TEE wrapping half is DONE + hardware-validated
+(shipped as the H4 at-rest wrapper), but the crypto-erase half returned a **negative guarantee** — Keystore
+`deleteEntry` is not a proven flash-level erase (apps can't request `ROLLBACK_RESISTANCE`; blobs can survive on
+FTL), and the decisive restore-after-delete test **needs root the stock lab devices lack** (documented residual).
+So M-FS3 is **partially closed**: the deletion mechanism FS would rest on is weaker than assumed — the honest FS
+claim is off-device-image confidentiality (ciphertext under an in-hardware KEK), not `deleteEntry`-crypto-erase.

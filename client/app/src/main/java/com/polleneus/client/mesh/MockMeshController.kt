@@ -128,7 +128,8 @@ class MockMeshController(private val scope: CoroutineScope) : MeshController {
     override fun beginExchange(peerId: String) {
         scope.launch {
             delay(1_200)
-            _pairing.emit(PairingEvent.SasReady("417 902 336"))
+            // real SAS = 6 decimal digits (Crypto.sasOverBundles), shown 3+3
+            _pairing.emit(PairingEvent.SasReady("417 902"))
         }
     }
 

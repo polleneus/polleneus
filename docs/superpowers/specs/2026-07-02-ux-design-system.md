@@ -111,7 +111,7 @@ Google Fonts; **the app must bundle fonts locally** — a blackout app cannot fe
 | **Compose** | Verified-recipient-only picker (fail-closed with inline reason); TTL chips (1h/12h/**2d default**/7d) captioned "fades on every phone it reached"; byte counter **(open Q2)**; button = "Seal & release to mesh — no delivery promise". |
 | **Post-send** | State = **RELEASED TO MESH**, never sent/delivered. Plain-words tile: "you won't be told when — or if — it arrives. Nobody is. That's the design." Local hints allowed, labeled "not delivery proof" (§4-permitted phrasing). |
 | **Contacts** | Verified / Pending sections; pending = "cannot be sent to"; no presence indicators anywhere ("presence doesn't exist here"). |
-| **Pairing** | 3 acts + reject. Act 1: pairing-mode toggle, "requests while OFF are auto-rejected". Act 2 (SAS): 3-3-3 digits at 40px, **no countdown timer** (time pressure = rushed compare), equal-size match/mismatch, confirm carries its own friction ("only after reading it aloud"). Act 3: VERIFIED — BY YOU; **alias is named here, local-only** ("never travels with a message"). Reject: keys discarded, "if it fails twice, take it seriously" — serious, not siren. |
+| **Pairing** | 3 acts + reject. Act 1: pairing-mode toggle, "requests while OFF are auto-rejected". Act 2 (SAS): 6 decimal digits shown 3+3 at 40px (corrected from the mockups' 3-3-3: the validated protocol SAS is 6 digits, ZRTP-class, with commit-before-reveal hardening — grinding resistance comes from the commitment, not digit count), **no countdown timer** (time pressure = rushed compare), equal-size match/mismatch, confirm carries its own friction ("only after reading it aloud"). Act 3: VERIFIED — BY YOU; **alias is named here, local-only** ("never travels with a message"). Reject: keys discarded, "if it fails twice, take it seriously" — serious, not siren. |
 | **Onboarding** | 3 steps: identity ("this phone just made its own key" — no account) → **the honest deal** (§3 must-disclose as a 2-sealed/3-visible ledger + "not enough if you're personally hunted"; gate tap = "I understand the limits", unskippable **(open Q3)**) → battery grant + notification reframe ("we make it useful"). |
 | **Panic** | Two-step: strip/notification hold → confirm screen with **will-erase vs cannot-do** ("can't recall carried copies; can't undo a forensic image") → 2s hold. Post-wipe = "NOTHING STORED", factory-fresh look and **nothing more** — disguise/decoy is out of design scope pending security sign-off **(open Q4)**. |
 | **What this protects** | The canonical B3 wording: 3 protected / 4 not-protected rows + north star ("what you say, and who you say it to, are hidden; that you're part of the network is not"). Store text and onboarding must **quote it, not paraphrase it**. One tap from settings. |
@@ -127,7 +127,7 @@ case; honest captions lowercase mono. **Every promise pairs with its limit** in 
 Agency words: "you" = the human (trust decisions); "this phone" = the device (storage, radio).
 
 **Formats:** 24h device-clock times ("02:14") · dates "06-28" · durations "2d 3h" / "40 min" ·
-counts always name a unit and carry a caption · keys 4-4-4 ("K7QD-M2XV-94RA") · SAS 3-3-3 digits.
+counts always name a unit and carry a caption · keys 4-4-4 ("K7QD-M2XV-94RA") · SAS: 6 decimal digits, shown 3+3.
 
 | Say | For | Never |
 |---|---|---|

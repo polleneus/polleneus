@@ -35,6 +35,10 @@ android {
 }
 
 dependencies {
+    // Pinned to the exact version hardware-validated in the spike (LAB C3: single-dex, no multidex).
+    implementation("org.bouncycastle:bcprov-jdk18on:1.79")
+    testImplementation("junit:junit:4.13.2")
+
     val composeBom = platform("androidx.compose:compose-bom:2025.01.00")
     implementation(composeBom)
     implementation("androidx.activity:activity-compose:1.9.3")

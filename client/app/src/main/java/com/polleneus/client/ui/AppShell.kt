@@ -34,7 +34,9 @@ import androidx.compose.ui.unit.sp
 import com.polleneus.client.mesh.MeshController
 import com.polleneus.client.ui.components.TFoot
 import com.polleneus.client.ui.components.TLabel
+import com.polleneus.client.ui.contacts.ContactsScreen
 import com.polleneus.client.ui.home.HomeScreen
+import com.polleneus.client.ui.pairing.PairingScreen
 import com.polleneus.client.ui.theme.MartianMono
 import com.polleneus.client.ui.theme.Pn
 
@@ -44,15 +46,22 @@ enum class Tab(val label: String) { MESH("Mesh"), MESSAGES("Messages"), CONTACTS
 fun AppShell(controller: MeshController) {
     var tab by remember { mutableStateOf(Tab.MESH) }
 
+    var pairingOpen by remember { mutableStateOf(false) }
+
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Box(Modifier.weight(1f)) {
             when (tab) {
                 Tab.MESH -> HomeScreen(controller)
                 Tab.MESSAGES -> ComingInMilestone("Messages", "the inbox lands in X3 — sealed, receipt-free")
-                Tab.CONTACTS -> ComingInMilestone("Contacts", "pairing lands in X2 — made in person, not from a list")
+                Tab.CONTACTS ->
+                    if (pairingOpen) {
+                        PairingScreen(controller, onClose = { pairingOpen = false })
+                    } else {
+                        ContactsScreen(controller, onOpenPairing = { pairingOpen = true })
+                    }
             }
         }
-        BottomNav(tab, onSelect = { tab = it })
+        BottomNav(tab, onSelect = { tab = it; if (it != Tab.CONTACTS) pairingOpen = false })
     }
 }
 

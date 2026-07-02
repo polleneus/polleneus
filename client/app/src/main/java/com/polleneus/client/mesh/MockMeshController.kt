@@ -54,7 +54,8 @@ class MockMeshController(private val scope: CoroutineScope) : MeshController {
     private val _pairingMode = MutableStateFlow(false)
     override val pairingMode: StateFlow<Boolean> = _pairingMode.asStateFlow()
 
-    private val _pairing = MutableSharedFlow<PairingEvent>(replay = 1)
+    // replay = 0: pairing is a live ceremony — a re-entering screen must never see a stale event
+    private val _pairing = MutableSharedFlow<PairingEvent>(extraBufferCapacity = 4)
     override val pairing: SharedFlow<PairingEvent> = _pairing.asSharedFlow()
 
     private val _inbox = MutableStateFlow(

@@ -32,30 +32,132 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import com.polleneus.client.Prefs
 import com.polleneus.client.mesh.MeshController
+import com.polleneus.client.service.MeshService
+import com.polleneus.client.system.Perms
 import com.polleneus.client.ui.components.TFoot
 import com.polleneus.client.ui.components.TLabel
 import com.polleneus.client.ui.contacts.ContactsScreen
 import com.polleneus.client.ui.home.HomeScreen
+import com.polleneus.client.ui.honesty.WhatThisProtectsScreen
 import com.polleneus.client.ui.messages.ComposeScreen
 import com.polleneus.client.ui.messages.MessagesScreen
+import com.polleneus.client.ui.onboarding.OnboardingFlow
 import com.polleneus.client.ui.pairing.PairingScreen
+import com.polleneus.client.ui.panic.PanicConfirmScreen
+import com.polleneus.client.ui.panic.PostWipeScreen
+import com.polleneus.client.ui.settings.SettingsScreen
 import com.polleneus.client.ui.theme.MartianMono
 import com.polleneus.client.ui.theme.Pn
 
 enum class Tab(val label: String) { MESH("Mesh"), MESSAGES("Messages"), CONTACTS("Contacts") }
 
+private enum class Overlay { NONE, SETTINGS, HONESTY, PANIC }
+
+/**
+ * X4 root routing: onboarding gates the app (the honest deal comes before the mesh), panic
+ * routes every entry point (home strip, settings "start over", notification action) through
+ * the same step-2 confirm, and the post-wipe state is NOTHING STORED until the human opts
+ * back in.
+ *
+ * @param panicSignal increments each time the notification's Panic action fires.
+ * @param ensureIdentity mints the device key WITHOUT bringing the radio up — onboarding
+ *   step 1 shows the key; the transport waits for the gate.
+ */
 @Composable
-fun AppShell(controller: MeshController) {
+fun AppShell(
+    controller: MeshController,
+    panicSignal: Int = 0,
+    // Default is deliberately a no-op: resume() would bring the radio up before the gate.
+    // MainActivity wires the real identity-only mint; the mock's key is pre-seeded.
+    ensureIdentity: () -> Unit = {},
+) {
+    val ctx = LocalContext.current
+    var onboarded by remember { mutableStateOf(Prefs.onboarded(ctx)) }
+    var wiped by remember { mutableStateOf(false) }
+    var overlay by remember { mutableStateOf(Overlay.NONE) }
+
+    LaunchedEffect(onboarded, wiped) {
+        if (!onboarded && !wiped) ensureIdentity()
+    }
+    LaunchedEffect(panicSignal) {
+        if (panicSignal > 0 && onboarded && !wiped) overlay = Overlay.PANIC
+    }
+
+    Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+        AppRoutes(
+            controller, onboarded, wiped, overlay, ctx,
+            setOnboarded = { onboarded = it },
+            setWiped = { wiped = it },
+            setOverlay = { overlay = it },
+        )
+    }
+}
+
+@Composable
+private fun AppRoutes(
+    controller: MeshController,
+    onboarded: Boolean,
+    wiped: Boolean,
+    overlay: Overlay,
+    ctx: android.content.Context,
+    setOnboarded: (Boolean) -> Unit,
+    setWiped: (Boolean) -> Unit,
+    setOverlay: (Overlay) -> Unit,
+) {
+    when {
+        wiped -> PostWipeScreen(onStartFresh = { setWiped(false) })
+
+        !onboarded -> OnboardingFlow(controller, onDone = {
+            Prefs.setOnboarded(ctx)
+            setOnboarded(true)
+            controller.resume()                     // the radio comes up only past the gate
+            if (Perms.ble(ctx)) MeshService.start(ctx)
+        })
+
+        overlay == Overlay.PANIC -> PanicConfirmScreen(
+            controller,
+            onCancel = { setOverlay(Overlay.NONE) },
+            onWiped = {
+                Prefs.panicReset(ctx)               // factory-fresh: prefs are stored state too
+                MeshService.stop(ctx)               // a lingering "active" line would be a lie
+                setOverlay(Overlay.NONE)
+                setOnboarded(false)
+                setWiped(true)
+            },
+        )
+
+        overlay == Overlay.SETTINGS -> SettingsScreen(
+            controller,
+            onBack = { setOverlay(Overlay.NONE) },
+            onOpenHonesty = { setOverlay(Overlay.HONESTY) },
+            onStartOver = { setOverlay(Overlay.PANIC) },
+        )
+
+        overlay == Overlay.HONESTY -> WhatThisProtectsScreen(onBack = { setOverlay(Overlay.SETTINGS) })
+
+        else -> MainTabs(
+            controller,
+            onOpenSettings = { setOverlay(Overlay.SETTINGS) },
+            onPanic = { setOverlay(Overlay.PANIC) },
+        )
+    }
+}
+
+@Composable
+private fun MainTabs(controller: MeshController, onOpenSettings: () -> Unit, onPanic: () -> Unit) {
     var tab by remember { mutableStateOf(Tab.MESH) }
 
     var pairingOpen by remember { mutableStateOf(false) }
     var composeOpen by remember { mutableStateOf(false) }
 
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
+    Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) {
             when (tab) {
-                Tab.MESH -> HomeScreen(controller)
+                Tab.MESH -> HomeScreen(controller, onOpenSettings = onOpenSettings, onPanic = onPanic)
                 Tab.MESSAGES ->
                     if (composeOpen) {
                         ComposeScreen(controller, onClose = { composeOpen = false })

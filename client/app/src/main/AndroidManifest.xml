@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- X2b-2: BLE permissions for the pairing ceremony ONLY (advertise + scan + connect while
-         the pairing screen is open). SCAN is neverForLocation — the ceremony derives no location.
-         Legacy trio for API 26-30 (lab fleet is 33/36; minSdk floor keeps them). Mesh transport
-         (foreground service etc.) arrives in X3 with its own justification. -->
+    <!-- BLE for the pairing ceremony (X2b) and the flooding mesh (X3b). SCAN is
+         neverForLocation — nothing here derives location. Legacy trio for API 26-30
+         (lab fleet is 33/36; minSdk floor keeps them). -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
@@ -14,7 +13,19 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
+    <!-- X4: the pocket surface. The permanent notification is a design-brief §2 requirement
+         (first-class UI: status + panic reach), not clutter to hide. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
+    <!-- X4 battery grant (brief §2 — the known adoption cliff). The direct-request path is
+         Play-policy-restricted, but nothing ships before the B1 audit and never without a B3
+         copy review; lab builds take the honest, direct route. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <application
+        android:name=".PolleneusApp"
         android:label="polleneus"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/Theme.Polleneus"
@@ -23,13 +34,23 @@
         <!-- allowBackup=false is load-bearing: cloud backup of identity/messages would
              contradict local-only deletion (design system §5 / settings "deliberate absences"). -->
 
+        <!-- singleTop: the notification's Panic action must land in the running activity
+             (onNewIntent) — a second instance would orphan the ceremony state. -->
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTop"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The in-process foreground service (kickoff D2). connectedDevice is the honest
+             type: this app is a BLE mesh node. -->
+        <service
+            android:name=".service.MeshService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

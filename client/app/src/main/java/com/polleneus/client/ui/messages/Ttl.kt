@@ -22,6 +22,16 @@ import com.polleneus.client.ui.theme.Pn
 import java.time.Duration
 import java.time.Instant
 
+/** The sender-set lifetimes (design system §5 Compose). Index 2 (2 days) is the default. */
+data class TtlChoice(val label: String, val duration: Duration)
+
+val TTL_CHOICES = listOf(
+    TtlChoice("1h", Duration.ofHours(1)),
+    TtlChoice("12h", Duration.ofHours(12)),
+    TtlChoice("2 days", Duration.ofDays(2)),
+    TtlChoice("7 days", Duration.ofDays(7)),
+)
+
 /** "fades in 2d 3h" / "fades in 40 min" — compact, lowercase, honest about ephemerality. */
 fun fadeLabel(now: Instant, fadesAt: Instant): String {
     val d = Duration.between(now, fadesAt)

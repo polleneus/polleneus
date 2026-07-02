@@ -93,8 +93,27 @@ class RealMeshController(
         }
     }
 
+    /**
+     * X4 (outside the contract, wired by the activity): onboarding step 1 shows the freshly
+     * minted key, but the radio must not come up before the honest-deal gate — mint only.
+     */
+    fun ensureIdentity() {
+        scope.launch(Dispatchers.IO) {
+            val id = identityStore.load()
+            _deviceKey.value = IdentityStore.keyChunk(Crypto.contactId(id))
+            publishContacts()
+        }
+    }
+
     private fun startTransport() {
         if (transport != null) return
+        if (!com.polleneus.client.system.Perms.ble(ctx)) {
+            // Fresh installs reach here before the runtime grant: no radio, no transport.
+            // PAUSED is the honest state — the home strip's resume retries once granted.
+            Log.w("PN-CTRL", "transport not started — BLE permissions not granted")
+            _meshState.value = MeshState.PAUSED
+            return
+        }
         val t = MeshTransport(
             ctx, meshStore,
             onBlob = { idHex, wire -> onBlobReceived(idHex, wire) },
@@ -348,6 +367,9 @@ class RealMeshController(
             _nearby.value = 0
             _deviceKey.value = ""          // NOTHING STORED
             _meshState.value = MeshState.PAUSED
+            // The order above is the X4 DoD evidence: VAULT wrap-key deleted → identity
+            // wiped → contacts wiped → this line. Verified in logcat on hardware.
+            Log.w("PN-CTRL", "PANIC COMPLETE — nothing stored (local erase only)")
         }
     }
 }

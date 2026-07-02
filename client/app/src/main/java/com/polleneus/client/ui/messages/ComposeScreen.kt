@@ -49,26 +49,21 @@ import com.polleneus.client.ui.components.TrustBadge
 import com.polleneus.client.ui.theme.Archivo
 import com.polleneus.client.ui.theme.MartianMono
 import com.polleneus.client.ui.theme.Pn
-import java.time.Duration
-
-private data class TtlChoice(val label: String, val duration: Duration)
-
-private val TTL_CHOICES = listOf(
-    TtlChoice("1h", Duration.ofHours(1)),
-    TtlChoice("12h", Duration.ofHours(12)),
-    TtlChoice("2 days", Duration.ofDays(2)),
-    TtlChoice("7 days", Duration.ofDays(7)),
-)
+import com.polleneus.client.Prefs
 
 @Composable
 fun ComposeScreen(controller: MeshController, onClose: () -> Unit) {
     val contacts by controller.contacts.collectAsState()
     val maxBytes by controller.maxPlaintextBytes.collectAsState()
     val verified = contacts.filter { it.state == TrustState.VERIFIED }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
 
     var recipient by remember(verified) { mutableStateOf(verified.firstOrNull()) }
     var body by remember { mutableStateOf("") }
-    var ttlIndex by remember { mutableStateOf(2) }
+    // X4: the default lifetime is a setting; senders still change it per message here
+    var ttlIndex by remember {
+        mutableStateOf(Prefs.defaultTtlIndex(ctx).coerceIn(0, TTL_CHOICES.size - 1))
+    }
     var released by remember { mutableStateOf<ReleaseResult.Released?>(null) }
     var refusal by remember { mutableStateOf<String?>(null) }
 

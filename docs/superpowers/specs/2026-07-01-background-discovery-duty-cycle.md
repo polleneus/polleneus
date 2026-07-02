@@ -90,16 +90,23 @@ DELIVERED to the receiver over BLE** (dark discovery → connect → offer/reque
 | screen-on recovery → continuous scan | — | pass (all runs) |
 | 3-node all-dark (1 run) | — | **≤5 s and ≤10 s** to the two receivers |
 
-**Correction note (what these runs do NOT prove).** The test harness used a legacy raw-inject path
-that forges the content address (id ≠ SHA-256 of the blob), so after the transfer every receiver
-**correctly rejected the blob at content-address validation** — the validate-before-store/relay
-discipline working exactly as designed. The runs therefore validate the duty cycler's job —
-screen-off discovery and transport — but **store-and-relay of a *valid* blob under the duty cycler,
-and a forced multi-hop topology, remain owed** (the store/relay code is unchanged since the earlier
-hardware-proven carry tests, but that is an argument, not this measurement). The same forged-id
-pitfall silently turned a first battery-soak start into a re-push loop (a rejected blob is re-pushed
-every few seconds; there is no reject-memory) — caught within minutes, soak restarted clean; noted
-here so no future test repeats it.
+**Correction note (what those runs did NOT prove — since RESOLVED).** The test harness used a legacy
+raw-inject path that forges the content address (id ≠ SHA-256 of the blob), so after the transfer
+every receiver **correctly rejected the blob at content-address validation** — the
+validate-before-store/relay discipline working exactly as designed. Those runs therefore validated
+the duty cycler's job — screen-off discovery and transport — but not valid-blob store-and-relay. The
+same forged-id pitfall silently turned a first battery-soak start into a re-push loop (a rejected
+blob is re-pushed every few seconds; there is no reject-memory) — caught within minutes, soak
+restarted clean; noted here so no future test repeats it.
+
+**Valid-blob all-dark run (2026-07-02, 1 run) — the owed measurement, now done.** Two devices paired
+(post-quantum leg confirmed; the short-authentication-string compared across both devices' logs — the
+lab equivalent of the product's human screen-compare), then all three devices verified dozing and
+freshly launched dark; a real sealed message (X-Wing + key-committing AEAD, 1288 B, content-addressed,
+sender-authenticated) injected on the source: the **non-recipient third node STORED and RELAYED it
+blind in ≤5 s** ("carried, can't read"), and the **recipient decrypted it with the sender VERIFIED in
+≤10 s**. Store-and-relay of a valid blob under the duty cycler: measured. Still owed: a **forced
+multi-hop topology** (a receiver physically out of the source's radio range), and everything in §5.
 
 The change also went through a multi-lens adversarial review (concurrency, state-machine, Android API,
 security surface, honesty audit of every number against the raw logs): 24 confirmed findings, all

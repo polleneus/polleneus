@@ -23,13 +23,14 @@ marked. Nothing here weakens B1–B5.
 | # | Debt | Why it blocks a clean audit |
 |---|---|---|
 | V1 | **Unify pairing + mesh onto one GATT service** (spike already does this; the client serializes them) | Two radio states = two security postures to review; the serialization dance is accidental complexity an auditor must otherwise reason about |
-| V2 | **Port the duty cycler (pocket operation)** | The FGS keeps the process alive but screen-off discovery is degraded; the shipped behavior must match the audited behavior |
+| ~~V2~~ | ~~Port the duty cycler (pocket operation)~~ | **DONE (PR #62):** spike RS#5 duty cycler ported; screen-off receive proven on the lab fleet (Tab received a sealed message with mScreenState=OFF); dark-sender windowed scan/discover/reconcile proven. Remaining: a new-blob both-dark window hop in one shot, and a client deep-Doze soak. |
 | V3 | **Contract amendment for a DEGRADED state** (bluetooth-off / permissions-revoked currently collapse into PAUSED with a home-tile hint) | The UI-facing contract should name every reachable radio state; collapsing hides a state transition from review |
 | V4 | **Pairing retry-slot robustness** (responder `serverState` can block a re-pair COMMIT after a completed ceremony) | A flaky ceremony invites "just tap it again" habituation — exactly what a MITM wants |
 | V5 | **Q2: pin the real payload cap** (2048 B placeholder in `maxPlaintextBytes`) | Wire-format bounds are audit surface |
 | V6 | **Multi-hop re-demo on the client** (proven on the spike ferry; same store-carry-forward, not re-demonstrated in `client/`) | "Same code path" is a claim; the audit wants the demonstration |
 | V7 | **Adversarial-eviction test** (P5 §10): a hostile flood must not evict legitimate carried blobs beyond the modeled bound | The eviction policy is a DoS surface; sim gates cover it, the client build must too |
-| V8 | **Nearby-count decay** — `peersSeen` only grows on sightings (and BLE MAC rotation inflates it); a departed peer never decrements the count until restart | "Nearby: N devices" is a surfaced radio fact; a stale N overstates the mesh — an honesty defect, found at X5's Q6 measurement |
+| ~~V8~~ | ~~Nearby-count decay~~ | **DONE (PR #62):** the count now derives from scan sightings that expire after 150s (pruned on window-close + a 20s tick); departed peers and rotated MACs age out. |
+| V9 | **Advertiser lifecycle** — `ADVERTISE_FAILED_INTERNAL_ERROR` (code 4) on the Tab A9+ after the pairing→mesh advertiser churn; PR #62 added retry+soft-restart recovery, but the root cause is the serialized pairing/mesh advertiser handoff (see V1) | A node that can't advertise is invisible; the recovery masks a fragility the audit should see resolved at its root via V1 |
 
 ## 3. Verification work owed (not code)
 

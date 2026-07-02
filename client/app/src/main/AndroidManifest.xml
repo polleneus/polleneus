@@ -19,6 +19,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
+    <!-- V2 pocket operation: a partial wakelock covers each screen-off scan window ONLY
+         (10s, timeout-capped) — postDelayed freezes when the CPU deep-sleeps and the FGS
+         alone does not hold the CPU. The duty cycler's whole point is spending LESS radio
+         time than a continuous scan; this is not a keep-awake app. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- X4 battery grant (brief §2 — the known adoption cliff). The direct-request path is
          Play-policy-restricted, but nothing ships before the B1 audit and never without a B3
          copy review; lab builds take the honest, direct route. -->

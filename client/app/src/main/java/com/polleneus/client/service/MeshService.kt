@@ -38,9 +38,9 @@ import kotlinx.coroutines.launch
  * the keyguard is locked and discreet is on, the posted notification itself carries nothing
  * but "active". publicVersion stays set as defense in depth.
  *
- * Honest limit (unchanged from X3b): this keeps the process and radio alive, but screen-off
- * discovery still needs the spike's duty cycler — pocket RELAY remains a deferred increment;
- * no copy anywhere claims it.
+ * V2 (pocket operation): the transport's ported duty cycler handles screen-off discovery;
+ * this service arms its ~9-min inexact dead-man alarm (a scheduler frozen in deep Doze gets
+ * kicked back to life, degrading gracefully to ~9-min scan windows).
  */
 class MeshService : Service() {
 
@@ -52,6 +52,11 @@ class MeshService : Service() {
         const val ACTION_PAUSE = "com.polleneus.client.action.PAUSE"
         const val ACTION_RESUME = "com.polleneus.client.action.RESUME"
         private const val ACTION_REFRESH = "com.polleneus.client.action.REFRESH"
+
+        /** V2 duty cycler: inexact whileIdle dead-man alarm (~9-min OS floor without exact-alarm). */
+        private const val EXTRA_DUTY_ALARM = "dutyalarm"
+        private const val ALARM_BACKSTOP_MS = 9 * 60_000L
+        private const val ALARM_RC = 7
 
         @Volatile private var running = false
 
@@ -107,6 +112,11 @@ class MeshService : Service() {
             ACTION_PAUSE -> controller.pause()
             ACTION_RESUME -> controller.resume()
         }
+        if (intent?.hasExtra(EXTRA_DUTY_ALARM) == true) {
+            // The dead-man alarm: kick a possibly-frozen dark-mode scheduler, then re-arm.
+            controller.dutyBackstop()
+        }
+        armDutyBackstop()
 
         try {
             val n = buildNotification()
@@ -147,7 +157,34 @@ class MeshService : Service() {
         watch?.cancel()
         watch = null
         runCatching { unregisterReceiver(lockWatcher) }
+        cancelDutyBackstop()
         super.onDestroy()
+    }
+
+    private fun dutyAlarmPi(): PendingIntent = PendingIntent.getService(
+        this, ALARM_RC,
+        Intent(this, MeshService::class.java).putExtra(EXTRA_DUTY_ALARM, "1"),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun armDutyBackstop() {
+        try {
+            val am = getSystemService(android.app.AlarmManager::class.java) ?: return
+            am.setAndAllowWhileIdle(
+                android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                android.os.SystemClock.elapsedRealtime() + ALARM_BACKSTOP_MS,
+                dutyAlarmPi(),
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "duty backstop arm: $e")
+        }
+    }
+
+    private fun cancelDutyBackstop() {
+        try {
+            getSystemService(android.app.AlarmManager::class.java)?.cancel(dutyAlarmPi())
+        } catch (_: Exception) {
+        }
     }
 
     private data class Snapshot(

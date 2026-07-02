@@ -26,10 +26,12 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The real controller: real identity (H4-wrapped, restart-stable), real trust store, real
- * commit-before-reveal pairing, and (X3b) real BLE flooding transport — send() seals & floods,
- * the inbox receives & trial-opens, carrying counts relayed-blind blobs. Honest limit: this is
- * SCREEN-ON interactive mesh; the pocket duty cycler + foreground-service notification are a
- * deferred increment.
+ * commit-before-reveal pairing, real BLE flooding transport (X3b) — send() seals & floods,
+ * the inbox receives & trial-opens, carrying counts relayed-blind blobs — now running POCKETED
+ * (V2): MeshService keeps it alive and the transport's duty cycler keeps discovery working
+ * screen-off within the OS's measured scan constraints. Honest limit: dark-mode discovery is
+ * windowed (10s scan / 50–60s gap), so all-dark convergence takes up to ~a minute — and under
+ * true deep Doze degrades to ~9-min windows via the alarm backstop.
  */
 class RealMeshController(
     private val ctx: Context,
@@ -158,6 +160,11 @@ class RealMeshController(
 
     override fun resume() {
         if (_deviceKey.value.isEmpty()) start() else startTransport()
+    }
+
+    /** MeshService's ~9-min alarm backstop lands here (V2 duty cycler dead-man kick). */
+    fun dutyBackstop() {
+        transport?.backstopKick()
     }
 
     // ---------------- pairing ----------------
